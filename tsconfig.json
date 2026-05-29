@@ -1,24 +1,5 @@
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "strict": true,
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "outDir": "dist",
-    "rootDir": ".",
-    "resolveJsonModule": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "types": [
-      "node",
-      "vitest/globals"
-    ]
-  },
-  "include": [
-    "src",
-    "test"
-  ]
+  "extends": "./tsconfig.base.json",
+  "include": ["src/**/*"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test-d.ts", "src/**/*.fuzz.test.ts"]
 }

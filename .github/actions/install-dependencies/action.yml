@@ -1,0 +1,32 @@
+name: Install dependencies
+description: |
+  Composite action — sets up Node + pnpm via corepack, then installs the
+  workspace with frozen lockfile. Mirrors mppx's CI install layout
+  (mppx commit 5aed74b `.github/actions/install-dependencies/action.yml`).
+  Pin Node to the SDK's >=22 baseline (see package.json `engines.node`).
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        # Aligns with package.json engines.node (>=22). @types/node@24
+        # is type-only — does NOT force Node 24 runtime.
+        node-version: '22'
+
+    - name: Enable corepack (pnpm)
+      shell: bash
+      run: corepack enable
+
+    - name: Resolve packageManager version
+      shell: bash
+      run: |
+        # corepack auto-fetches the version pinned in package.json
+        # `packageManager`. Print it for CI log clarity.
+        node -e "console.log('packageManager:', require('./package.json').packageManager)"
+        pnpm --version
+
+    - name: Install dependencies (frozen lockfile)
+      shell: bash
+      run: pnpm install --frozen-lockfile

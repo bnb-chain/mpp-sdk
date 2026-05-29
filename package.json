@@ -1,51 +1,89 @@
 {
-  "name": "@bnb/mpp",
-  "version": "0.1.0",
-  "description": "BNB Chain Machine Payments Protocol charge implementation",
+  "name": "@bnb-chain/mpp",
+  "description": "BNB Chain EVM Charge implementation of the Machine Payments Protocol (mppx).",
+  "version": "0.0.0",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bnb-chain/mpp-sdk.git"
+  },
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "CHANGELOG.md",
+    "dist",
+    "src"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
+      "src": "./src/index.ts",
       "default": "./dist/index.js"
-    },
-    "./client": {
-      "types": "./dist/client/index.d.ts",
-      "default": "./dist/client/index.js"
     },
     "./server": {
       "types": "./dist/server/index.d.ts",
+      "src": "./src/server/index.ts",
       "default": "./dist/server/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "src": "./src/client/index.ts",
+      "default": "./dist/client/index.js"
     }
   },
-  "files": [
-    "dist"
-  ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "test": "vitest run",
-    "test:live": "vitest run test/bnbchain.live-full-run.test.ts",
-    "lint": "tsc --noEmit",
-    "demo:dev": "npm run build && npm install --prefix demo && npm run dev --prefix demo",
-    "demo:build": "npm run build && npm install --prefix demo && npm run build --prefix demo"
+    "build": "zile",
+    "changeset:publish": "zile publish:prepare && changeset publish && zile publish:post",
+    "changeset:version": "changeset version && vp fmt .",
+    "check": "vp lint --fix && vp fmt --write .",
+    "check:ci": "vp lint && vp fmt --check .",
+    "check:examples": "pnpm -r --filter \"./examples/*\" check:types",
+    "check:types": "tsgo -b && tsgo --noEmit -p tsconfig.test.json && pnpm check:examples",
+    "deps": "pnpx taze -r --no-ignore-other-workspaces --ignore-paths node_modules",
+    "deps:ci": "pnpx actions-up",
+    "dev": "zile dev",
+    "test": "vp test --config vite.config.ts",
+    "test:live": "vp test --config vite.config.ts --project live"
+  },
+  "peerDependencies": {
+    "mppx": "^0.6.28",
+    "viem": "^2.51.0"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.31.0",
+    "@types/node": "^24.0.0",
+    "@typescript/native-preview": "7.0.0-dev.20260323.1",
+    "fast-check": "^4.8.0",
+    "mppx": "^0.6.28",
+    "tsx": "^4.21.0",
+    "typescript": "~5.9.0",
+    "viem": "^2.51.0",
+    "vitest": "*",
+    "vp": "npm:vite-plus@~0.1.17",
+    "zile": "^0.0.25"
+  },
+  "packageManager": "pnpm@11.0.8",
+  "engines": {
+    "node": ">=22"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "bufferutil",
+      "keccak",
+      "utf-8-validate"
+    ]
   },
   "keywords": [
     "mpp",
+    "mppx",
     "bnb",
+    "bnb-chain",
+    "evm",
     "payments",
     "402",
     "http-payment-auth"
-  ],
-  "license": "MIT",
-  "dependencies": {
-    "canonicalize": "^3.0.0",
-    "viem": "^2.38.3",
-    "zod": "^4.1.12"
-  },
-  "devDependencies": {
-    "@types/node": "^24.7.2",
-    "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
-  }
+  ]
 }

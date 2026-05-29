@@ -1,0 +1,23 @@
+{
+  "name": "@bnb-chain/mpp-example-bnb-wire-demo",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Wire-shape inspector for BNB Chain stablecoins (FDUSD, U, Binance-Peg) — resolves each via the SDK and prints the challenge / credentialTypes / EIP-712 domain / receipt shape. No on-chain broadcast.",
+  "type": "module",
+  "scripts": {
+    "prestart": "pnpm -C ../.. build",
+    "start": "node --env-file-if-exists=.env --import tsx --no-warnings src/index.ts",
+    "check:types": "tsgo --noEmit"
+  },
+  "dependencies": {
+    "@bnb-chain/mpp": "workspace:*",
+    "mppx": "^0.6.28",
+    "viem": "^2.51.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@typescript/native-preview": "7.0.0-dev.20260323.1",
+    "tsx": "^4.19.0",
+    "typescript": "~5.9.0"
+  }
+}

@@ -1,0 +1,122 @@
+/* @import must precede @tailwind directives per CSS spec — see Vite/PostCSS warning. */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700;800&display=swap');
+@import url('@rainbow-me/rainbowkit/styles.css');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root,
+  .dark {
+    /* Sleek dark palette with BNB yellow accent. */
+    --background: 222 30% 6%;
+    --foreground: 210 40% 98%;
+
+    --card: 222 30% 8%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222 30% 8%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 45 93% 49%; /* BNB yellow ~#f0b90b */
+    --primary-foreground: 240 6% 10%;
+
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 217 33% 15%;
+    --muted-foreground: 215 20% 65%;
+
+    --accent: 217 33% 17%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 63% 41%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 217 33% 17%;
+    --input: 217 33% 17%;
+    --ring: 45 93% 49%;
+
+    --radius: 0.5rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', system-ui, sans-serif;
+    background:
+      radial-gradient(circle at top left, rgba(240, 185, 11, 0.08), transparent 50%),
+      radial-gradient(circle at bottom right, rgba(252, 213, 53, 0.05), transparent 50%),
+      hsl(var(--background));
+  }
+}
+
+@layer components {
+  /* ── JSON syntax highlighting (output panels) ────────────────────── */
+  .json-key {
+    color: #fcd535;
+  }
+  .json-string {
+    color: #6bf178;
+  }
+  .json-number {
+    color: #79c1ff;
+  }
+  .json-bool {
+    color: #ff8aa7;
+  }
+  .json-null {
+    color: #8e8e8e;
+    font-style: italic;
+  }
+
+  /* ── Step pills ──────────────────────────────────────────────────── */
+  .step-pill {
+    @apply flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition;
+    background: rgba(15, 23, 42, 0.5);
+    border-color: rgb(51, 65, 85);
+    color: rgb(148, 163, 184);
+  }
+  .step-pill[data-state='running'] {
+    border-color: #79c1ff;
+    color: #79c1ff;
+    background: rgba(121, 193, 255, 0.08);
+  }
+  .step-pill[data-state='ok'] {
+    border-color: rgb(16, 185, 129);
+    color: rgb(110, 231, 183);
+    background: rgba(16, 185, 129, 0.1);
+  }
+  .step-pill[data-state='err'] {
+    border-color: rgb(239, 68, 68);
+    color: rgb(252, 165, 165);
+    background: rgba(239, 68, 68, 0.1);
+  }
+
+  .step-arrow {
+    width: 16px;
+    height: 2px;
+    background-image: linear-gradient(90deg, #f0b90b 0%, rgba(240, 185, 11, 0.2) 100%);
+    align-self: center;
+  }
+
+  .pulse-icon {
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+}
+
+@layer utilities {
+  @keyframes pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.4;
+    }
+  }
+}

@@ -1,389 +1,194 @@
-import { randomBytes } from "node:crypto";
-import { decodeEventLog, parseAbiItem, type Hex } from "viem";
-import {
-  BNB_CHARGE_METHOD,
-  challengePayloadSchema,
-  credentialPayloadSchema,
-  type ChargeAsset,
-  type ChargeChallenge,
-  type ChargeCredential,
-  type PaymentError,
-} from "../Methods.js";
-import {
-  buildPaymentWwwAuthenticateHeader,
-  chargeChallengeToRequestB64,
-  challengeExpiresToRfc3339,
-  newPaymentChallengeId,
-  parsePaymentAuthorizationHeader,
-  PAYMENT_INTENT_CHARGE,
-  PAYMENT_METHOD_BNB,
-  type PaymentChallengeWire,
-} from "../utils/paymentHttp.js";
-import { buildPaymentReceiptHeader } from "../utils/receipt.js";
-import { InMemoryStore, type ConsumedStore, type TxMeta } from "../utils/replay.js";
+/**
+ * EVM Charge server factory (spec §10).
+ *
+ * Public surface:
+ *
+ *   preflightCharge(params)  async — does all RPC + curated resolution.
+ *                            Returns ResolvedChargeParams (params + _resolved
+ *                            bag). Throws on misconfiguration before any
+ *                            verifier ever runs (Permit2 not deployed +
+ *                            user required it, credentialTypes empty,
+ *                            authorization on non-EIP-3009 token, etc.).
+ *
+ *   charge(prepared)         sync — builds the Method.toServer instance from
+ *                            ResolvedChargeParams. The two-step API exists
+ *                            so callers can keep `charge()` sync inside
+ *                            Mppx.create({ methods: [...] }) lists; the
+ *                            async work is shifted to preflightCharge.
+ *
+ *   chargeAsync(params)      sync sugar = `charge(await preflightCharge(params))`.
+ *
+ * All four credential paths are live: hash + stored-lookup challenge
+ * binding, transaction, permit2, authorization (EIP-3009).
+ * The verify-hook routing + ctx propagation is wired here so verifier authors
+ * only have to fill in the body.
+ *
+ * This module is the thin public seam. The internals live under
+ * `src/server/charge/`:
+ *   - types.ts        — the public/internal type surface
+ *   - preflight.ts    — preflightCharge + preflightChargeInternal
+ *   - defaults.ts     — buildDefaults (methodDetails incl. permit2Spender)
+ *   - routeGuards.ts  — makeRequestHook + splitsEqual
+ *   - stableBinding.ts— makeStableBinding (pure request reshape)
+ *   - verifyRouter.ts — makeVerifyRouter (challenge-binding → accepted-types
+ *                       gate → dispatch by payload.type)
+ */
 
-const transferEvent = parseAbiItem(
-  "event Transfer(address indexed from, address indexed to, uint256 value)",
-);
-const TRANSFER_TOPIC =
-  "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55aebf4eecb3f" as const;
+import { Method } from 'mppx'
+import type { Transport } from 'mppx/server'
 
-export interface ServerPublicClientAdapter {
-  getTransaction(args: { hash: Hex }): Promise<{
-    to: `0x${string}` | null;
-    value: bigint;
-  }>;
-  getTransactionReceipt(args: { hash: Hex }): Promise<{
-    status: "success" | "reverted";
-    logs: Array<{
-      address: `0x${string}`;
-      topics: Hex[];
-      data: Hex;
-    }>;
-    blockNumber: bigint;
-  }>;
-  getBlockNumber(): Promise<bigint>;
-}
+import { chargeMethod } from '../Methods.js'
+import { buildDefaults } from './charge/defaults.js'
+import { preflightCharge } from './charge/preflight.js'
+import { makeRequestHook } from './charge/routeGuards.js'
+import { makeStableBinding } from './charge/stableBinding.js'
+import type {
+  ChargeServerDefaults,
+  PreflightInternalHooks,
+  ResolvedChargeParams,
+  ServerParameters,
+} from './charge/types.js'
+import { makeVerifyRouter } from './charge/verifyRouter.js'
+import { evmHttpTransport } from './Transport.js'
 
-export interface ServerChargeConfig {
-  recipient: `0x${string}`;
-  asset: ChargeAsset;
-  rpcUrl: string;
-  chainId: number;
-  /** Protection space for `WWW-Authenticate: Payment` (draft-httpauth-payment). */
-  realm?: string;
-  confirmations?: number;
-  nonceTtlSeconds?: number;
-  store?: ConsumedStore;
-  now?: () => number;
-}
+/* -------------------------------------------------------------------------- */
+/*  Public type surface — re-exported so @bnb-chain/mpp/server is unchanged.  */
+/* -------------------------------------------------------------------------- */
 
-export interface HttpLikeRequest {
-  headers: Record<string, string | undefined>;
-}
+export type {
+  ChargeServerDefaults,
+  ResolvedChargeParams,
+  ServerParameters,
+  Split,
+} from './charge/types.js'
 
-export type ChallengeResult = {
-  status: 402;
-  challenge: ChargeChallenge;
-  headers: Record<string, string>;
-  error?: PaymentError;
-};
+/**
+ * @internal — test seam re-exports this type-only for typing the hooks shape.
+ */
+export type _PreflightInternalHooks = PreflightInternalHooks
 
-export type VerifiedResult = {
-  status: 200;
-  receiptHeader: string;
-  withReceipt<T extends { setHeader(name: string, value: string): unknown }>(
-    response: T,
-  ): T;
-};
+/* -------------------------------------------------------------------------- */
+/*  preflightCharge — re-exported from charge/preflight.js                    */
+/* -------------------------------------------------------------------------- */
 
-type PendingChallenge = {
-  challenge: ChargeChallenge;
-  requestB64: string;
-};
+// `preflightCharge(params)` is single-arg public API. The test-only
+// `preflightChargeInternal` + its hooks shape (`_PreflightInternalHooks`)
+// are re-exported here so `test/helpers/server/preflightChargeForTest.ts`
+// keeps importing them from this module. They stay un-exported from
+// `@bnb-chain/mpp/server` (see src/server/index.ts) — production callers
+// cannot bypass the Permit2 deployment probe / inject a fake publicClient /
+// bypass the sentinel zero-address guard.
+export { preflightCharge, preflightChargeInternal } from './charge/preflight.js'
 
-export class BnbChargeServerMethod {
-  private readonly store: ConsumedStore;
-  private readonly pendingById = new Map<string, PendingChallenge>();
-  private readonly ttlSeconds: number;
-  private readonly confirmations: number;
-  private readonly now: () => number;
+/* -------------------------------------------------------------------------- */
+/*  charge(prepared)                                                          */
+/* -------------------------------------------------------------------------- */
 
-  public constructor(
-    private readonly config: ServerChargeConfig,
-    private readonly rpcClient: ServerPublicClientAdapter,
-  ) {
-    this.store = config.store ?? new InMemoryStore();
-    this.ttlSeconds = config.nonceTtlSeconds ?? 120;
-    this.confirmations = config.confirmations ?? 1;
-    this.now = config.now ?? (() => Date.now());
-  }
+export function charge(
+  prepared: ResolvedChargeParams,
+): Method.Server<typeof chargeMethod, ChargeServerDefaults, Transport.Http> {
+  const params = prepared
+  const {
+    currency,
+    decimals,
+    chainId,
+    permit2Address,
+    resolvedCredentialTypes,
+    publicClient,
+    settlementSigner,
+    store,
+    verifyChallengeBinding,
+    confirmations,
+    eip712,
+  } = prepared._resolved
+  const { amount, recipient, description, externalId, splits } = params
 
-  public createChallenge(amount: string, currency: string): ChargeChallenge {
-    return this.mintChallenge(amount, currency).challenge;
-  }
+  // Server-side ground truth used by the request hook + stableBinding +
+  // verify-hook lookups. Captured once here so the closures below don't
+  // have to re-destructure `prepared._resolved` on every invocation.
+  const resolvedRecipientLower = recipient.toLowerCase()
+  const resolvedCurrencyLower = currency.toLowerCase()
+  const resolvedPermit2Lower = permit2Address.toLowerCase()
+  // Settlement signer's EOA address — derived from `settlementAccount`
+  // (mandatory for permit2/authorization). When the deployment doesn't
+  // configure a signer (hash-only / transaction-only), this stays
+  // undefined and is omitted from the issued challenge's methodDetails.
+  const permit2Spender: `0x${string}` | undefined = settlementSigner?.account?.address
+  const resolvedPermit2SpenderLower = permit2Spender?.toLowerCase()
+  // credentialTypes is an ORDERED preference list per draft Table 2 (client
+  // SHOULD use the first supported type). Compare as-is — re-ordering the
+  // array MUST be rejected because it changes client behaviour.
+  const resolvedCredentialTypesKey = JSON.stringify([...resolvedCredentialTypes])
 
-  private mintChallenge(
-    amount: string,
-    currency: string,
-  ): { challenge: ChargeChallenge; wire: PaymentChallengeWire } {
-    const now = this.now();
-    const challenge = challengePayloadSchema.parse({
-      method: BNB_CHARGE_METHOD,
-      recipient: this.config.recipient,
+  return Method.toServer(chargeMethod, {
+    // —— transport (spec §13.4.1 C2 auto-wire): every EVM Charge method ships
+    //    its own evmHttpTransport so the Payment-Receipt header is encoded
+    //    by serializeEvmReceipt (preserves draft §7.6 challengeId + chainId).
+    //    Per-method `transport` overrides Mppx.create's default — deployments
+    //    don't need to remember to pass it in Mppx.create({ transport }).
+    transport: evmHttpTransport(),
+
+    // —— defaults: ALL REQUIRED methodDetails fields must be present here.
+    //    mppx createMethodFn parses `{ ...defaults, ...rest }` directly via
+    //    schema.request.parse (src/server/Mppx.ts L1231 path), bypassing
+    //    request hook. Anything that schema declares REQUIRED MUST be in
+    //    defaults (or rest, but route options typically only pass amount).
+    defaults: buildDefaults({
       amount,
       currency,
-      asset: this.config.asset,
-      chainId: this.config.chainId,
-      serverNonce: `0x${randomBytes(32).toString("hex")}`,
-      expiresAt: now + this.ttlSeconds * 1000,
-      feeSponsor: false,
-      rpcUrl: this.config.rpcUrl,
-    });
-    const id = newPaymentChallengeId();
-    const requestB64 = chargeChallengeToRequestB64(challenge);
-    const wire: PaymentChallengeWire = {
-      id,
-      realm: this.config.realm ?? "payment",
-      method: PAYMENT_METHOD_BNB,
-      intent: PAYMENT_INTENT_CHARGE,
-      request: requestB64,
-      expires: challengeExpiresToRfc3339(challenge.expiresAt),
-    };
-    this.pendingById.set(id, { challenge, requestB64 });
-    return { challenge, wire };
-  }
+      recipient,
+      description,
+      externalId,
+      chainId,
+      permit2Address,
+      permit2Spender,
+      resolvedCredentialTypes,
+      decimals,
+      splits,
+    }),
 
-  public async handle(
-    req: HttpLikeRequest,
-    params: { amount: string; currency: string },
-  ): Promise<ChallengeResult | VerifiedResult> {
-    const authorizationHeader = req.headers.authorization;
-    if (!authorizationHeader) {
-      return this.challengeResult(params.amount, params.currency);
-    }
-
-    let envelope: ReturnType<typeof parsePaymentAuthorizationHeader>;
-    try {
-      envelope = parsePaymentAuthorizationHeader(authorizationHeader);
-    } catch {
-      return this.challengeResult(params.amount, params.currency, {
-        code: "INVALID_CREDENTIAL",
-        message: "Authorization header format is invalid",
-      });
-    }
-
-    if (envelope.challenge.method !== PAYMENT_METHOD_BNB || envelope.challenge.intent !== PAYMENT_INTENT_CHARGE) {
-      return this.challengeResult(params.amount, params.currency, {
-        code: "INVALID_CREDENTIAL",
-        message: "Unsupported Payment method or intent",
-      });
-    }
-
-    if (envelope.payload.type === "bnb-sponsor") {
-      return this.challengeResult(params.amount, params.currency, {
-        code: "INVALID_CREDENTIAL",
-        message: "Fee-sponsored credentials are not supported by this server build",
-      });
-    }
-
-    const txHashEarly = envelope.payload.hash.toLowerCase();
-    if (await this.store.has(txHashEarly)) {
-      return this.challengeResult(params.amount, params.currency, {
-        code: "REPLAY_DETECTED",
-        message: "Transaction hash already consumed",
-      });
-    }
-
-    const pending = this.pendingById.get(envelope.challenge.id);
-    if (!pending || pending.requestB64 !== envelope.challenge.request) {
-      return this.challengeResult(params.amount, params.currency, {
-        code: "NONCE_MISMATCH",
-        message: "Unknown or tampered Payment challenge",
-      });
-    }
-
-    const challenge = pending.challenge;
-    const credential = credentialPayloadSchema.parse({
-      method: BNB_CHARGE_METHOD,
-      from: envelope.payload.from,
-      serverNonce: challenge.serverNonce,
-      chainId: challenge.chainId,
-      txHash: envelope.payload.type === "hash" ? envelope.payload.hash : undefined,
-    });
-
-    if (credential.chainId !== this.config.chainId) {
-      return this.challengeResult(params.amount, params.currency, {
-        code: "CHAIN_MISMATCH",
-        message: "Credential was signed for a different chain",
-      });
-    }
-
-    if (credential.serverNonce.toLowerCase() !== challenge.serverNonce.toLowerCase()) {
-      return this.challengeResult(params.amount, params.currency, {
-        code: "NONCE_MISMATCH",
-        message: "Nonce mismatch",
-      });
-    }
-
-    if (this.now() > challenge.expiresAt + 30_000) {
-      return this.challengeResult(params.amount, params.currency, {
-        code: "CHALLENGE_EXPIRED",
-        message: "Challenge has expired",
-      });
-    }
-
-    return this.verifyOnchainCredential(credential, challenge, envelope.challenge.id);
-  }
-
-  private async verifyOnchainCredential(
-    credential: ChargeCredential,
-    challenge: ChargeChallenge,
-    paymentChallengeId: string,
-  ): Promise<ChallengeResult | VerifiedResult> {
-    if (!credential.txHash) {
-      return this.challengeResult(challenge.amount, challenge.currency, {
-        code: "INVALID_CREDENTIAL",
-        message: "txHash is required for charge credential",
-      });
-    }
-
-    const txHash = credential.txHash.toLowerCase();
-    if (await this.store.has(txHash)) {
-      return this.challengeResult(challenge.amount, challenge.currency, {
-        code: "REPLAY_DETECTED",
-        message: "Transaction hash already consumed",
-      });
-    }
-
-    const [tx, receipt] = await Promise.all([
-      this.rpcClient.getTransaction({ hash: txHash as Hex }).catch(() => null),
-      this.rpcClient.getTransactionReceipt({ hash: txHash as Hex }).catch(() => null),
-    ]);
-
-    if (!tx || !receipt) {
-      return this.challengeResult(challenge.amount, challenge.currency, {
-        code: "TX_NOT_FOUND",
-        message: "Transaction not found",
-      });
-    }
-
-    if (receipt.status !== "success") {
-      return this.challengeResult(challenge.amount, challenge.currency, {
-        code: "TX_REVERTED",
-        message: "Transaction reverted",
-      });
-    }
-
-    const latestBlock = await this.rpcClient.getBlockNumber();
-    if (latestBlock - receipt.blockNumber + 1n < BigInt(this.confirmations)) {
-      return this.challengeResult(challenge.amount, challenge.currency, {
-        code: "TX_NOT_FOUND",
-        message: "Transaction has insufficient confirmations",
-      });
-    }
-
-    if (challenge.asset.kind === "native") {
-      if (!tx.to || tx.to.toLowerCase() !== this.config.recipient.toLowerCase()) {
-        return this.challengeResult(challenge.amount, challenge.currency, {
-          code: "WRONG_RECIPIENT",
-          message: "Native transfer recipient mismatch",
-        });
-      }
-      if (tx.value < BigInt(challenge.amount)) {
-        return this.challengeResult(challenge.amount, challenge.currency, {
-          code: "UNDERPAYMENT",
-          message: "Native transfer is under required amount",
-        });
-      }
-    } else {
-      const tokenAddress = challenge.asset.address!.toLowerCase();
-      const transferLog = receipt.logs.find(
-        (log) => log.address.toLowerCase() === tokenAddress && log.topics[0] === TRANSFER_TOPIC,
-      );
-      if (!transferLog) {
-        return this.challengeResult(challenge.amount, challenge.currency, {
-          code: "WRONG_TOKEN",
-          message: "No matching token transfer log found",
-        });
-      }
-
-      const decoded = decodeEventLog({
-        abi: [transferEvent],
-        topics: transferLog.topics as [Hex, ...Hex[]],
-        data: transferLog.data,
-      });
-      const args = decoded.args as {
-        from: `0x${string}`;
-        to: `0x${string}`;
-        value: bigint;
-      };
-
-      if (args.to.toLowerCase() !== this.config.recipient.toLowerCase()) {
-        return this.challengeResult(challenge.amount, challenge.currency, {
-          code: "WRONG_RECIPIENT",
-          message: "Token transfer recipient mismatch",
-        });
-      }
-      if (args.from.toLowerCase() !== credential.from.toLowerCase()) {
-        return this.challengeResult(challenge.amount, challenge.currency, {
-          code: "INVALID_CREDENTIAL",
-          message: "Credential from does not match transfer sender",
-        });
-      }
-      if (args.value < BigInt(challenge.amount)) {
-        return this.challengeResult(challenge.amount, challenge.currency, {
-          code: "UNDERPAYMENT",
-          message: "Token transfer is under required amount",
-        });
-      }
-    }
-
-    await this.consumeTx(txHash, credential, challenge);
-    return this.verifiedResult(txHash, challenge.amount, challenge.currency, paymentChallengeId);
-  }
-
-  private async consumeTx(
-    txHash: string,
-    credential: ChargeCredential,
-    challenge: ChargeChallenge,
-  ): Promise<void> {
-    const meta: TxMeta = {
-      from: credential.from,
-      to: this.config.recipient,
-      amount: challenge.amount,
-      currency: challenge.currency,
-      chainId: challenge.chainId,
-      consumedAt: this.now(),
-    };
-    await this.store.add(txHash, meta);
-  }
-
-  private challengeResult(
-    amount: string,
-    currency: string,
-    error?: PaymentError,
-  ): ChallengeResult {
-    const { challenge, wire } = this.mintChallenge(amount, currency);
-    return {
-      status: 402,
-      challenge,
-      headers: {
-        "WWW-Authenticate": buildPaymentWwwAuthenticateHeader(wire),
-        "Cache-Control": "no-store",
-      },
-      error,
-    };
-  }
-
-  private verifiedResult(
-    txHash: string,
-    amount: string,
-    currency: string,
-    paymentChallengeId: string,
-  ): VerifiedResult {
-    const receiptHeader = buildPaymentReceiptHeader({
-      txHash,
-      amount,
+    // —— request hook (spec §10 / §14.10 route override guard) ────────────
+    request: makeRequestHook({
       currency,
-      chainId: this.config.chainId,
-      paymentMethod: PAYMENT_METHOD_BNB,
-      challengeId: paymentChallengeId,
-    });
-    return {
-      status: 200,
-      receiptHeader,
-      withReceipt<T extends { setHeader(name: string, value: string): unknown }>(response: T): T {
-        response.setHeader("Payment-Receipt", receiptHeader);
-        return response;
-      },
-    };
-  }
+      chainId,
+      decimals,
+      resolvedCurrencyLower,
+      resolvedRecipientLower,
+      resolvedPermit2Lower,
+      resolvedPermit2SpenderLower,
+      resolvedCredentialTypesKey,
+      permit2Spender,
+      splits,
+    }),
+
+    // —— stableBinding (spec §14.10) — augments mppx's default binding ─────
+    stableBinding: makeStableBinding(),
+
+    // —— verify hook: route by credential.payload.type ——
+    verify: makeVerifyRouter({
+      verifyChallengeBinding,
+      publicClient,
+      store,
+      chainId,
+      permit2Address,
+      confirmations,
+      hashFromPolicy: params.hashFromPolicy,
+      settlementSigner,
+      eip712,
+    }),
+  })
 }
 
-export function createBnbChargeServerMethod(
-  config: ServerChargeConfig,
-  rpcClient: ServerPublicClientAdapter,
-): BnbChargeServerMethod {
-  return new BnbChargeServerMethod(config, rpcClient);
+/**
+ * Sugar — `charge(await preflightCharge(params))`. Return type uses the
+ * same `ChargeServerDefaults` alias as `charge()` so call-site type
+ * narrowing (route options optionality) is identical across both APIs.
+ */
+export async function chargeAsync(
+  params: ServerParameters,
+): Promise<Method.Server<typeof chargeMethod, ChargeServerDefaults, Transport.Http>> {
+  return charge(await preflightCharge(params))
 }
+
+// All four verifier bodies (hash, transaction, permit2, authorization) are
+// live. The earlier notImplemented stub has been removed.

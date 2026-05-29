@@ -1,0 +1,62 @@
+name: verify
+
+on:
+  push:
+    branches: [main, v1, v1.0.0-rewrite]
+  pull_request:
+    branches: [main, v1]
+
+# Cancel in-flight runs for the same branch when a new push arrives.
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: lint + fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install-dependencies
+      - name: Lint + fmt check
+        run: pnpm check:ci
+
+  types:
+    name: tsgo type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install-dependencies
+      - name: Type check (tsgo -b + test config)
+        run: pnpm check:types
+
+  test:
+    name: unit + interop tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install-dependencies
+      - name: Run unit + interop projects
+        # `live` project is excluded — it requires testnet RPC + signing
+        # keys that don't belong in CI secrets for this stage. Live tests
+        # gate manually via `pnpm test -- --project live` from a workstation
+        # with the right env vars (see test/live/*.test.ts headers).
+        #
+        # NOTE: the `--` separator is REQUIRED. Without it, pnpm 11+ can
+        # intercept `--project` as its own argument and the run fails with
+        # "Unknown option: 'project'". Tested manifest: pnpm@11.0.8 forwards
+        # bare flags, but the contract isn't guaranteed across pnpm versions
+        # — always use `--` to pass flags through to the test script.
+        run: pnpm test -- --project unit --project interop
+
+  build:
+    name: zile build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install-dependencies
+      - name: Build dist/
+        run: pnpm build

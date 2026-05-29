@@ -1,51 +1,104 @@
-import type { PublicClient } from "viem";
-import {
-  createBnbChargeServerMethod,
-  type BnbChargeServerMethod,
-  type ChallengeResult,
-  type HttpLikeRequest,
-  type ServerChargeConfig,
-  type ServerPublicClientAdapter,
-  type VerifiedResult,
-} from "./Charge.js";
+/**
+ * @bnb-chain/mpp/server — server-side runtime.
+ *
+ * Composes with mppx's Mppx.create() entry. Typical use:
+ *
+ *   import { Mppx } from 'mppx/server'
+ *   import { chargeAsync } from '@bnb-chain/mpp/server'
+ *
+ *   const handler = Mppx.create({
+ *     methods: [await chargeAsync({ chain, token, recipient, challengeBinding })],
+ *     secretKey,
+ *     // No `transport` field — chargeAsync() / charge() auto-wire the
+ *     // SDK-provided evmHttpTransport on the per-method transport slot
+ *     // (spec §13.4.1 C2 auto-wire). Passing `transport: evmHttpTransport()`
+ *     // to Mppx.create here is redundant + discouraged.
+ *   })
+ *
+ * `evmHttpTransport` remains exported for advanced custom integrations
+ * (non-Mppx.create hosts, alternate transport composition) but the
+ * common path never needs it.
+ */
 
-export type { ChallengeResult, ServerPublicClientAdapter, VerifiedResult };
+// ── Charge factory ────────────────────────────────────────────────────────
+//
+// `preflightCharge(params)` is single-arg public API. The test-only
+// `preflightChargeInternal` + its hooks shape stay un-exported here —
+// production callers cannot bypass the Permit2 deployment probe / inject
+// fake publicClient / bypass sentinel zero-address guard.
+export {
+  charge,
+  chargeAsync,
+  type ChargeServerDefaults,
+  preflightCharge,
+  type ResolvedChargeParams,
+  type ServerParameters,
+  type Split,
+} from './Charge.js'
 
-export interface MppxServerMethod {
-  handle(req: HttpLikeRequest, params: { amount: string; currency: string }): Promise<unknown>;
-}
+// ── Challenge binding ─────────────────────────────────────────────────────
+export {
+  type ChallengeBindingConfig,
+  makeVerifyChallengeBinding,
+  type VerifyChallengeBindingFn,
+} from './ChallengeBinding.js'
 
-export interface MppxServerOptions {
-  methods: MppxServerMethod[];
-}
+// ── Challenge store (stored-lookup binding, §8.0.1) ────────────────────────
+// The stored-lookup mode is unusable without these helpers — a deployment
+// MUST `rememberChallenge` at issuance and the SDK looks it up at verify.
+export {
+  canonicalizeChallenge,
+  type ChallengeItemMap,
+  type ChallengeStore,
+  forgetChallenge,
+  lookupChallenge,
+  rememberChallenge,
+  type StoredChallengeAuthParams,
+} from './ChallengeStore.js'
 
-export class Mppx {
-  private constructor(private readonly methods: MppxServerMethod[]) {}
+// ── Curated chain/token presets (types + lookup errors only — the matrix
+//    itself is SDK-internal and consumed via preflightCharge) ─────────────
+export {
+  CuratedLookupError,
+  type SupportedChainPreset,
+  type SupportedTokenPreset,
+} from './curated.js'
 
-  public static create(options: MppxServerOptions): Mppx {
-    return new Mppx(options.methods);
-  }
+// ── Receipt codec ────────────────────────────────────────────────────────
+export {
+  buildEvmReceipt,
+  deserializeEvmReceipt,
+  type EvmReceipt,
+  type EvmReceiptInput,
+  serializeEvmReceipt,
+} from './Receipt.js'
 
-  public charge(params: { amount: string; currency: string }) {
-    return async (req: HttpLikeRequest): Promise<unknown> => {
-      if (!this.methods[0]) {
-        throw new Error("No payment methods were configured");
-      }
-      return this.methods[0].handle(req, params);
-    };
-  }
-}
+// ── Replay store ─────────────────────────────────────────────────────────
+export {
+  authKey,
+  type ChargeStore,
+  getReplaySlot,
+  hashKey,
+  markConsumed,
+  markRejected,
+  permit2Key,
+  release,
+  type ReplayItemMap,
+  type ReplayKey,
+  type ReplaySlotState,
+  type ReplaySlotValue,
+  ReplayStoreUnavailableError,
+  reserve,
+  txKey,
+} from './Replay.js'
 
-export const bnb = {
-  charge(
-    config: ServerChargeConfig,
-    publicClient: PublicClient | ServerPublicClientAdapter,
-  ): BnbChargeServerMethod {
-    return createBnbChargeServerMethod(
-      config,
-      publicClient as ServerPublicClientAdapter,
-    );
-  },
-};
+// ── Settlement signer ────────────────────────────────────────────────────
+export {
+  resolveSettlementSigner,
+  SettlementConfigError,
+  type SettlementCtx,
+  type SettlementParams,
+} from './Settlement.js'
 
-export type { ServerChargeConfig };
+// ── Transport (C2 path) ──────────────────────────────────────────────────
+export { evmHttpTransport } from './Transport.js'

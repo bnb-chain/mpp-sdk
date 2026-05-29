@@ -1,3 +1,23 @@
 node_modules/
 dist/
 coverage/
+.idea
+.DS_Store
+tmp/
+*.tsbuildinfo
+# Emitted artifacts that some tools (vp test, tsgo --noEmit overrides)
+# scatter into source dirs — never check these in.
+test/**/*.js
+test/**/*.d.ts
+test/**/*.js.map
+test/**/*.d.ts.map
+vite.config.js
+vite.config.d.ts
+vite.config.js.map
+vite.config.d.ts.map
+**/**/settings.local.json
+# Example-local env files — only .env.example is committed; users copy
+# to .env and fill in secrets. Both .env and .env.local are gitignored.
+.env
+.env.local
+
