@@ -1,0 +1,21 @@
+# Keep build context small + never ship secrets / local build output into an
+# image layer. node_modules + dist are rebuilt inside the image from the
+# lockfile, so they must NOT be copied from the host.
+**/node_modules
+**/dist
+.git
+.github
+.changeset
+
+# Secrets — only the .env.example templates are allowed in.
+**/.env
+**/.env.*
+!**/.env.example
+
+# Local noise
+**/*.log
+**/coverage
+**/.DS_Store
+.vscode
+.idea
+tmp

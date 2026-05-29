@@ -1,0 +1,40 @@
+# charge-demo + charge-server, same-origin reverse-proxy topology.
+#
+# Browser → charge-demo (nginx, public via Traefik) → /api/* proxied to
+# charge-server (internal only). Deploy on Dokploy as a single "Compose"
+# service; set the secrets below in Dokploy → Environment, and attach a domain
+# to the charge-demo service on port 80 (Dokploy wires Traefik + TLS).
+#
+# Local smoke test (from repo root):
+#   RECIPIENT_ADDRESS=0x… MPP_SECRET_KEY=… SETTLEMENT_PRIVATE_KEY=0x… \
+#   RPC_URL=https://ethereum-sepolia-rpc.publicnode.com \
+#   docker compose up --build
+#   # then add `ports: ["8080:80"]` to charge-demo and open http://localhost:8080
+services:
+  charge-server:
+    build:
+      context: .
+      dockerfile: examples/charge-server/Dockerfile
+    environment:
+      RECIPIENT_ADDRESS: ${RECIPIENT_ADDRESS}
+      MPP_SECRET_KEY: ${MPP_SECRET_KEY}
+      SETTLEMENT_PRIVATE_KEY: ${SETTLEMENT_PRIVATE_KEY}
+      # REQUIRED — without a real RPC the Permit2 preflight probe hangs.
+      RPC_URL: ${RPC_URL}
+      PORT: "3000"
+    expose:
+      - "3000" # internal only; reached by charge-demo's nginx, not published
+    restart: unless-stopped
+
+  charge-demo:
+    build:
+      context: .
+      dockerfile: examples/charge-demo/Dockerfile
+      args:
+        # RPC the in-browser wallet uses to read Sepolia (inlined at build).
+        VITE_SEPOLIA_RPC_URL: ${VITE_SEPOLIA_RPC_URL:-https://ethereum-sepolia-rpc.publicnode.com}
+    depends_on:
+      - charge-server
+    expose:
+      - "80" # Dokploy/Traefik publishes this via the attached domain
+    restart: unless-stopped
