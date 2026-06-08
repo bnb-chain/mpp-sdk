@@ -29,6 +29,9 @@ Peers: `mppx ^0.6.28`, `viem ^2.51.0`. Node ≥ 22 (development uses Node 22 sta
 
 ## Quickstart
 
+> For a full end-to-end walkthrough — server route + client credential +
+> receipt, runnable on BSC Testnet — see [`docs/quickstart.md`](docs/quickstart.md).
+
 ```ts
 import { Mppx } from 'mppx/server'
 import { chargeAsync } from '@bnb-chain/mpp/server'

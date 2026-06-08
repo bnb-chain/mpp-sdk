@@ -7,7 +7,7 @@ inspector that needs no server.
 
 | Example                                      | What it is                                                                                                                                                                                                     |
 | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`charge-server`](../examples/charge-server) | Minimal Hono HTTP server using `@bnb-chain/mpp/server`. Six protected routes (article / download / tip / split / hash-only / stored-lookup) + a public `/api/config`, Sepolia USDC, all 4 credential types.    |
+| [`charge-server`](../examples/charge-server) | Minimal Hono HTTP server using `@bnb-chain/mpp/server`. Six protected routes (article / download / tip / split / hash-only / stored-lookup) + a public `/api/config`, BSC Testnet USDT, `permit2` / `transaction` / `hash`. |
 | [`charge-demo`](../examples/charge-demo)     | React + shadcn/ui + wagmi browser app driving the full client flow against the server.                                                                                                                         |
 | [`bnb-wire-demo`](../examples/bnb-wire-demo) | Standalone CLI wire-shape inspector for BNB Chain stablecoins — resolves each `(chain, token)` via the SDK and prints the challenge / credentialTypes / EIP-712 domain / receipt shape. No on-chain broadcast. |
 
@@ -28,10 +28,11 @@ server with no CORS setup. Both `start` / `dev` run a `prestart` /
 
 ## charge-server
 
-Configured for `sepolia` / `USDC`, accepting `authorization` / `permit2`
-/ `transaction` / `hash`. Because `permit2` + `authorization` settle
-server-side, it requires `SETTLEMENT_PRIVATE_KEY` (a hot signer holding
-Sepolia ETH for gas) alongside `RECIPIENT_ADDRESS` + `MPP_SECRET_KEY`.
+Configured for `bsc-testnet` / `TEST_USDT`, accepting `permit2` /
+`transaction` / `hash` (the token is a plain BEP-20, no EIP-3009, so no
+`authorization`). Because `permit2` settles server-side, it requires
+`SETTLEMENT_PRIVATE_KEY` (a hot signer holding tBNB for gas) alongside
+`RECIPIENT_ADDRESS` + `MPP_SECRET_KEY`.
 
 Its `402` advertises `permit2Spender` (the settlement signer's address)
 in `methodDetails` — required so Permit2 clients sign with the right
