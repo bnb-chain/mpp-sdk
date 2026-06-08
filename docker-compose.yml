@@ -21,9 +21,9 @@ services:
       SETTLEMENT_PRIVATE_KEY: ${SETTLEMENT_PRIVATE_KEY}
       # REQUIRED — without a real RPC the Permit2 preflight probe hangs.
       RPC_URL: ${RPC_URL}
-      PORT: "3000"
+      PORT: '3000'
     expose:
-      - "3000" # internal only; reached by charge-demo's nginx, not published
+      - '3000' # internal only; reached by charge-demo's nginx, not published
     restart: unless-stopped
 
   charge-demo:
@@ -36,5 +36,5 @@ services:
     depends_on:
       - charge-server
     expose:
-      - "80" # Dokploy/Traefik publishes this via the attached domain
+      - '80' # Dokploy/Traefik publishes this via the attached domain
     restart: unless-stopped

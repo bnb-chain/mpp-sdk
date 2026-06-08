@@ -3,9 +3,9 @@
  *
  * Dispatches by the selected credential type (hash / transaction /
  * permit2 / authorization) and produces the corresponding credential —
- * broadcasting a real Sepolia transfer for `hash`, signing EIP-1559 RLP
- * with an in-page key for `transaction`, or wallet-signing EIP-712 typed
- * data for `permit2` / `authorization`.
+ * broadcasting a real BSC Testnet USDT transfer for `hash`, signing
+ * EIP-1559 RLP with an in-page key for `transaction`, or wallet-signing
+ * EIP-712 typed data for `permit2` / `authorization`.
  */
 
 import {
@@ -75,11 +75,11 @@ export async function buildCredential(
   switch (state.credentialType) {
     case 'hash': {
       if (!ctx.walletAddress || !ctx.walletClient || !ctx.publicClient) {
-        throw new Error('Wallet must be connected to Sepolia to broadcast the settlement tx.')
+        throw new Error('Wallet must be connected to BSC Testnet to broadcast the settlement tx.')
       }
       if (!canSettleOnChain(state.chainKey, ctx.walletChainId)) {
         throw new Error(
-          `Wallet is on chainId=${ctx.walletChainId}, but the selected chain preset is "${state.chainKey}". Switch to Sepolia (the only on-chain-settle-capable preset).`,
+          `Wallet is on chainId=${ctx.walletChainId}, but the selected chain preset is "${state.chainKey}". Switch to BSC Testnet (chainId 97) — the only on-chain-settle-capable preset.`,
         )
       }
       const data = encodeFunctionData({
@@ -125,7 +125,7 @@ export async function buildCredential(
       )
       return {
         patch: { credential, settlementTxHash: txHash },
-        panel: panel('Hash credential — real Sepolia tx', body),
+        panel: panel('Hash credential — real BSC Testnet tx', body),
       }
     }
     case 'transaction': {
@@ -197,7 +197,7 @@ export async function buildCredential(
     case 'authorization': {
       if (!preset.eip712) {
         throw new Error(
-          `chain="${state.chainKey}" / token="${preset.token}" has no curated EIP-3009 domain — authorization credential not supported. Use a Circle USDC chain (Sepolia / Ethereum / Base).`,
+          `chain="${state.chainKey}" / token="${preset.token}" has no curated EIP-3009 domain — the authorization credential is not available in this demo (BSC Testnet USDT is a plain BEP-20).`,
         )
       }
       if (!ctx.walletAddress || !ctx.walletClient) {

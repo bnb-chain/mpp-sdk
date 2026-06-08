@@ -6,8 +6,8 @@
  * are config-time. So each scenario that changes those gets its OWN handler
  * (one configured charge method each; they can't share the `evm.charge` slot):
  *
- *   - base      all 4 credential types + a settlement signer (server sponsors
- *               gas for permit2 / authorization). Serves /api/article,
+ *   - base      the token's credential types (permit2/transaction/hash) + a
+ *               settlement signer (server sponsors gas for permit2). Serves /api/article,
  *               /api/download, /api/tip.
  *   - split     base config + a configured platform-fee split → /api/split
  *               settles as a 2-entry Permit2 batch (merchant + fee).
@@ -35,7 +35,7 @@ import { Mppx } from 'mppx/server'
 
 import type { ChargeServerConfig } from './config.js'
 
-/** The charge method produced by `chargeAsync` (sepolia / USDC). */
+/** The charge method produced by `chargeAsync` (bsc-testnet / TEST_USDT). */
 type ChargeMethod = Awaited<ReturnType<typeof chargeAsync>>
 
 /** A fully-configured mppx handler mounting one charge method. */
@@ -55,8 +55,8 @@ export interface ChargeHandlers {
  * visible 2-way Permit2 batch on testnet. NOT a real fee address.
  */
 const DEMO_SPLIT_FEE_RECIPIENT = '0x000000000000000000000000000000000000beef' as const
-/** Platform fee taken on /api/split: 0.2 USDC (base units, 6 decimals). */
-const DEMO_SPLIT_FEE_BASE_UNITS = '200000'
+/** Platform fee taken on /api/split: 0.2 USDT (base units, 18 decimals). */
+const DEMO_SPLIT_FEE_BASE_UNITS = '200000000000000000'
 
 export async function createHandlers(config: ChargeServerConfig): Promise<ChargeHandlers> {
   // Optional custom RPC, spread into each config when set.
@@ -73,19 +73,19 @@ export async function createHandlers(config: ChargeServerConfig): Promise<Charge
 
   const [base, split, hashOnly, stored] = await Promise.all([
     chargeAsync({
-      chain: 'sepolia',
-      token: 'USDC',
+      chain: 'bsc-testnet',
+      token: 'TEST_USDT',
       recipient: config.recipient,
-      // All 4 credential types (factory default for an EIP-3009 token):
-      // ['authorization', 'permit2', 'transaction', 'hash']. Not passed
-      // explicitly so the ordered preference list flows through unchanged.
+      // The matrix credential types for bsc-testnet/TEST_USDT (a non-EIP-3009
+      // BEP-20): ['permit2', 'transaction', 'hash']. Not passed explicitly so
+      // the ordered preference list flows through unchanged.
       settlementAccount: config.settlementAccount,
       challengeBinding: { mode: 'mppx-managed' },
       ...rpc,
     }),
     chargeAsync({
-      chain: 'sepolia',
-      token: 'USDC',
+      chain: 'bsc-testnet',
+      token: 'TEST_USDT',
       recipient: config.recipient,
       settlementAccount: config.settlementAccount,
       // Splits are config-time (route override is forbidden, spec §10), so the
@@ -96,8 +96,8 @@ export async function createHandlers(config: ChargeServerConfig): Promise<Charge
       ...rpc,
     }),
     chargeAsync({
-      chain: 'sepolia',
-      token: 'USDC',
+      chain: 'bsc-testnet',
+      token: 'TEST_USDT',
       recipient: config.recipient,
       // transaction + hash only → the server never sponsors settlement gas, so
       // NO settlementAccount. preflight allows omitting it because neither path
@@ -107,8 +107,8 @@ export async function createHandlers(config: ChargeServerConfig): Promise<Charge
       ...rpc,
     }),
     chargeAsync({
-      chain: 'sepolia',
-      token: 'USDC',
+      chain: 'bsc-testnet',
+      token: 'TEST_USDT',
       recipient: config.recipient,
       settlementAccount: config.settlementAccount,
       // stored-lookup: the SDK persists each issued challenge and re-compares
@@ -189,12 +189,12 @@ export interface DeploymentConfig {
 }
 
 export async function buildDeploymentConfig(config: ChargeServerConfig): Promise<DeploymentConfig> {
-  // One extra preflight to describe the base (sepolia/USDC) deployment. The
+  // One extra preflight to describe the base (bsc-testnet/TEST_USDT) deployment. The
   // resolved values are read from the SDK's own resolution rather than a
   // hand-kept mirror; a production server would cache this once at boot.
   const resolved = await preflightCharge({
-    chain: 'sepolia',
-    token: 'USDC',
+    chain: 'bsc-testnet',
+    token: 'TEST_USDT',
     recipient: config.recipient,
     settlementAccount: config.settlementAccount,
     challengeBinding: { mode: 'mppx-managed' },
@@ -202,7 +202,7 @@ export async function buildDeploymentConfig(config: ChargeServerConfig): Promise
   })
   const r = resolved._resolved
 
-  // `fullTypes` is the matrix-resolved set for the base (sepolia/USDC) handler —
+  // `fullTypes` is the matrix-resolved set for the base (bsc-testnet/TEST_USDT) handler —
   // sourced from the SDK so it tracks eip3009Supported etc. The two narrowed
   // sets are NOT a matrix mirror: splits force EXACTLY ['permit2'] (SDK-enforced
   // in preflight), and hashOnly advertises the example's own explicit
@@ -219,7 +219,7 @@ export async function buildDeploymentConfig(config: ChargeServerConfig): Promise
       challengeBinding: 'mppx-managed',
       hasSplits: false,
       canSettle: true,
-      amountPolicy: 'fixed 1 USDC',
+      amountPolicy: 'fixed 1 USDT',
     },
     {
       path: '/api/download',
@@ -227,7 +227,7 @@ export async function buildDeploymentConfig(config: ChargeServerConfig): Promise
       challengeBinding: 'mppx-managed',
       hasSplits: false,
       canSettle: true,
-      amountPolicy: 'fixed 1 USDC; binds ?order= as receipt externalId',
+      amountPolicy: 'fixed 1 USDT; binds ?order= as receipt externalId',
     },
     {
       path: '/api/tip',
@@ -235,7 +235,7 @@ export async function buildDeploymentConfig(config: ChargeServerConfig): Promise
       challengeBinding: 'mppx-managed',
       hasSplits: false,
       canSettle: true,
-      amountPolicy: 'dynamic ?amount=, server-bounded 0.10–100 USDC',
+      amountPolicy: 'dynamic ?amount=, server-bounded 0.10–100 USDT',
     },
     {
       path: '/api/split',
@@ -243,7 +243,7 @@ export async function buildDeploymentConfig(config: ChargeServerConfig): Promise
       challengeBinding: 'mppx-managed',
       hasSplits: true,
       canSettle: true,
-      amountPolicy: 'fixed 1 USDC → 0.8 merchant + 0.2 fee (Permit2 batch)',
+      amountPolicy: 'fixed 1 USDT → 0.8 merchant + 0.2 fee (Permit2 batch)',
     },
     {
       path: '/api/hash-only',
@@ -251,7 +251,7 @@ export async function buildDeploymentConfig(config: ChargeServerConfig): Promise
       challengeBinding: 'mppx-managed',
       hasSplits: false,
       canSettle: false,
-      amountPolicy: 'fixed 1 USDC',
+      amountPolicy: 'fixed 1 USDT',
     },
     {
       path: '/api/stored/article',
@@ -259,21 +259,21 @@ export async function buildDeploymentConfig(config: ChargeServerConfig): Promise
       challengeBinding: 'stored-lookup',
       hasSplits: false,
       canSettle: true,
-      amountPolicy: 'fixed 1 USDC',
+      amountPolicy: 'fixed 1 USDT',
     },
   ]
 
   return {
-    chain: 'sepolia',
+    chain: 'bsc-testnet',
     chainId: r.chainId,
-    token: 'USDC',
+    token: 'TEST_USDT',
     currency: r.currency,
     decimals: r.decimals,
     credentialTypes: fullTypes,
     permit2Address: r.permit2Address,
     recipient: config.recipient,
     canSettle: true,
-    explorerUrl: 'https://sepolia.etherscan.io',
+    explorerUrl: 'https://testnet.bscscan.com',
     routes,
   }
 }

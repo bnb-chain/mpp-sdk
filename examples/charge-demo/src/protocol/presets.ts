@@ -11,21 +11,19 @@
  *     into the wire request shape.
  *
  *   - Explorer / faucet URLs are per-chain conveniences for the UI
- *     ("View tx on Sepolia Etherscan", "Get test USDC from Circle
+ *     ("View tx on BscScan testnet", "Get tBNB from the BNB Chain
  *     faucet"). Not part of the SDK contract; just demo ergonomics.
  */
 
 import { type Address } from 'viem'
-import { base, bsc, mainnet, sepolia } from 'viem/chains'
+import { bscTestnet } from 'viem/chains'
 
 /**
  * Chains the demo wallet integration knows about for switch / add prompts.
- * Used by `canSettleOnChain` to gate on-chain broadcast. Sepolia is the
- * only chain we settle on; the mainnet presets exist purely for the
- * WIRE-shape-only demo paths (no on-chain settlement — viem's chain
- * metadata is only used for EIP-712 domain formatting).
+ * Used by `canSettleOnChain` to gate on-chain broadcast. The demo is
+ * single-chain: BSC Testnet (chainId 97) is the only chain we settle on.
  */
-const KNOWN_CHAIN_IDS: ReadonlySet<number> = new Set<number>([sepolia.id])
+const KNOWN_CHAIN_IDS: ReadonlySet<number> = new Set<number>([bscTestnet.id])
 
 /* -------------------------------------------------------------------------- */
 /*  Chain presets                                                              */
@@ -52,59 +50,30 @@ export interface ChainPreset {
 }
 
 /**
- * Chain dropdown contents. Sepolia is the recommended (and only fully
- * end-to-end) option; mainnet entries stay for the wire-shape inspect
- * paths so the demo still showcases multi-chain token addresses + EIP-712
- * domain differences (mainnet USDC `name: "USD Coin"` vs sepolia USDC
- * `name: "USDC"`).
+ * Chain dropdown contents. Single-chain demo: BSC Testnet (chainId 97)
+ * with PancakeSwap test USDT. It's the only settle-capable preset, so
+ * `hash` broadcasts a real on-chain transfer and `permit2` signs against
+ * its currency address.
  */
 export const CHAIN_PRESETS: readonly ChainPreset[] = [
   {
-    key: 'sepolia',
-    label: 'Sepolia (testnet, Circle USDC) — recommended',
-    chainId: sepolia.id, // 11155111
-    currency: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238',
-    decimals: 6,
-    token: 'USDC',
-    eip712: { name: 'USDC', version: '2' },
-    canSettle: true,
-    explorerUrl: 'https://sepolia.etherscan.io',
-    // Circle's official faucet for testnet USDC. Requires a Web3 wallet
-    // signed in via Coinbase / etc — point users at the URL and let them
-    // grab their own.
-    faucetUrl: 'https://faucet.circle.com',
-  },
-  {
-    key: 'ethereum',
-    label: 'Ethereum mainnet (wire-shape only)',
-    chainId: mainnet.id,
-    currency: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
-    decimals: 6,
-    token: 'USDC',
-    eip712: { name: 'USD Coin', version: '2' },
-    canSettle: false,
-    explorerUrl: 'https://etherscan.io',
-  },
-  {
-    key: 'base',
-    label: 'Base mainnet (wire-shape only)',
-    chainId: base.id,
-    currency: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
-    decimals: 6,
-    token: 'USDC',
-    eip712: { name: 'USD Coin', version: '2' },
-    canSettle: false,
-    explorerUrl: 'https://basescan.org',
-  },
-  {
-    key: 'bsc',
-    label: 'BSC mainnet (USDT, wire-shape only)',
-    chainId: bsc.id,
-    currency: '0x55d398326f99059ff775485246999027b3197955',
+    key: 'bsc-testnet',
+    label: 'BSC Testnet (USDT) — recommended',
+    chainId: bscTestnet.id, // 97
+    // PancakeSwap test USDT, verified on BscScan:
+    // https://testnet.bscscan.com/token/0x337610d27c682E347C9cD60BD4b3b107C9d34dDd
+    // On-chain probe (2026-06-08 via data-seed-prebsc-1-s1): symbol="USDT",
+    // name="USDT Token", decimals=18, chainId=97. Standard BEP-20 — no
+    // EIP-3009 — so the demo exposes `hash` + `permit2` only (no
+    // `authorization` path; `eip712` intentionally omitted).
+    currency: '0x337610d27c682E347C9cD60BD4b3b107C9d34dDd',
     decimals: 18,
     token: 'USDT',
-    canSettle: false,
-    explorerUrl: 'https://bscscan.com',
+    canSettle: true,
+    explorerUrl: 'https://testnet.bscscan.com',
+    // BNB Chain testnet faucet — dispenses tBNB for gas (required to
+    // broadcast the hash-path USDT transfer).
+    faucetUrl: 'https://testnet.bnbchain.org/faucet-smart',
   },
 ]
 
@@ -123,7 +92,7 @@ export function getPresetByChainId(chainId: number): ChainPreset | null {
 /* -------------------------------------------------------------------------- */
 
 /** Canonical Permit2 — deployed at the same address on every supported chain
- *  including Sepolia (verified ~9KB bytecode). */
+ *  including BSC Testnet (verified ~9KB bytecode at chainId 97). */
 export const PERMIT2_ADDRESS: Address = '0x000000000022d473030f116ddee9f6b43ac78ba3'
 
 /* -------------------------------------------------------------------------- */
@@ -150,7 +119,7 @@ export const CREDENTIAL_META: Readonly<Record<CredentialType, CredentialMeta>> =
     icon: '#',
     blurb: 'Reference an existing on-chain Transfer. No signing required.',
     realism:
-      'REAL: wallet broadcasts a USDC transfer on Sepolia; the credential references the actual tx hash.',
+      'REAL: wallet broadcasts a USDT transfer on BSC Testnet; the credential references the actual tx hash.',
     needsWallet: true,
     settlesOnChain: true,
   },
@@ -182,6 +151,18 @@ export const CREDENTIAL_META: Readonly<Record<CredentialType, CredentialMeta>> =
     settlesOnChain: false,
   },
 }
+
+/**
+ * Credential methods surfaced in the demo's tab bar. The demo intentionally
+ * showcases only `hash` (real on-chain settlement) and `permit2` (real
+ * wallet-signed EIP-712) on BSC Testnet USDT. `transaction` and
+ * `authorization` stay in the `CredentialType` union + action code (so the
+ * step pipeline keeps a complete switch), but are hidden from the UI —
+ * BSC Testnet USDT is a plain BEP-20 with no EIP-3009, so `authorization`
+ * wouldn't apply, and `transaction` is the in-page-key wire-shape path we're
+ * not demoing here.
+ */
+export const VISIBLE_CREDENTIAL_TYPES: readonly CredentialType[] = ['hash', 'permit2']
 
 /* -------------------------------------------------------------------------- */
 /*  Explorer link helpers                                                      */
@@ -225,9 +206,9 @@ export const STORAGE_KEYS = {
   realm: 'mpp-demo:realm',
   bindingMode: 'mpp-demo:bindingMode',
   amount: 'mpp-demo:amount',
-  // End-to-end mode against a real charge-server (default: on, pointing
-  // at the Vite dev-server proxy `/api/article` which forwards to
-  // localhost:3000 — see vite.config.ts).
+  // End-to-end (charge-server) mode is hidden in this build — the demo runs
+  // local-only. These keys are retained so the server-mode code paths still
+  // compile; `serverMode` is forced false in App.tsx (the toggle is gone).
   serverMode: 'mpp-demo:serverMode',
   serverEndpoint: 'mpp-demo:serverEndpoint',
 } as const

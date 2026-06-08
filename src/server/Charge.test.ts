@@ -230,14 +230,15 @@ describe('preflightCharge guards', () => {
     expect(result._resolved.resolvedCredentialTypes).toContain('hash')
   })
 
-  test('rejects sentinel zero-address curated token (TEST_USDT bsc-testnet placeholder)', async () => {
-    // TEST_USDT on bsc-testnet still carries the sentinel 0x000...000 in
-    // curated.ts pending real contract pinning. preflight MUST reject so
-    // zero-address `currency` never goes on the wire.
+  test('rejects sentinel zero-address curated token (TEST_USDT opbnb-testnet placeholder)', async () => {
+    // TEST_USDT on opbnb-testnet still carries the sentinel 0x000...000 in
+    // curated.ts pending real contract pinning (bsc-testnet was pinned to the
+    // PancakeSwap test USDT). preflight MUST reject so a zero-address
+    // `currency` never goes on the wire.
     await expect(
       preflightChargeForTest(
         {
-          chain: 'bsc-testnet',
+          chain: 'opbnb-testnet',
           token: 'TEST_USDT',
           recipient: RECIPIENT,
           credentialTypes: ['transaction', 'hash'],
@@ -251,10 +252,10 @@ describe('preflightCharge guards', () => {
   test('allowSentinelTokenAddress hook bypasses the sentinel check (live-test seam)', async () => {
     // Live-test scaffolds use this seam to point at not-yet-pinned curated
     // entries behind real testnet RPC. Without the seam, the rejection
-    // above is the last guard.
+    // above is the last guard. opbnb-testnet/TEST_USDT is still the sentinel.
     const result = await preflightChargeForTest(
       {
-        chain: 'bsc-testnet',
+        chain: 'opbnb-testnet',
         token: 'TEST_USDT',
         recipient: RECIPIENT,
         credentialTypes: ['transaction', 'hash'],
@@ -263,6 +264,25 @@ describe('preflightCharge guards', () => {
       { mockedIsContractDeployed: () => true, allowSentinelTokenAddress: true },
     )
     expect(result._resolved.currency).toBe('0x0000000000000000000000000000000000000000')
+  })
+
+  test('bsc-testnet/TEST_USDT resolves to the pinned PancakeSwap USDT (18 dec)', async () => {
+    // bsc-testnet/TEST_USDT is pinned to the real PancakeSwap test USDT, so
+    // preflight resolves it (no sentinel rejection) and surfaces permit2 /
+    // transaction / hash (no EIP-3009 → no authorization).
+    const result = await preflightChargeForTest(
+      {
+        chain: 'bsc-testnet',
+        token: 'TEST_USDT',
+        recipient: RECIPIENT,
+        settlementAccount: SETTLEMENT,
+        challengeBinding: { mode: 'mppx-hmac', secretKey: 'test-secret' },
+      },
+      { mockedIsContractDeployed: () => true },
+    )
+    expect(result._resolved.currency).toBe('0x337610d27c682E347C9cD60BD4b3b107C9d34dDd')
+    expect(result._resolved.decimals).toBe(18)
+    expect(result._resolved.resolvedCredentialTypes).toEqual(['permit2', 'transaction', 'hash'])
   })
 
   test('rejects splits with non-permit2 credentialTypes', async () => {

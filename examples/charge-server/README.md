@@ -1,14 +1,16 @@
 # charge-server example
 
 Minimal Hono HTTP server demoing `@bnb-chain/mpp/server`. Several protected
-routes gate content behind a USDC payment on **Ethereum Sepolia** (see
-[Routes](#routes)); the default `/api/article` accepts all four credential
-types — `authorization` (EIP-3009), `permit2`, `transaction`, `hash`.
+routes gate content behind a USDT payment on **BSC Testnet (chainId 97)** (see
+[Routes](#routes)); the default `/api/article` accepts the three credential
+types the token supports — `permit2`, `transaction`, `hash`. (The token is
+PancakeSwap's test USDT, a plain BEP-20 with no EIP-3009, so there is no
+`authorization` path.)
 
-Because `permit2` + `authorization` settle server-side (the server
-broadcasts `permitWitnessTransferFrom` / `transferWithAuthorization`),
-this example **requires a server-side settlement signer**
-(`SETTLEMENT_PRIVATE_KEY`). That signer must hold Sepolia ETH for gas.
+Because `permit2` settles server-side (the server broadcasts
+`permitWitnessTransferFrom`), this example **requires a server-side
+settlement signer** (`SETTLEMENT_PRIVATE_KEY`). That signer must hold tBNB
+(BSC Testnet) for gas.
 
 ## Run
 
@@ -16,12 +18,12 @@ this example **requires a server-side settlement signer**
 cd examples/charge-server
 cp .env.example .env
 # Edit .env:
-#   RECIPIENT_ADDRESS       merchant address that receives the USDC (REQUIRED)
+#   RECIPIENT_ADDRESS       merchant address that receives the USDT (REQUIRED)
 #   MPP_SECRET_KEY          `openssl rand -hex 32` — HMAC challenge-binding key (REQUIRED)
 #   SETTLEMENT_PRIVATE_KEY  0x + 64 hex (or bare 64 hex) — server signer that
-#                           broadcasts permit2/authorization settlement (REQUIRED).
-#                           MUST hold Sepolia ETH for gas.
-#   RPC_URL                 optional Sepolia RPC; defaults to publicnode
+#                           broadcasts permit2 settlement (REQUIRED).
+#                           MUST hold tBNB for gas.
+#   RPC_URL                 optional BSC Testnet RPC; defaults to the public data-seed endpoint
 #   PORT                    optional, default 3000
 pnpm --filter @bnb-chain/mpp-example-charge-server start
 ```
@@ -50,10 +52,10 @@ address.
 
 | Route                        | What it shows                                                                                     |
 | ---------------------------- | ------------------------------------------------------------------------------------------------- |
-| `GET /api/article`           | Fixed 1 USDC — the canonical happy path.                                                          |
-| `GET /api/download?order=ID` | Fixed 1 USDC + `externalId` bound into the receipt (order reconciliation).                        |
-| `GET /api/tip?amount=2.50`   | Dynamic amount, server-validated to 0.10–100 USDC (missing / out-of-range / non-numeric → 400).   |
-| `GET /api/split`             | 1 USDC settled as a 2-entry Permit2 batch — merchant + a configured platform fee.                 |
+| `GET /api/article`           | Fixed 1 USDT — the canonical happy path.                                                          |
+| `GET /api/download?order=ID` | Fixed 1 USDT + `externalId` bound into the receipt (order reconciliation).                        |
+| `GET /api/tip?amount=2.50`   | Dynamic amount, server-validated to 0.10–100 USDT (missing / out-of-range / non-numeric → 400).   |
+| `GET /api/split`             | 1 USDT settled as a 2-entry Permit2 batch — merchant + a configured platform fee.                 |
 | `GET /api/hash-only`         | Payer-funded: advertises only `transaction` / `hash`, runs with NO settlement signer.             |
 | `GET /api/stored/article`    | Stored-lookup challenge binding (§8.0.1) — HMAC-free; the server remembers each issued challenge. |
 
@@ -90,13 +92,13 @@ WWW-Authenticate: Payment id="..."; realm="..."; method="evm"; intent="charge"; 
 ```
 
 The base64url `request` decodes to the wire challenge — `chainId`
-11155111, `credentialTypes` `["authorization","permit2","transaction","hash"]`,
-`permit2Address`, `permit2Spender`, `decimals`, `recipient`.
+97, `credentialTypes` `["permit2","transaction","hash"]`,
+`permit2Address`, `permit2Spender`, `decimals` (18), `recipient`.
 
 ## Test the settlement phase
 
 Build a credential client-side from `@bnb-chain/mpp/client` and re-hit
-the route. `hash` is the simplest (you broadcast the USDC transfer
+the route. `hash` is the simplest (you broadcast the USDT transfer
 yourself first):
 
 ```ts
@@ -123,18 +125,17 @@ console.log(paid.status) // 200
 console.log(paid.headers.get('Payment-Receipt'))
 ```
 
-For `permit2` / `authorization`, use `createPermit2Credential` /
-`createAuthorizationCredential`; those sign EIP-712 typed data and the
-server settles on-chain. The browser demo (`examples/charge-demo`) drives
-all four end-to-end against this server.
+For `permit2`, use `createPermit2Credential`; it signs EIP-712 typed data
+and the server settles on-chain. The browser demo (`examples/charge-demo`)
+drives `hash` + `permit2` end-to-end against this server.
 
-## Configuration knobs in `src/index.ts`
+## Configuration knobs in `src/handler.ts`
 
-- `credentialTypes` — defaults to the full EIP-3009 set for sepolia/USDC
-  (`["authorization","permit2","transaction","hash"]`). Restrict it to
-  `["transaction","hash"]` to run **without** a settlement signer (those
-  two don't settle server-side).
-- `chain` / `token` — `sepolia` / `USDC`. Swap to another curated
+- `credentialTypes` — defaults to the matrix set for bsc-testnet/TEST_USDT
+  (`["permit2","transaction","hash"]` — no EIP-3009, so no `authorization`).
+  Restrict it to `["transaction","hash"]` to run **without** a settlement
+  signer (those two don't settle server-side).
+- `chain` / `token` — `bsc-testnet` / `TEST_USDT`. Swap to another curated
   `(chain, token)` pair from `src/server/curated.ts`.
 - `challengeBinding` — `mppx-managed` here.
 
@@ -159,7 +160,7 @@ import Redis from 'ioredis'
 import { createRedisChargeStore } from './redisStore.js'
 
 const store = createRedisChargeStore(new Redis(process.env.REDIS_URL!))
-await chargeAsync({ chain: 'sepolia', token: 'USDC', recipient, store /* … */ })
+await chargeAsync({ chain: 'bsc-testnet', token: 'TEST_USDT', recipient, store /* … */ })
 ```
 
 mppx also ships `Store.upstash` (Vercel KV) and `Store.cloudflare` (KV). See
@@ -168,7 +169,7 @@ model the store backs.
 
 ## Hardening (fee-payer protection)
 
-`permit2` / `authorization` settle server-side — the server pays gas — so a
+`permit2` settles server-side — the server pays gas — so a
 fee-paying deployment needs the draft §10.6 guards. `src/hardening.ts` ships
 illustrative (in-memory, single-instance) skeletons, wired in `index.ts`:
 
@@ -191,5 +192,5 @@ client authentication + a payer balance pre-check.
 
 - **A real merchant treasury.** `RECIPIENT_ADDRESS` is whatever you set;
   the example doesn't open a wallet for you.
-- **A private RPC.** Defaults to publicnode; pin your own for real
-  traffic via `RPC_URL`.
+- **A private RPC.** Defaults to the public BSC Testnet data-seed endpoint;
+  pin your own (NodeReal / QuickNode) for real traffic via `RPC_URL`.

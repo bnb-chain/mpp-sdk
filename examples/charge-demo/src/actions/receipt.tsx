@@ -53,8 +53,8 @@ export function buildReceiptLocal(state: DemoState): ActionResult {
         </div>
       ) : (
         <div className="text-xs text-emerald-300">
-          ✓ <code className="font-mono">reference</code> is the real Sepolia settlement tx hash from
-          the hash credential's broadcast.
+          ✓ <code className="font-mono">reference</code> is the real BSC Testnet settlement tx hash
+          from the hash credential's broadcast.
         </div>
       )}
       {explorerLink && (

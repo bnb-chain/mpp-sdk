@@ -1,7 +1,11 @@
 import * as React from 'react'
 
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { CREDENTIAL_META, type CredentialType } from '@/protocol/presets.js'
+import {
+  CREDENTIAL_META,
+  type CredentialType,
+  VISIBLE_CREDENTIAL_TYPES,
+} from '@/protocol/presets.js'
 
 export function CredentialTabsBar({
   value,
@@ -13,7 +17,7 @@ export function CredentialTabsBar({
   return (
     <Tabs value={value} onValueChange={(v) => onChange(v as CredentialType)}>
       <TabsList>
-        {(Object.keys(CREDENTIAL_META) as CredentialType[]).map((type) => {
+        {VISIBLE_CREDENTIAL_TYPES.map((type) => {
           const meta = CREDENTIAL_META[type]
           return (
             <TabsTrigger key={type} value={type}>

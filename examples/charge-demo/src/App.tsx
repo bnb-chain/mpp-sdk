@@ -16,11 +16,12 @@ import { ServerConfigPanel } from '@/components/ServerConfigPanel'
 import { SplitsEditor } from '@/components/SplitsEditor'
 import { StatusBar } from '@/components/StatusBar'
 import { StepBar, StepButtons } from '@/components/StepBar'
-import { usePersistedBoolean, usePersistedString } from '@/hooks/usePersistedState'
+import { usePersistedString } from '@/hooks/usePersistedState'
 import {
   CHAIN_PRESETS,
   STORAGE_KEYS,
   type CredentialType,
+  VISIBLE_CREDENTIAL_TYPES,
   getPresetByKey,
   savePersisted,
 } from '@/protocol/presets.js'
@@ -35,7 +36,7 @@ import {
 const DEFAULT_RECIPIENT = '0x2222222222222222222222222222222222222222'
 const DEFAULT_REALM = 'https://demo.example.com/'
 const DEFAULT_AMOUNT = '1.0'
-const DEFAULT_CHAIN_KEY = 'sepolia'
+const DEFAULT_CHAIN_KEY = 'bsc-testnet'
 const DEFAULT_CREDENTIAL_TYPE: CredentialType = 'hash'
 const DEFAULT_BINDING_MODE = 'mppx-hmac'
 const DEFAULT_ENDPOINT = '/api/article'
@@ -58,10 +59,18 @@ export function App(): JSX.Element {
     STORAGE_KEYS.credentialType,
     DEFAULT_CREDENTIAL_TYPE,
   )
-  const [chainKey, setChainKeyRaw] = usePersistedString<string>(
+  const [chainKeyRaw, setChainKeyRaw] = usePersistedString<string>(
     STORAGE_KEYS.chainKey,
     DEFAULT_CHAIN_KEY,
   )
+  // A chainKey persisted by an earlier build (e.g. 'sepolia') may no longer
+  // exist in CHAIN_PRESETS. Coerce unknown keys to the default
+  // SYNCHRONOUSLY — getPresetByKey throws on unknown keys and runs during
+  // render (the amountBase memo below), so an effect-based fix is too late.
+  // The savePersisted effect further down then rewrites the corrected value.
+  const chainKey = CHAIN_PRESETS.some((p) => p.key === chainKeyRaw)
+    ? chainKeyRaw
+    : DEFAULT_CHAIN_KEY
   const [bindingMode, setBindingModeRaw] = usePersistedString<DemoState['bindingMode']>(
     STORAGE_KEYS.bindingMode,
     DEFAULT_BINDING_MODE,
@@ -75,8 +84,13 @@ export function App(): JSX.Element {
     DEFAULT_RECIPIENT,
   )
   const [realm, setRealmRaw] = usePersistedString<string>(STORAGE_KEYS.realm, DEFAULT_REALM)
-  const [serverMode, setServerModeRaw] = usePersistedBoolean(STORAGE_KEYS.serverMode, true)
-  const [serverEndpoint, setServerEndpointRaw] = usePersistedString<string>(
+  // End-to-end (charge-server) mode is ALWAYS ON in this build, and the
+  // on/off toggle is hidden. Both Hash and Permit2 settle for real against
+  // the charge-server: step 1 fetches a live 402, step 4 submits the
+  // credential back for settlement. Forced true (not persisted) so the demo
+  // can't be flipped into local-only mode from a stale localStorage value.
+  const serverMode = true
+  const [serverEndpoint] = usePersistedString<string>(
     STORAGE_KEYS.serverEndpoint,
     DEFAULT_ENDPOINT,
   )
@@ -154,20 +168,6 @@ export function App(): JSX.Element {
     },
     [setRealmRaw, resetAllPools],
   )
-  const setServerMode = useCallback(
-    (v: boolean) => {
-      setServerModeRaw(v)
-      resetAllPools()
-    },
-    [setServerModeRaw, resetAllPools],
-  )
-  const setServerEndpoint = useCallback(
-    (v: string) => {
-      setServerEndpointRaw(v)
-      resetAllPools()
-    },
-    [setServerEndpointRaw, resetAllPools],
-  )
 
   // Splits change → only the Permit2 pool's challenge is invalidated
   // (splits ride only on Permit2 per spec §4.2.3).
@@ -179,7 +179,17 @@ export function App(): JSX.Element {
     [resetPool],
   )
 
-  // Force binding mode to mppx-managed when server mode is on.
+  // Only `hash` + `permit2` are surfaced in the tab bar. If a prior session
+  // persisted a now-hidden type (`transaction` / `authorization`), coerce it
+  // back to `hash` so the active tab always has a visible trigger.
+  useEffect(() => {
+    if (!VISIBLE_CREDENTIAL_TYPES.includes(credentialType)) {
+      setCredentialType(DEFAULT_CREDENTIAL_TYPE)
+    }
+  }, [credentialType, setCredentialType])
+
+  // Force binding mode to mppx-managed in server mode (always on here) — the
+  // charge-server's routes use mppx-managed, so the local form must match.
   useEffect(() => {
     if (serverMode && bindingMode !== 'mppx-managed') {
       setBindingModeRaw('mppx-managed')
@@ -616,9 +626,7 @@ export function App(): JSX.Element {
           realm={realm}
           setRealm={setRealm}
           serverMode={serverMode}
-          setServerMode={setServerMode}
           serverEndpoint={serverEndpoint}
-          setServerEndpoint={setServerEndpoint}
         />
         <ServerConfigPanel serverEndpoint={serverEndpoint} enabled={serverMode} />
         {showSplits && (
@@ -677,10 +685,11 @@ export function App(): JSX.Element {
             )}
           </div>
           <div>
-            On-chain settlement happens only when the wallet is on{' '}
-            <span className="font-mono">Sepolia</span>; mainnet entries are wire-shape-only inspect
-            targets. Server-side verifier lives in{' '}
-            <span className="font-mono">examples/charge-server</span>; testnet e2e scaffolds in{' '}
+            On-chain settlement happens when the wallet is on{' '}
+            <span className="font-mono">BSC Testnet</span> (chainId 97) holding test{' '}
+            <span className="font-mono">USDT</span> + tBNB for gas. This build demos the{' '}
+            <span className="font-mono">hash</span> and <span className="font-mono">permit2</span>{' '}
+            methods locally; testnet e2e scaffolds live in{' '}
             <span className="font-mono">test/live/*</span>.
           </div>
         </footer>

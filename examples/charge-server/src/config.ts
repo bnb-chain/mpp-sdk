@@ -12,9 +12,9 @@
  *                             binding (REQUIRED; `openssl rand -hex 32`)
  *   SETTLEMENT_PRIVATE_KEY    0x-prefixed 32-byte hex private key for the
  *                             server-side settlement signer. Required for
- *                             permit2 / authorization (which broadcast a
- *                             settlement tx). Must hold Sepolia ETH for gas.
- *   RPC_URL                   (optional) custom Sepolia RPC. Defaults to
+ *                             permit2 (which broadcasts a settlement tx).
+ *                             Must hold tBNB (BSC Testnet) for gas.
+ *   RPC_URL                   (optional) custom BSC Testnet RPC. Defaults to
  *                             viem's bundled public provider (rate-limited).
  *   PORT                      (optional) HTTP port, default 3000.
  */
@@ -28,9 +28,9 @@ export interface ChargeServerConfig {
   recipient: `0x${string}`
   /** HMAC secret for mppx-managed challenge binding. */
   secret: string
-  /** Server-side settlement signer (permit2 / authorization). */
+  /** Server-side settlement signer (permit2). */
   settlementAccount: PrivateKeyAccount
-  /** Optional custom Sepolia RPC; undefined → viem's bundled provider. */
+  /** Optional custom BSC Testnet RPC; undefined → viem's bundled provider. */
   rpcUrl: string | undefined
   /** HTTP port. */
   port: number
@@ -108,17 +108,17 @@ export function loadConfig(): ChargeServerConfig {
     )
   }
 
-  // SETTLEMENT_PRIVATE_KEY validation: required because we ship all four
-  // credential types, including permit2 + authorization which broadcast a
-  // settlement tx server-side. Without a signer, preflightCharge would
-  // throw with "permit2/authorization require settlementAccount" anyway —
-  // catch it here with a friendlier message that names the env var.
+  // SETTLEMENT_PRIVATE_KEY validation: required because the BSC Testnet USDT
+  // deployment advertises permit2, which broadcasts a settlement tx
+  // server-side. Without a signer, preflightCharge would throw with
+  // "permit2 requires settlementAccount" anyway — catch it here with a
+  // friendlier message that names the env var.
   if (!SETTLEMENT_PK_RAW) {
     throw new Error(
       'SETTLEMENT_PRIVATE_KEY env var must be set (server-side settlement signer for ' +
-        'permit2 + authorization credentials). Generate with `openssl rand -hex 32` ' +
-        'and prefix with 0x, then put it in .env. The account MUST hold Sepolia ETH ' +
-        'for gas — fund via https://sepoliafaucet.com or Circle/Google faucets.',
+        'permit2 credentials). Generate with `openssl rand -hex 32` ' +
+        'and prefix with 0x, then put it in .env. The account MUST hold tBNB ' +
+        'for gas — fund via https://testnet.bnbchain.org/faucet-smart.',
     )
   }
   // Accept both 0x-prefixed (66 chars) and bare hex (64 chars — what

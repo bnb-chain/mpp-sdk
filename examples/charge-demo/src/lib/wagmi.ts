@@ -1,15 +1,14 @@
 import { connectorsForWallets } from '@rainbow-me/rainbowkit'
 import { metaMaskWallet } from '@rainbow-me/rainbowkit/wallets'
 import { http, createConfig } from 'wagmi'
-import { sepolia } from 'wagmi/chains'
+import { bscTestnet } from 'wagmi/chains'
 
 /**
- * Wagmi config — Sepolia only.
+ * Wagmi config — BSC Testnet only.
  *
- * Sepolia is the only chain the demo can actually broadcast on, so it's
- * the only one the wallet needs to switch / add. The other `CHAIN_PRESETS`
- * entries are wire-shape inspect targets — we never broadcast against them,
- * so the wallet doesn't need to know about them.
+ * BSC Testnet (chainId 97) is the only chain the demo settles on, so it's
+ * the only one the wallet needs to switch / add. `hash` broadcasts a real
+ * USDT transfer here and `permit2` signs against the same chain.
  *
  * RainbowKit's `injected` connector covers MetaMask and other compatible
  * extensions automatically.
@@ -28,23 +27,21 @@ const connectors = connectorsForWallets(
 )
 
 /**
- * Sepolia RPC URL — defaults to publicnode (no rate limits at demo
- * volume, no API key required). viem's bare `http()` falls back to an
- * Ankr-flavoured public endpoint that 429s after a few requests, which
- * breaks the demo's auto-fetch + balance refresh loop. Override per-
- * deployment via `VITE_SEPOLIA_RPC_URL` (e.g. an Alchemy / Infura URL
- * with your own API key) when needed.
+ * BSC Testnet RPC URL — defaults to the public data-seed endpoint (no API
+ * key required at demo volume). Override per-deployment via
+ * `VITE_BSC_TESTNET_RPC_URL` (e.g. a NodeReal / QuickNode URL with your own
+ * key) when the public endpoint rate-limits the balance-refresh loop.
  */
-const SEPOLIA_RPC_URL =
-  import.meta.env.VITE_SEPOLIA_RPC_URL ?? 'https://ethereum-sepolia-rpc.publicnode.com'
+const BSC_TESTNET_RPC_URL =
+  import.meta.env.VITE_BSC_TESTNET_RPC_URL ?? 'https://data-seed-prebsc-1-s1.binance.org:8545'
 
 export const wagmiConfig = createConfig({
-  chains: [sepolia],
+  chains: [bscTestnet],
   connectors,
   transports: {
-    [sepolia.id]: http(SEPOLIA_RPC_URL),
+    [bscTestnet.id]: http(BSC_TESTNET_RPC_URL),
   },
   ssr: false,
 })
 
-export { sepolia }
+export { bscTestnet }

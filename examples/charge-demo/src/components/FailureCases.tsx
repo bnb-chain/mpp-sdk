@@ -29,7 +29,7 @@ import { type ChainPreset, PERMIT2_ADDRESS } from '@/protocol/presets.js'
 export interface FailureBaseline {
   readonly preset: ChainPreset
   readonly recipient: Address
-  /** Total amount in base units (e.g. "1000000" for 1 USDC). */
+  /** Total amount in base units (e.g. "1000000000000000000" for 1 USDT @ 18 dec). */
   readonly amountBaseUnits: string
   readonly realm: string
 }

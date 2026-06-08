@@ -197,7 +197,7 @@ export function Permit2AllowancePanel({
             <span>
               <span className="font-mono text-primary">{preset.label}</span> is a wire-shape-only
               preset (no on-chain settlement in this demo) — Permit2 allowance approval is only
-              available on settle-capable testnet presets (Sepolia).
+              available on the settle-capable BSC Testnet preset.
             </span>
           )}
         </CardContent>

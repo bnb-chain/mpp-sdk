@@ -546,12 +546,30 @@ const TOKEN_MATRIX: Readonly<
       eip3009Supported: false,
     },
   },
-  // ── BSC Testnet (TEST_USDT — third-party deploy; documented in README) ──
+  // ── BSC Testnet (TEST_USDT — PancakeSwap test USDT, pinned) ──
   'bsc-testnet': {
     TEST_USDT: {
-      // ⚠️ TODO: pin BscScan-verified testnet contract address
-      // here before live-test PR lands. This sentinel zero address forces an
-      // explicit human review before any live test broadcasts.
+      // PancakeSwap test USDT, verified on BscScan testnet:
+      // https://testnet.bscscan.com/token/0x337610d27c682E347C9cD60BD4b3b107C9d34dDd
+      // On-chain probe (2026-06-08 via data-seed-prebsc-1-s1.binance.org):
+      // symbol="USDT", name="USDT Token", decimals=18, chainId=97. Standard
+      // BEP-20 — no EIP-3009, so it advertises permit2 / transaction / hash
+      // only. Pinned for the interactive charge-demo + charge-server
+      // end-to-end testnet settlement (Permit2 deployed at the canonical
+      // address on chain 97, verified ~9KB bytecode).
+      address: '0x337610d27c682E347C9cD60BD4b3b107C9d34dDd',
+      decimals: 18,
+      eip3009Supported: false,
+    },
+  },
+  // ── opBNB Testnet (TEST_USDT — NOT yet pinned) ──
+  'opbnb-testnet': {
+    TEST_USDT: {
+      // ⚠️ TODO: pin an opBNB-testnet-verified contract address here before
+      // the opBNB live-test PR lands. This sentinel zero address forces an
+      // explicit human review before any live test broadcasts, and keeps the
+      // preflight sentinel-zero-address rejection guard exercised
+      // (see src/server/Charge.test.ts).
       address: '0x0000000000000000000000000000000000000000',
       decimals: 18,
       eip3009Supported: false,

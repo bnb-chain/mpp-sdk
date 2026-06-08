@@ -27,7 +27,7 @@
  *   import { createRedisChargeStore } from './redisStore.js'
  *
  *   const store = createRedisChargeStore(new Redis(process.env.REDIS_URL!))
- *   await chargeAsync({ chain: 'sepolia', token: 'USDC', recipient, store, ... })
+ *   await chargeAsync({ chain: 'bsc-testnet', token: 'TEST_USDT', recipient, store, ... })
  *
  * The `RedisLike` surface is the ioredis / Valkey `eval(script, numKeys, ...)`
  * shape. node-redis v4's `eval(script, { keys, arguments })` differs — wrap it

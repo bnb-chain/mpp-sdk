@@ -1,3 +1,4 @@
+import { Server } from 'lucide-react'
 import * as React from 'react'
 
 import { Card, CardContent } from '@/components/ui/card'
@@ -11,7 +12,6 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
-import { Switch } from '@/components/ui/switch'
 import { CHAIN_PRESETS } from '@/protocol/presets.js'
 import { type BindingMode } from '@/state/types'
 
@@ -27,10 +27,10 @@ interface Props {
   setRecipient: (v: string) => void
   realm: string
   setRealm: (v: string) => void
+  /** End-to-end (charge-server) mode. Always on in this build — the toggle is
+   *  hidden, but the flag still drives the server-managed field locks. */
   serverMode: boolean
-  setServerMode: (v: boolean) => void
   serverEndpoint: string
-  setServerEndpoint: (v: string) => void
 }
 
 const lockedClass = 'opacity-60 cursor-not-allowed'
@@ -49,12 +49,11 @@ export function ConfigPanel(props: Props): JSX.Element {
     realm,
     setRealm,
     serverMode,
-    setServerMode,
     serverEndpoint,
-    setServerEndpoint,
   } = props
 
-  // Server-managed fields are locked (chain / recipient / realm / amount).
+  // In end-to-end mode chain / token / recipient / amount / realm come from
+  // the server's 402 challenge, so the form fields are read-only mirrors.
   const fieldLockTitle = serverMode
     ? 'Server-managed in end-to-end mode — value comes from the 402 challenge.'
     : undefined
@@ -146,36 +145,21 @@ export function ConfigPanel(props: Props): JSX.Element {
           </div>
         </div>
 
-        <Separator />
-
-        {/* End-to-end mode row */}
-        <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            <Switch checked={serverMode} onCheckedChange={setServerMode} id="server-mode" />
-            <Label htmlFor="server-mode" className="text-xs font-medium">
-              End-to-end mode — fetch real 402 + submit credential to charge-server
-            </Label>
-          </div>
-          {serverMode && (
-            <div className="space-y-1.5 pl-12">
-              <Label className="text-xs font-medium text-muted-foreground">
-                Server endpoint (Vite proxies <span className="font-mono text-primary">/api</span> →{' '}
-                <span className="font-mono text-primary">localhost:3000</span>)
-              </Label>
-              <Input
-                value={serverEndpoint}
-                onChange={(e) => setServerEndpoint(e.target.value)}
-                className="font-mono"
-              />
-              <div className="text-[11px] leading-relaxed text-muted-foreground">
-                When end-to-end mode is on: binding-mode is forced to{' '}
-                <span className="font-mono text-primary">mppx-managed</span>, and chain / token /
-                recipient / amount come from the server's 402 (your form values for those fields are
-                overwritten on step&nbsp;1).
-              </div>
+        {serverMode && (
+          <>
+            <Separator />
+            <div className="flex items-center gap-2 text-[11px] leading-relaxed text-muted-foreground">
+              <Server className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+              <span>
+                End-to-end mode: this demo fetches a real <span className="font-mono">402</span> from{' '}
+                <span className="font-mono text-primary">{serverEndpoint}</span> and submits the
+                credential back to the charge-server for settlement. Chain / token / recipient /
+                amount above mirror the server's challenge (read-only), and the binding mode is{' '}
+                <span className="font-mono text-primary">mppx-managed</span>.
+              </span>
             </div>
-          )}
-        </div>
+          </>
+        )}
       </CardContent>
     </Card>
   )
