@@ -1,7 +1,7 @@
 {
   "name": "@bnb-chain/mpp-example-charge-demo",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Browser-based interactive demo for @bnb-chain/mpp — React 18 + shadcn/ui + wagmi v2 + RainbowKit. Exercises all 4 credential types, 3 challenge binding modes, splits, receipt codec, and chargeFromDecimal end-to-end against the charge-server.",
   "type": "module",
   "scripts": {

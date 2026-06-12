@@ -1,7 +1,7 @@
 {
   "name": "@bnb-chain/mpp-example-charge-server",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Minimal Hono-based HTTP server demoing @bnb-chain/mpp/server with a 402 → settlement → Payment-Receipt flow.",
   "type": "module",
   "scripts": {
