@@ -70,13 +70,6 @@
   "engines": {
     "node": ">=22"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "bufferutil",
-      "keccak",
-      "utf-8-validate"
-    ]
-  },
   "keywords": [
     "mpp",
     "mppx",
