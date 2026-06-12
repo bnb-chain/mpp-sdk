@@ -7,6 +7,10 @@
  *   - On-chain pre-broadcast failures release the slot (nonce unconsumed).
  *   - Post-broadcast: revert → release; success + log mismatch → markRejected
  *     (token consumed nonce on-chain).
+ *   - Front-run recovery (both entry points): recovered → consume + receipt
+ *     referencing the front-runner tx; pending (shallow depth / consuming tx
+ *     outside search window) → retryable, slot stays inflight; none
+ *     (unconsumed / genuine cancel) → release + original error.
  *   - Happy path → markConsumed + receipt.
  *   - Replay pre-state terminal.
  */
@@ -124,21 +128,92 @@ function buildReceipt(logs: Log[], status: 'success' | 'reverted' = 'success'): 
   } as TransactionReceipt
 }
 
+/** Captured getLogs filter — the probe must scope queries to the exact credential. */
+interface CapturedGetLogsCall {
+  address: `0x${string}` | undefined
+  eventName: string | undefined
+  args: Record<string, unknown> | undefined
+  fromBlock: bigint | undefined
+  toBlock: bigint | undefined
+}
+
+/** Captured readContract call — target address + positional args. */
+interface CapturedReadContractCall {
+  functionName: string
+  address: `0x${string}` | undefined
+  args: readonly unknown[] | undefined
+}
+
 interface StubPublicClientConfig {
   balance?: bigint
   simulateError?: Error
   receipt?: TransactionReceipt
+  /** EIP-3009 `authorizationState(authorizer, nonce)` result for the front-run recovery probe. */
+  authorizationState?: boolean
+  /** AuthorizationUsed logs returned by getLogs during front-run recovery. */
+  usedLogs?: Array<{ transactionHash: `0x${string}` }>
+  /** AuthorizationCanceled logs returned by getLogs during front-run recovery. */
+  canceledLogs?: Array<{ transactionHash: `0x${string}` }>
+  /** Receipt returned by getTransactionReceipt for the front-runner tx. */
+  frontRunReceipt?: TransactionReceipt
+  /** getBlockNumber result (chain tip seen by the probe). Default 1000n. */
+  latestBlock?: bigint
+  /** Assertion hook — records every hash requested via getTransactionReceipt. */
+  requestedReceiptHashes?: Array<`0x${string}`>
+  /** Assertion hook — records every getLogs filter (event + args + window). */
+  getLogsCalls?: CapturedGetLogsCall[]
+  /** Assertion hook — records every readContract call (target + args). */
+  readContractCalls?: CapturedReadContractCall[]
 }
 
 function stubPublicClient(config: StubPublicClientConfig = {}): PublicClient {
   return {
-    async readContract({ functionName }: { functionName: string }) {
+    async readContract({
+      functionName,
+      address,
+      args,
+    }: {
+      functionName: string
+      address?: `0x${string}`
+      args?: readonly unknown[]
+    }) {
+      config.readContractCalls?.push({ functionName, address, args })
       if (functionName === 'balanceOf') return config.balance ?? BigInt(AMOUNT) * 10n
+      if (functionName === 'authorizationState') {
+        if (config.authorizationState === undefined)
+          throw new Error('unexpected readContract: authorizationState')
+        return config.authorizationState
+      }
       throw new Error(`unexpected readContract: ${functionName}`)
     },
     async simulateContract() {
       if (config.simulateError) throw config.simulateError
       return { result: undefined, request: {} }
+    },
+    async getBlockNumber() {
+      return config.latestBlock ?? 1000n
+    },
+    async getLogs(params: {
+      address?: `0x${string}`
+      event?: { name?: string }
+      args?: Record<string, unknown>
+      fromBlock?: bigint
+      toBlock?: bigint
+    }) {
+      config.getLogsCalls?.push({
+        address: params.address,
+        eventName: params.event?.name,
+        args: params.args,
+        fromBlock: params.fromBlock,
+        toBlock: params.toBlock,
+      })
+      if (params.event?.name === 'AuthorizationCanceled') return config.canceledLogs ?? []
+      return config.usedLogs ?? []
+    },
+    async getTransactionReceipt({ hash }: { hash: `0x${string}` }) {
+      config.requestedReceiptHashes?.push(hash)
+      if (!config.frontRunReceipt) throw new Error('no front-run receipt configured')
+      return config.frontRunReceipt
     },
     async waitForTransactionReceipt() {
       return config.receipt!
@@ -200,6 +275,7 @@ function buildCredential(
     validAfter?: string
     validBefore?: string
     source?: string
+    expires?: string
   } = {},
 ): AuthorizationVerifierArgs['credential'] {
   return {
@@ -209,7 +285,7 @@ function buildCredential(
       method: 'evm',
       intent: 'charge',
       request: { amount: AMOUNT, currency: CURRENCY, recipient: RECIPIENT },
-      expires: new Date(Date.now() + 60_000).toISOString(),
+      expires: overrides.expires ?? new Date(Date.now() + 60_000).toISOString(),
     },
     payload: {
       type: 'authorization',
@@ -242,6 +318,7 @@ function buildCtx(
     store: freshStore(),
     chainId: CHAIN_ID,
     eip712: EIP712,
+    confirmations: 1,
     ...overrides,
   }
 }
@@ -476,8 +553,11 @@ describe('verifyAuthorization post-broadcast outcomes', () => {
   test('reverted on-chain → release (nonce unconsumed)', async () => {
     const sig = await signEip3009()
     const receipt = buildReceipt([], 'reverted')
+    // authorizationState: false → the recovery probe takes its intended
+    // 'none' branch (nonce genuinely unconsumed), NOT the exception-swallow
+    // fallback an unconfigured stub would trigger.
     const ctx = buildCtx({
-      publicClient: stubPublicClient({ receipt }),
+      publicClient: stubPublicClient({ receipt, authorizationState: false }),
       settlementSigner: stubWalletClient(),
     })
 
@@ -627,17 +707,361 @@ describe('verifyAuthorization replay pre-state', () => {
 })
 
 /* -------------------------------------------------------------------------- */
+/*  validBefore ↔ challenge.expires binding (spec §5.3.2 SHOULD)              */
+/* -------------------------------------------------------------------------- */
+
+describe('verifyAuthorization validBefore ↔ challenge.expires binding', () => {
+  test('validBefore beyond expires + 600s tolerance → reject, no slot reserved', async () => {
+    // Challenge expires ~5min out; validBefore overshoots by 700s (> 600s
+    // tolerance). Local validation — must reject BEFORE any slot reserve.
+    const expiresMs = Date.now() + 5 * 60_000
+    const expiresIso = new Date(expiresMs).toISOString()
+    const expiresSec = Math.floor(expiresMs / 1000)
+    const validBefore = String(expiresSec + 700)
+
+    const sig = await signEip3009({ validBefore })
+    const ctx = buildCtx({
+      publicClient: stubPublicClient(),
+      settlementSigner: stubWalletClient(),
+    })
+
+    await expect(
+      verifyAuthorization({
+        credential: buildCredential(sig, { validBefore, expires: expiresIso }),
+        request: baseRequest,
+        ctx,
+      }),
+    ).rejects.toThrow(/exceeds challenge expires/)
+
+    // Local validation never reserves a replay slot.
+    expect(await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE))).toBeNull()
+  })
+
+  test('validBefore within expires + 600s tolerance → passes the gate', async () => {
+    // Same ~5min expires, but validBefore only 500s past it (< 600s
+    // tolerance) — the §5.3.2 gate must NOT fire; the credential settles.
+    const expiresMs = Date.now() + 5 * 60_000
+    const expiresIso = new Date(expiresMs).toISOString()
+    const expiresSec = Math.floor(expiresMs / 1000)
+    const validBefore = String(expiresSec + 500)
+
+    const sig = await signEip3009({ validBefore })
+    const receipt = buildReceipt([
+      transferLog({ from: SIGNER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY }),
+    ])
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({ receipt }),
+      settlementSigner: stubWalletClient(),
+    })
+
+    const promise = verifyAuthorization({
+      credential: buildCredential(sig, { validBefore, expires: expiresIso }),
+      request: baseRequest,
+      ctx,
+    })
+    // The gate did not fire (no 'exceeds challenge expires') — and with a
+    // happy-path stub nothing else fails either.
+    await expect(promise).resolves.toBeDefined()
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  Signature normalization (yParity final byte)                              */
+/* -------------------------------------------------------------------------- */
+
+describe('verifyAuthorization signature normalization', () => {
+  test('accepts 65-byte signature with yParity (0/1) final byte', async () => {
+    // Some hardware wallets / raw secp256k1 libs emit r||s||yParity instead
+    // of r||s||v(27/28). normalizeEvmSignature converts back to legacy v —
+    // recovery and settlement must succeed unchanged.
+    const stdSig = await signEip3009()
+    const vByte = Number.parseInt(stdSig.slice(-2), 16)
+    expect([27, 28]).toContain(vByte) // sanity: fixture signs legacy v
+    const yParityByte = (vByte - 27).toString(16).padStart(2, '0')
+    const yParitySig = `${stdSig.slice(0, -2)}${yParityByte}` as `0x${string}`
+    expect(yParitySig).toMatch(/(00|01)$/)
+
+    const receipt = buildReceipt([
+      transferLog({ from: SIGNER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY }),
+    ])
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({ receipt }),
+      settlementSigner: stubWalletClient(),
+    })
+
+    const out = await verifyAuthorization({
+      credential: buildCredential(yParitySig),
+      request: baseRequest,
+      ctx,
+    })
+    expect(out.status).toBe('success')
+    expect((await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE)))?.state).toBe(
+      'consumed',
+    )
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  Front-run recovery (EIP-3009 anyone-can-submit)                           */
+/* -------------------------------------------------------------------------- */
+
+describe('verifyAuthorization front-run recovery', () => {
+  const FRONT_RUN_TX = `0x${'f'.repeat(64)}` as `0x${string}`
+
+  test('authorization consumed by front-runner whose tx paid → receipt references their tx', async () => {
+    const sig = await signEip3009()
+    // Front-runner's tx receipt contains the EXACT authorized transfer.
+    // Mined at block 100 vs tip 10_000 → depth far beyond the curated
+    // ethereum default of 12 confirmations.
+    const frontRunReceipt = buildReceipt([
+      transferLog({ from: SIGNER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY }),
+    ])
+    const requestedReceiptHashes: Array<`0x${string}`> = []
+    const getLogsCalls: CapturedGetLogsCall[] = []
+    const readContractCalls: CapturedReadContractCall[] = []
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        simulateError: new Error('FiatTokenV2: authorization is used or canceled'),
+        authorizationState: true,
+        usedLogs: [{ transactionHash: FRONT_RUN_TX }],
+        frontRunReceipt,
+        latestBlock: 10_000n,
+        requestedReceiptHashes,
+        getLogsCalls,
+        readContractCalls,
+      }),
+      settlementSigner: stubWalletClient(),
+      confirmations: 12,
+    })
+
+    const out = await verifyAuthorization({
+      credential: buildCredential(sig),
+      request: baseRequest,
+      ctx,
+    })
+
+    // The payment settled via the front-runner's tx — receipt references it.
+    expect(out.status).toBe('success')
+    expect(out.reference).toBe(FRONT_RUN_TX)
+    // The probe looked up the receipt of the exact AuthorizationUsed tx.
+    expect(requestedReceiptHashes).toEqual([FRONT_RUN_TX])
+    // The probe queried authorizationState for THIS credential's
+    // (authorizer, nonce) on the wire currency — not some wildcard.
+    expect(readContractCalls).toContainEqual({
+      functionName: 'authorizationState',
+      address: CURRENCY,
+      args: [SIGNER, NONCE],
+    })
+    // One AuthorizationUsed getLogs query, scoped to the credential and
+    // the 5000-block search window ending at the tip.
+    expect(getLogsCalls).toEqual([
+      {
+        address: CURRENCY,
+        eventName: 'AuthorizationUsed',
+        args: { authorizer: SIGNER, nonce: NONCE },
+        fromBlock: 5_000n,
+        toBlock: 10_000n,
+      },
+    ])
+    // Replay slot is terminal: consumed.
+    expect((await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE)))?.state).toBe(
+      'consumed',
+    )
+  })
+
+  test('authorizationState false → original simulate error surfaces, slot released', async () => {
+    const sig = await signEip3009()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        simulateError: new Error('FiatTokenV2: authorization is used or canceled'),
+        authorizationState: false,
+      }),
+      settlementSigner: stubWalletClient(),
+    })
+
+    await expect(
+      verifyAuthorization({
+        credential: buildCredential(sig),
+        request: baseRequest,
+        ctx,
+      }),
+    ).rejects.toThrow(/simulate\/broadcast failed.*authorization is used or canceled/)
+
+    expect(await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE))).toBeNull()
+  })
+
+  test('authorization canceled (state true, AuthorizationCanceled log) → reject, slot released', async () => {
+    // authorizationState=true, no AuthorizationUsed event, but an
+    // AuthorizationCanceled event IS in the window ⇒ the payer CANCELED
+    // the authorization (no payment) — recovery must NOT fabricate a
+    // receipt; the original error surfaces and the slot is released.
+    const sig = await signEip3009()
+    const getLogsCalls: CapturedGetLogsCall[] = []
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        simulateError: new Error('FiatTokenV2: authorization is used or canceled'),
+        authorizationState: true,
+        usedLogs: [],
+        canceledLogs: [{ transactionHash: `0x${'9'.repeat(64)}` as `0x${string}` }],
+        getLogsCalls,
+      }),
+      settlementSigner: stubWalletClient(),
+    })
+
+    await expect(
+      verifyAuthorization({
+        credential: buildCredential(sig),
+        request: baseRequest,
+        ctx,
+      }),
+    ).rejects.toThrow(/simulate\/broadcast failed.*authorization is used or canceled/)
+
+    expect(await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE))).toBeNull()
+    // The probe queried BOTH events over the same credential-scoped window
+    // (tip 1000 < 5000-block window → fromBlock clamps to 0).
+    expect(getLogsCalls).toEqual([
+      {
+        address: CURRENCY,
+        eventName: 'AuthorizationUsed',
+        args: { authorizer: SIGNER, nonce: NONCE },
+        fromBlock: 0n,
+        toBlock: 1_000n,
+      },
+      {
+        address: CURRENCY,
+        eventName: 'AuthorizationCanceled',
+        args: { authorizer: SIGNER, nonce: NONCE },
+        fromBlock: 0n,
+        toBlock: 1_000n,
+      },
+    ])
+  })
+
+  test('front-run settlement below ctx.confirmations → retryable, slot stays INFLIGHT', async () => {
+    // The consuming tx exists and paid, but sits at depth 6 while the
+    // deployment demands 12 confirmations. A shallow reorg could still
+    // drop the transfer — the probe must NOT consume yet, and the caller
+    // must NOT release (the transfer will likely deepen; retry resolves).
+    const sig = await signEip3009()
+    const frontRunReceipt = {
+      ...buildReceipt([
+        transferLog({ from: SIGNER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY }),
+      ]),
+      blockNumber: 995n, // tip 1000 → depth 6
+    }
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        simulateError: new Error('FiatTokenV2: authorization is used or canceled'),
+        authorizationState: true,
+        usedLogs: [{ transactionHash: FRONT_RUN_TX }],
+        frontRunReceipt,
+      }),
+      settlementSigner: stubWalletClient(),
+      confirmations: 12,
+    })
+
+    await expect(
+      verifyAuthorization({
+        credential: buildCredential(sig),
+        request: baseRequest,
+        ctx,
+      }),
+    ).rejects.toThrow(/insufficient confirmation depth \(have 6, need 12\); retry shortly/)
+
+    // CRITICAL: slot stays inflight — released would re-admit a credential
+    // whose transfer is about to finalize.
+    expect((await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE)))?.state).toBe(
+      'inflight',
+    )
+  })
+
+  test('nonce burned but neither event in the window → retryable, slot stays INFLIGHT', async () => {
+    // authorizationState=true yet NEITHER AuthorizationUsed NOR
+    // AuthorizationCanceled is found in the 5000-block window — the
+    // consuming tx most likely settled BEFORE the window (e.g. a
+    // reclaimed-inflight retry minutes later on a fast chain). Concluding
+    // 'canceled' here would RELEASE the slot for a payment that may have
+    // settled — the probe must keep it inflight for the operator.
+    const sig = await signEip3009()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        simulateError: new Error('FiatTokenV2: authorization is used or canceled'),
+        authorizationState: true,
+        usedLogs: [],
+        canceledLogs: [],
+      }),
+      settlementSigner: stubWalletClient(),
+    })
+
+    await expect(
+      verifyAuthorization({
+        credential: buildCredential(sig),
+        request: baseRequest,
+        ctx,
+      }),
+    ).rejects.toThrow(/not located within the last 5000 blocks/)
+
+    expect((await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE)))?.state).toBe(
+      'inflight',
+    )
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  Front-run recovery from the REVERT entry point                            */
+/* -------------------------------------------------------------------------- */
+
+describe('verifyAuthorization front-run recovery — revert entry point', () => {
+  const FRONT_RUN_TX = `0x${'f'.repeat(64)}` as `0x${string}`
+
+  test('our tx reverted but front-runner paid at sufficient depth → receipt references their tx', async () => {
+    // Mirror of the simulate-error recovery, entered from
+    // receipt.status !== 'success': our settlement broadcast, the
+    // front-runner's identical calldata mined first, OUR tx reverted
+    // ("authorization is used"). The payer still paid.
+    const sig = await signEip3009()
+    const ourRevertedReceipt = buildReceipt([], 'reverted')
+    const frontRunReceipt = buildReceipt([
+      transferLog({ from: SIGNER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY }),
+    ])
+    const requestedReceiptHashes: Array<`0x${string}`> = []
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        receipt: ourRevertedReceipt,
+        authorizationState: true,
+        usedLogs: [{ transactionHash: FRONT_RUN_TX }],
+        frontRunReceipt,
+        requestedReceiptHashes,
+      }),
+      settlementSigner: stubWalletClient(),
+    })
+
+    const out = await verifyAuthorization({
+      credential: buildCredential(sig),
+      request: baseRequest,
+      ctx,
+    })
+
+    expect(out.status).toBe('success')
+    expect(out.reference).toBe(FRONT_RUN_TX)
+    expect(requestedReceiptHashes).toEqual([FRONT_RUN_TX])
+    expect((await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE)))?.state).toBe(
+      'consumed',
+    )
+  })
+})
+
+/* -------------------------------------------------------------------------- */
 /*  Terminal-phase store-write failure must NOT release slot                   */
 /* -------------------------------------------------------------------------- */
 
 describe('verifyAuthorization — terminal-phase store-write failure keeps slot inflight', () => {
   test('markConsumed throws after on-chain success → slot stays inflight (no release)', async () => {
-    // Models Redis transient outage right at the markConsumed CAS, AFTER
-    // the EIP-3009 transferWithAuthorization succeeded on-chain. The
-    // token contract has burned the authorization nonce; releasing the
-    // slot would re-admit the same credential → next reserve+verify
-    // would re-call transferWithAuthorization, the token would revert
-    // "FiatTokenV2: authorization is used or canceled". Keep inflight.
+    // Models a sustained Redis outage at the markConsumed CAS, AFTER the
+    // EIP-3009 transferWithAuthorization succeeded on-chain. The payer
+    // HAS paid — they get their receipt; consumeSlotBestEffort retries 3x,
+    // then the slot stays inflight (still blocks replay) and the operator
+    // is warned.
     const sig = await signEip3009()
     const receipt = buildReceipt([
       transferLog({ from: SIGNER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY }),
@@ -654,21 +1078,20 @@ describe('verifyAuthorization — terminal-phase store-write failure keeps slot 
         settlementSigner: stubWalletClient(),
       })
 
-      await expect(
-        verifyAuthorization({
-          credential: buildCredential(sig),
-          request: baseRequest,
-          ctx,
-        }),
-      ).rejects.toThrow(/ECONNRESET: Redis dropped right at markConsumed/)
+      const out = await verifyAuthorization({
+        credential: buildCredential(sig),
+        request: baseRequest,
+        ctx,
+      })
+      expect(out.status).toBe('success')
 
       // CRITICAL: slot stays inflight.
       const slot = await store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE))
       expect(slot?.state).toBe('inflight')
 
-      // Operator visibility.
+      // Operator visibility (consumeSlotBestEffort's alert-worthy warn).
       expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringMatching(/terminal-phase store write failed.*slot remains inflight/),
+        expect.stringMatching(/markConsumed failed after 3 attempts.*remains inflight/),
         expect.any(String),
       )
     } finally {

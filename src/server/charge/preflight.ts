@@ -32,7 +32,7 @@ import {
   resolveCuratedTokenAddress,
   resolveCuratedTokenDecimals,
 } from '../curated.js'
-import { type ChargeStore } from '../Replay.js'
+import { type ChargeStore, DEFAULT_INFLIGHT_TTL_MS } from '../Replay.js'
 import { resolveSettlementSigner } from '../Settlement.js'
 import type { PreflightInternalHooks, ResolvedChargeParams, ServerParameters } from './types.js'
 
@@ -43,6 +43,21 @@ import type { PreflightInternalHooks, ResolvedChargeParams, ServerParameters } f
  * allows it (see `PreflightInternalHooks.allowSentinelTokenAddress`).
  */
 const SENTINEL_TOKEN_ADDRESS = '0x0000000000000000000000000000000000000000' as const
+
+/**
+ * viem's default `waitForTransactionReceipt` timeout — the receipt wait
+ * the settling verifiers fall back to when `settlementTimeoutMs` is unset.
+ */
+const VIEM_DEFAULT_RECEIPT_TIMEOUT_MS = 180_000
+
+/**
+ * Safety margin the stale-inflight reclaim TTL must keep above the
+ * receipt wait: worst-case mining delay + cross-pod clock skew. A slot
+ * whose settlement is still inside `waitForTransactionReceipt` must never
+ * become reclaimable — a retry would re-broadcast a settlement that may
+ * still land (concurrent double-broadcast).
+ */
+const INFLIGHT_TTL_MARGIN_MS = 120_000
 
 /**
  * Default Permit2 deployment probe: `eth_getCode(address) != '0x'`. Mocked
@@ -141,6 +156,55 @@ export async function preflightChargeInternal(
     }
   }
   const confirmations = params.confirmations ?? curatedDefaultConfirmations(chain)
+
+  // Validate the settlement-timing pair BEFORE it reaches reserve() /
+  // the settling verifiers. `inflightTtlMs <= 0` makes EVERY inflight
+  // slot instantly 'stale' — reserve()'s reclaim branch then lets a
+  // concurrent retry double-broadcast the settlement. `NaN` poisons the
+  // `Date.now() - ts >= ttl` staleness comparison to always-false,
+  // disabling reclaim forever (stranded slots never recover). And an
+  // inflightTtlMs that does not comfortably exceed the receipt wait lets
+  // a retry reclaim a slot whose settlement is still inside
+  // waitForTransactionReceipt. Reject at the boundary.
+  if (params.settlementTimeoutMs !== undefined) {
+    const t = params.settlementTimeoutMs
+    if (!Number.isInteger(t) || t <= 0 || t > Number.MAX_SAFE_INTEGER) {
+      throw new Errors.InvalidChallengeError({
+        reason:
+          `params.settlementTimeoutMs must be a positive safe integer (milliseconds); ` +
+          `got ${String(t)}. Pass undefined to use viem's default receipt-wait timeout ` +
+          `(${VIEM_DEFAULT_RECEIPT_TIMEOUT_MS}ms).`,
+      })
+    }
+  }
+  if (params.inflightTtlMs !== undefined) {
+    const v = params.inflightTtlMs
+    if (!Number.isInteger(v) || v <= 0 || v > Number.MAX_SAFE_INTEGER) {
+      throw new Errors.InvalidChallengeError({
+        reason:
+          `params.inflightTtlMs must be a positive safe integer (milliseconds); ` +
+          `got ${String(v)}. Pass undefined to use the default ` +
+          `(${DEFAULT_INFLIGHT_TTL_MS}ms, DEFAULT_INFLIGHT_TTL_MS in Replay.ts).`,
+      })
+    }
+  }
+  // Margin check runs on the EFFECTIVE values so a large
+  // settlementTimeoutMs paired with the default TTL is caught too.
+  const effectiveReceiptWaitMs = params.settlementTimeoutMs ?? VIEM_DEFAULT_RECEIPT_TIMEOUT_MS
+  const effectiveInflightTtlMs = params.inflightTtlMs ?? DEFAULT_INFLIGHT_TTL_MS
+  if (effectiveInflightTtlMs < effectiveReceiptWaitMs + INFLIGHT_TTL_MARGIN_MS) {
+    throw new Errors.InvalidChallengeError({
+      reason:
+        `params.inflightTtlMs must be >= (params.settlementTimeoutMs ?? ` +
+        `${VIEM_DEFAULT_RECEIPT_TIMEOUT_MS}) + ${INFLIGHT_TTL_MARGIN_MS} — viem's default ` +
+        `receipt-wait timeout plus a worst-case mining-delay margin. Got ` +
+        `inflightTtlMs=${effectiveInflightTtlMs}ms` +
+        `${params.inflightTtlMs === undefined ? ' (default)' : ''}, required >= ` +
+        `${effectiveReceiptWaitMs + INFLIGHT_TTL_MARGIN_MS}ms. A shorter TTL lets a retry ` +
+        `reclaim a slot whose settlement is still inside waitForTransactionReceipt ` +
+        `(concurrent double-broadcast).`,
+    })
+  }
 
   // Validate `hashFromPolicy` (spec §8.4). The Hash verifier
   // only checks `=== 'strict_from'` and falls through to lax behavior
@@ -267,6 +331,33 @@ export async function preflightChargeInternal(
     params.credentialTypes ?? baseCredentialTypes
 
   if (splits !== undefined) {
+    // Fail at boot, not on every challenge issuance: the wire schema
+    // (Methods.ts) enforces minLength(1)/maxLength(10) on splits and a
+    // strict sum(splits) < amount invariant — a factory config violating
+    // either would otherwise pass preflight and then throw a zod error on
+    // EVERY route invocation.
+    if (splits.length === 0) {
+      throw new Errors.InvalidChallengeError({
+        reason:
+          'splits: [] is invalid — the wire schema requires at least 1 entry when splits is ' +
+          'present (spec §4.2.3); omit the field entirely for a no-splits deployment',
+      })
+    }
+    if (splits.length > 10) {
+      throw new Errors.InvalidChallengeError({
+        reason: `splits has ${splits.length} entries — the wire schema caps at 10 (spec §4.2.3)`,
+      })
+    }
+    if (params.amount !== undefined) {
+      const splitsSum = splits.reduce((sum, s) => sum + BigInt(s.amount), 0n)
+      if (splitsSum >= BigInt(params.amount)) {
+        throw new Errors.InvalidChallengeError({
+          reason:
+            `sum(splits[].amount) = ${splitsSum} must be strictly less than amount ` +
+            `${params.amount} (spec §4.2.3: the primary recipient must receive a positive share)`,
+        })
+      }
+    }
     if (!baseCredentialTypes.includes('permit2')) {
       throw new Errors.InvalidChallengeError({
         reason: `splits require permit2 credential support; (${chain}, ${token}) has none`,

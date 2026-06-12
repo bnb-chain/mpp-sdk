@@ -77,8 +77,8 @@ export {
 export {
   authKey,
   type ChargeStore,
+  DEFAULT_INFLIGHT_TTL_MS,
   getReplaySlot,
-  hashKey,
   markConsumed,
   markRejected,
   permit2Key,
@@ -89,7 +89,7 @@ export {
   type ReplaySlotValue,
   ReplayStoreUnavailableError,
   reserve,
-  txKey,
+  txHashKey,
 } from './Replay.js'
 
 // ── Settlement signer ────────────────────────────────────────────────────

@@ -69,6 +69,8 @@ touch an mppx API, confirm against the pinned commit
 2. Run `pnpm check && pnpm check:types && pnpm test` before every commit.
    CI runs `pnpm check:ci` + `pnpm test`.
 3. **Don't push** to `main` or `v1`. Feature branches only.
+   Releases ship from `v1` via the changesets workflow — see
+   [`docs/releasing.md`](docs/releasing.md).
 4. Commit messages: explain what changed and why; reference the spec
    section a public-facing change implements.
 5. Keep source comments about the _rule / invariant_ ("why it must be
@@ -119,7 +121,9 @@ test/                           vitest config + setup; live/ = testnet e2e scaff
 ├── helpers/server/             test seams kept OUT of the published src tarball
 │                               (preflightChargeForTest, terminalFailureStore)
 └── interop/                    viem cross-check vectors
-examples/                       charge-server (Hono) + charge-demo (React) — see docs/examples.md
+examples/                       per-audience demos (merchant-demo / client-demo /
+                                facilitator-demo) + full charge-server (Hono) +
+                                charge-demo (React) — see docs/examples.md
 docs/                           public docs (architecture, spec-compliance, replay-store, examples, adr/)
 ```
 

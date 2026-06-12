@@ -131,6 +131,71 @@ describe('preflightCharge guards', () => {
     })
   })
 
+  // Settlement-timing validation. Previously inflightTtlMs <= 0 made
+  // every inflight slot instantly 'stale' (reserve()'s reclaim branch →
+  // concurrent double-broadcast), NaN disabled reclaim forever (the
+  // staleness comparison is always false), and a TTL below the receipt
+  // wait + margin let a retry reclaim a slot whose settlement was still
+  // inside waitForTransactionReceipt. Validate at the boundary instead.
+  describe('settlementTimeoutMs / inflightTtlMs validation', () => {
+    test('rejects settlementTimeoutMs 0', async () => {
+      await expect(happy({ settlementTimeoutMs: 0 })).rejects.toThrow(
+        /params\.settlementTimeoutMs must be a positive safe integer/,
+      )
+    })
+
+    test('rejects NaN settlementTimeoutMs', async () => {
+      await expect(happy({ settlementTimeoutMs: Number.NaN })).rejects.toThrow(
+        /params\.settlementTimeoutMs must be a positive safe integer/,
+      )
+    })
+
+    test('rejects inflightTtlMs 0 (every slot instantly stale → double-broadcast)', async () => {
+      await expect(happy({ inflightTtlMs: 0 })).rejects.toThrow(
+        /params\.inflightTtlMs must be a positive safe integer/,
+      )
+    })
+
+    test('rejects negative inflightTtlMs', async () => {
+      await expect(happy({ inflightTtlMs: -5 })).rejects.toThrow(
+        /params\.inflightTtlMs must be a positive safe integer/,
+      )
+    })
+
+    test('rejects NaN inflightTtlMs (reclaim disabled forever)', async () => {
+      await expect(happy({ inflightTtlMs: Number.NaN })).rejects.toThrow(
+        /params\.inflightTtlMs must be a positive safe integer/,
+      )
+    })
+
+    test('rejects inflightTtlMs below the margin formula', async () => {
+      // 600ms is a positive integer but far below
+      // (settlementTimeoutMs ?? 180000) + 120000 = 300000ms.
+      await expect(happy({ inflightTtlMs: 600 })).rejects.toThrow(
+        /params\.inflightTtlMs must be >= \(params\.settlementTimeoutMs \?\? 180000\) \+ 120000/,
+      )
+    })
+
+    test('rejects a settlementTimeoutMs that swallows the default TTL margin', async () => {
+      // Margin runs on EFFECTIVE values: default inflightTtlMs is 600000,
+      // and 500000 + 120000 = 620000 > 600000 — a still-settling slot
+      // would become reclaimable 100s before the receipt wait gives up.
+      await expect(happy({ settlementTimeoutMs: 500_000 })).rejects.toThrow(/required >= 620000ms/)
+    })
+
+    test('accepts a valid pair (TTL comfortably above receipt wait + margin)', async () => {
+      const result = await happy({ settlementTimeoutMs: 60_000, inflightTtlMs: 300_000 })
+      expect(result.settlementTimeoutMs).toBe(60_000)
+      expect(result.inflightTtlMs).toBe(300_000)
+    })
+
+    test('accepts both undefined (defaults satisfy the formula: 600000 >= 300000)', async () => {
+      const result = await happy()
+      expect(result.settlementTimeoutMs).toBeUndefined()
+      expect(result.inflightTtlMs).toBeUndefined()
+    })
+  })
+
   // hashFromPolicy validation. Previously a typo (e.g. 'strict'
   // instead of 'strict_from') silently fell through to lax_from behavior
   // — disabling the source-binding security check (spec §8.4) without
@@ -326,11 +391,12 @@ describe('charge(prepared) factory output', () => {
   test('defaults include curated currency + recipient + REQUIRED methodDetails', async () => {
     const server = charge(await happy())
     const defaults = server.defaults as Record<string, unknown>
-    expect(defaults.currency).toBe('0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48')
+    // Wire defaults are EIP-55 checksummed (spec §4.1 SHOULD).
+    expect(defaults.currency).toBe('0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48')
     expect(defaults.recipient).toBe(RECIPIENT)
     const md = defaults.methodDetails as Record<string, unknown>
     expect(md.chainId).toBe(1)
-    expect(md.permit2Address).toBe('0x000000000022d473030f116ddee9f6b43ac78ba3')
+    expect(md.permit2Address).toBe('0x000000000022D473030F116dDEE9F6B43aC78BA3')
   })
 
   test('ships evmHttpTransport as per-method transport override (spec §13.4.1 C2 auto-wire)', async () => {

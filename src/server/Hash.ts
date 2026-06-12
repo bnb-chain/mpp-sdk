@@ -8,7 +8,9 @@
  *
  * Algorithm (cheap-reject ordered; spec §8.4):
  *
- *   1. Atomic reserve via `Replay.reserve(hashKey(chainId, txHash))`.
+ *   1. Atomic reserve via `Replay.reserve(txHashKey(chainId, txHash))` —
+ *      keyspace shared with the transaction verifier (spec §8: both types
+ *      use the tx hash as the replay token).
  *      - Already consumed → throw REPLAY (terminal).
  *      - Already rejected → throw REJECTED (terminal).
  *      - Already inflight → throw CONCURRENT.
@@ -37,18 +39,16 @@
  */
 
 import { type Credential, Errors } from 'mppx'
-import { parseEventLogs, type PublicClient } from 'viem'
+import { parseEventLogs, type PublicClient, TransactionReceiptNotFoundError } from 'viem'
 
-import { type EvmReceipt, buildEvmReceipt } from './Receipt.js'
 import {
-  type ChargeStore,
-  getReplaySlot,
-  hashKey,
-  markConsumed,
-  markRejected,
-  release,
-  reserve,
-} from './Replay.js'
+  TRANSFER_EVENT_ABI,
+  consumeSlotBestEffort,
+  handleVerifierFailure,
+  throwReserveConflict,
+} from './charge/verifierKit.js'
+import { type EvmReceipt, buildEvmReceipt } from './Receipt.js'
+import { type ChargeStore, markRejected, release, reserve, txHashKey } from './Replay.js'
 
 /* -------------------------------------------------------------------------- */
 /*  ctx + args                                                                */
@@ -60,6 +60,8 @@ export interface HashVerifierCtx {
   readonly chainId: number
   readonly confirmations: number
   readonly hashFromPolicy: 'strict_from' | 'lax_from'
+  /** Stale-inflight reclaim age forwarded to Replay.reserve. */
+  readonly inflightTtlMs?: number
 }
 
 export interface HashVerifierArgs {
@@ -74,27 +76,6 @@ export interface HashVerifierArgs {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Transfer ABI fragment                                                     */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Minimal ERC-20 `Transfer(address,address,uint256)` ABI fragment for
- * `parseEventLogs`. Sufficient — we only need `from / to / value` decoded
- * from the topic + data layout.
- */
-const TRANSFER_ABI = [
-  {
-    type: 'event',
-    name: 'Transfer',
-    inputs: [
-      { name: 'from', type: 'address', indexed: true },
-      { name: 'to', type: 'address', indexed: true },
-      { name: 'value', type: 'uint256', indexed: false },
-    ],
-  },
-] as const
-
-/* -------------------------------------------------------------------------- */
 /*  verifyHash                                                                */
 /* -------------------------------------------------------------------------- */
 
@@ -103,29 +84,25 @@ export async function verifyHash({
   request,
   ctx,
 }: HashVerifierArgs): Promise<EvmReceipt> {
-  const { publicClient, store, chainId, confirmations, hashFromPolicy } = ctx
+  const { publicClient, store, chainId, confirmations, hashFromPolicy, inflightTtlMs } = ctx
   const { hash: txHash } = credential.payload
   const { amount, currency, recipient, externalId } = request
   const challengeId = credential.challenge.id
 
-  const key = hashKey(chainId, txHash)
+  const key = txHashKey(chainId, txHash)
 
   // ── Step 1: atomic reserve ─────────────────────────────────────────────
-  const claimed = await reserve(store, key)
+  const claimed = await reserve(store, key, { inflightTtlMs })
   if (!claimed) {
-    // Route through getReplaySlot so a backend failure on this
-    // diagnostic read surfaces as ReplayStoreUnavailableError instead of
-    // a raw Redis/Postgres error leaking to the caller.
-    const current = await getReplaySlot(store, key)
-    const reasonText =
-      current?.state === 'consumed'
-        ? `hash credential already consumed (txHash=${txHash})`
-        : current?.state === 'rejected'
-          ? `hash credential previously rejected: ${current.reason ?? 'unknown'}`
-          : `concurrent verify in progress for hash credential (txHash=${txHash})`
-    throw new Errors.VerificationFailedError({
-      ...(challengeId && { id: challengeId }),
-      reason: reasonText,
+    await throwReserveConflict({
+      store,
+      key,
+      challengeId,
+      describe: {
+        consumed: `hash credential already consumed (txHash=${txHash})`,
+        rejected: (reason) => `hash credential previously rejected: ${reason ?? 'unknown'}`,
+        inflight: `concurrent verify in progress for hash credential (txHash=${txHash})`,
+      },
     })
   }
 
@@ -141,28 +118,40 @@ export async function verifyHash({
   // ReplayStoreUnavailableError), the slot MUST stay inflight: the
   // on-chain state has already committed, and `release()` here would
   // let the same credential pass `reserve()` again → DOUBLE-SPEND.
-  // TTL or operator intervention is the correct cleanup path.
+  // reserve() reclaims the slot after inflightTtlMs; the retry then
+  // re-reads the (idempotent) on-chain receipt.
   let terminalPhase = false
   try {
-    // ── Step 2: fetch transaction receipt ──────────────────────────────
+    // ── Steps 2+3a: receipt + latest block (independent reads, parallel) ─
     let receipt: Awaited<ReturnType<PublicClient['getTransactionReceipt']>>
+    let latestBlock: bigint
     try {
-      receipt = await publicClient.getTransactionReceipt({ hash: txHash })
+      ;[receipt, latestBlock] = await Promise.all([
+        publicClient.getTransactionReceipt({ hash: txHash }),
+        publicClient.getBlockNumber(),
+      ])
     } catch (rpcErr) {
-      // viem throws TransactionReceiptNotFoundError when receipt missing;
-      // any other RPC failure is also retryable. Release the slot and
-      // surface a normalized error.
+      // Both failures are retryable — release the slot. But distinguish
+      // the messages: "receipt not found" (tx may not be broadcast yet)
+      // is client-actionable; a generic RPC failure (timeout / 429 /
+      // network) is operator-actionable and must not masquerade as
+      // "tx not broadcast".
       await release(store, key)
+      if (rpcErr instanceof TransactionReceiptNotFoundError) {
+        throw new Errors.VerificationFailedError({
+          ...(challengeId && { id: challengeId }),
+          reason: `transaction receipt not found for ${txHash} — tx may not be broadcast yet`,
+        })
+      }
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
-        reason: `transaction receipt not found for ${txHash} (${
-          rpcErr instanceof Error ? rpcErr.message : 'unknown RPC error'
-        }) — tx may not be broadcast yet`,
+        reason: `RPC error while fetching receipt/block number for ${txHash}: ${
+          rpcErr instanceof Error ? rpcErr.message : String(rpcErr)
+        }`,
       })
     }
 
     // ── Step 3: confirmations depth ────────────────────────────────────
-    const latestBlock = await publicClient.getBlockNumber()
     const txConfirmations =
       latestBlock >= receipt.blockNumber ? latestBlock - receipt.blockNumber + 1n : 0n
     if (txConfirmations < BigInt(confirmations)) {
@@ -190,7 +179,7 @@ export async function verifyHash({
 
     // ── Step 5: Transfer log match ─────────────────────────────────────
     const transferLogs = parseEventLogs({
-      abi: TRANSFER_ABI,
+      abi: TRANSFER_EVENT_ABI,
       eventName: 'Transfer',
       logs: receipt.logs,
     })
@@ -251,7 +240,12 @@ export async function verifyHash({
     }
 
     // ── Step 7: mark consumed ──────────────────────────────────────────
-    await markConsumed(store, key)
+    // The on-chain payment is confirmed — a store failure here must NOT
+    // surface as an error to a paid payer. consumeSlotBestEffort retries
+    // transient blips and warns (never throws) on a sustained outage; the
+    // slot staying inflight still blocks replay until the reclaim TTL
+    // (residual risk documented in docs/replay-store.md).
+    await consumeSlotBestEffort(store, key, '[verifyHash]')
 
     // ── Step 8: build receipt ──────────────────────────────────────────
     return buildEvmReceipt({
@@ -266,39 +260,21 @@ export async function verifyHash({
   } catch (err) {
     // Safety net: if we land here without explicit release / markRejected
     // (unexpected RPC throw, log-parse throw, etc.) the slot would stay
-    // inflight forever. Best-effort release so the user can retry; the
-    // original error is preserved.
-    //
-    // The secondary release() call MUST NOT mask the
-    // original `err`. If the store backend itself is the cause (e.g.
-    // earlier reserve() threw ReplayStoreUnavailableError), release()
-    // will throw too — swallow+log so the user sees the original failure.
+    // inflight forever (see handleVerifierFailure).
     //
     // If `terminalPhase` is set, the tx is confirmed on-chain
     // AND a terminal store-write was about to commit (or did commit) —
     // releasing the slot here would let the same credential pass
     // `reserve()` again, opening a DOUBLE-SPEND window. Leave the slot
-    // inflight; TTL / operator handles cleanup. Surface the original
+    // inflight (reclaimed after inflightTtlMs). Surface the original
     // error so callers can act on it.
-    if (err instanceof Errors.VerificationFailedError) throw err
-    if (terminalPhase) {
-      // eslint-disable-next-line no-console -- terminal-phase operator hint
-      console.warn(
-        '[verifyHash] terminal-phase store write failed; slot remains inflight ' +
-          '(TTL cleanup) to avoid double-spend. Original error:',
-        err instanceof Error ? err.message : String(err),
-      )
-      throw err
-    }
-    try {
-      await release(store, key)
-    } catch (cleanupErr) {
-      // eslint-disable-next-line no-console -- intentional one-off operator hint
-      console.warn(
-        '[verifyHash] safety-net release failed; original error takes precedence:',
-        cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
-      )
-    }
-    throw err
+    return await handleVerifierFailure({
+      err,
+      store,
+      key,
+      terminalPhase,
+      label: '[verifyHash]',
+      cleanupNoun: 'release',
+    })
   }
 }

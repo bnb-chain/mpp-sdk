@@ -1,0 +1,26 @@
+{
+  "name": "@bnb-chain/mpp-example-merchant-demo",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Merchant integration walkthrough — a plain API endpoint (server-plain.ts) and the same endpoint charging per request with @bnb-chain/mpp (server.ts).",
+  "type": "module",
+  "scripts": {
+    "prestart": "pnpm -C ../.. build",
+    "start": "node --env-file-if-exists=.env --import tsx --no-warnings src/server.ts",
+    "start:plain": "node --env-file-if-exists=.env --import tsx --no-warnings src/server-plain.ts",
+    "check:types": "tsgo --noEmit"
+  },
+  "dependencies": {
+    "@bnb-chain/mpp": "workspace:*",
+    "@hono/node-server": "^1.13.0",
+    "hono": "^4.6.0",
+    "mppx": "^0.6.28",
+    "viem": "^2.51.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@typescript/native-preview": "7.0.0-dev.20260323.1",
+    "tsx": "^4.19.0",
+    "typescript": "~5.9.0"
+  }
+}

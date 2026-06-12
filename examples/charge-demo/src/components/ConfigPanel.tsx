@@ -151,9 +151,9 @@ export function ConfigPanel(props: Props): JSX.Element {
             <div className="flex items-center gap-2 text-[11px] leading-relaxed text-muted-foreground">
               <Server className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
               <span>
-                End-to-end mode: this demo fetches a real <span className="font-mono">402</span> from{' '}
-                <span className="font-mono text-primary">{serverEndpoint}</span> and submits the
-                credential back to the charge-server for settlement. Chain / token / recipient /
+                End-to-end mode: this demo fetches a real <span className="font-mono">402</span>{' '}
+                from <span className="font-mono text-primary">{serverEndpoint}</span> and submits
+                the credential back to the charge-server for settlement. Chain / token / recipient /
                 amount above mirror the server's challenge (read-only), and the binding mode is{' '}
                 <span className="font-mono text-primary">mppx-managed</span>.
               </span>

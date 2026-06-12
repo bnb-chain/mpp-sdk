@@ -34,7 +34,7 @@ import {
   failOnState,
   terminalFailureStore,
 } from '../../test/helpers/server/terminalFailureStore.js'
-import { type ChargeStore, txKey } from './Replay.js'
+import { type ChargeStore, txHashKey } from './Replay.js'
 import {
   type TransactionVerifierArgs,
   type TransactionVerifierCtx,
@@ -183,6 +183,10 @@ interface StubClientConfig {
   mempoolNotFound?: boolean
   /** Arbitrary RPC error on getTransaction (mempool check). */
   mempoolRpcError?: Error
+  /** Sender account nonce returned by getTransactionCount (repriced-tx probe). */
+  transactionCount?: number
+  /** Arbitrary RPC error on getTransactionCount. */
+  transactionCountError?: Error
   receipt?: TransactionReceipt
 }
 
@@ -209,7 +213,41 @@ function stubPublicClient(config: StubClientConfig = {}): PublicClient {
       if (config.mempoolNotFound) throw new TransactionNotFoundError({ hash })
       return { hash: `0x${'f'.repeat(64)}`, blockNumber: null } as never
     },
+    async getTransactionCount() {
+      if (config.transactionCountError) throw config.transactionCountError
+      // Default 0 == the fixture tx's nonce → "nonce unconsumed", which
+      // preserves the genuine-rejection release behavior in older tests.
+      return config.transactionCount ?? 0
+    },
   } as unknown as PublicClient
+}
+
+/**
+ * Store wrapper that fails consumed-writes for ONE specific key (every
+ * attempt), while all other operations behave normally. Used by the
+ * replacement consume-order test: the mined-hash slot must end consumed
+ * even when the original credential-hash write keeps failing.
+ */
+function keyedConsumedFailureStore(failKey: string, message: string): ChargeStore {
+  const inner = freshStore()
+  return {
+    get: inner.get.bind(inner),
+    put: inner.put.bind(inner),
+    delete: inner.delete.bind(inner),
+    update: ((key, fn) => {
+      // Pure-function probe to classify the intent without mutating
+      // (same seam as test/helpers/server/terminalFailureStore.ts).
+      const probe = fn(null)
+      if (
+        key === failKey &&
+        probe.op === 'set' &&
+        (probe.value as { state?: string }).state === 'consumed'
+      ) {
+        throw new Error(message)
+      }
+      return inner.update(key, fn)
+    }) as ChargeStore['update'],
+  }
 }
 
 function buildCredential(
@@ -275,7 +313,7 @@ describe('verifyTransaction happy path', () => {
     expect(out.chainId).toBe(CHAIN_ID)
     expect(out.challengeId).toBe(CHALLENGE_ID)
 
-    expect((await ctx.store.get(txKey(CHAIN_ID, expectedHash)))?.state).toBe('consumed')
+    expect((await ctx.store.get(txHashKey(CHAIN_ID, expectedHash)))?.state).toBe('consumed')
   })
 
   test('echoes externalId when present', async () => {
@@ -309,6 +347,176 @@ describe('verifyTransaction happy path', () => {
         ctx,
       }),
     ).resolves.toBeDefined()
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  Replacement (repriced/cancelled) handling (step 12.5)                     */
+/* -------------------------------------------------------------------------- */
+
+describe('verifyTransaction replacement handling (step 12.5)', () => {
+  const MINED_HASH = `0x${'9'.repeat(64)}` as `0x${string}`
+
+  test('repriced replacement: reference is the MINED hash; both slots consumed', async () => {
+    const rawTx = await signERC20TransferTx()
+    const expectedHash = keccak256(rawTx)
+    // viem's waitForTransactionReceipt resolved with a same-(from, nonce)
+    // replacement's receipt — different transactionHash, same transfer.
+    const receipt = buildReceipt({
+      txHash: MINED_HASH,
+      logs: [transferLog({ from: PAYER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY })],
+    })
+    const ctx = buildCtx({ publicClient: stubPublicClient({ receipt }) })
+
+    const out = await verifyTransaction({
+      credential: buildCredential({ rawTx }),
+      request: baseRequest,
+      ctx,
+    })
+
+    // Receipt must reference the hash that actually mined — the
+    // credential's precomputed hash never landed on-chain.
+    expect(out.reference).toBe(MINED_HASH)
+    // BOTH replay slots are terminal: the signed RLP cannot be
+    // resubmitted, and the mined transfer cannot also be redeemed as a
+    // hash credential.
+    expect((await ctx.store.get(txHashKey(CHAIN_ID, expectedHash)))?.state).toBe('consumed')
+    expect((await ctx.store.get(txHashKey(CHAIN_ID, MINED_HASH)))?.state).toBe('consumed')
+  })
+
+  test('replacement hash already consumed by another credential → rejected', async () => {
+    const rawTx = await signERC20TransferTx()
+    const expectedHash = keccak256(rawTx)
+    const receipt = buildReceipt({
+      txHash: MINED_HASH,
+      logs: [transferLog({ from: PAYER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY })],
+    })
+    const store = freshStore()
+    // The mined hash already settled another charge (e.g. via a hash
+    // credential for a second equal-priced challenge).
+    await store.update(txHashKey(CHAIN_ID, MINED_HASH), () => ({
+      op: 'set',
+      value: { state: 'consumed', ts: Date.now() },
+      result: true as const,
+    }))
+    const ctx = buildCtx({ store, publicClient: stubPublicClient({ receipt }) })
+
+    await expect(
+      verifyTransaction({ credential: buildCredential({ rawTx }), request: baseRequest, ctx }),
+    ).rejects.toThrow(/replaced on-chain by .* already settled another charge/)
+    expect((await store.get(txHashKey(CHAIN_ID, expectedHash)))?.state).toBe('rejected')
+  })
+
+  test('reverted replacement: both hashes marked rejected', async () => {
+    const rawTx = await signERC20TransferTx()
+    const expectedHash = keccak256(rawTx)
+    const receipt = buildReceipt({ txHash: MINED_HASH, status: 'reverted' })
+    const ctx = buildCtx({ publicClient: stubPublicClient({ receipt }) })
+
+    await expect(
+      verifyTransaction({ credential: buildCredential({ rawTx }), request: baseRequest, ctx }),
+    ).rejects.toThrow(/reverted on-chain/)
+    expect((await ctx.store.get(txHashKey(CHAIN_ID, expectedHash)))?.state).toBe('rejected')
+    expect((await ctx.store.get(txHashKey(CHAIN_ID, MINED_HASH)))?.state).toBe('rejected')
+  })
+
+  test('replacement hash concurrently inflight → both slots stay inflight + retry-after-window message', async () => {
+    const rawTx = await signERC20TransferTx()
+    const expectedHash = keccak256(rawTx)
+    const receipt = buildReceipt({
+      txHash: MINED_HASH,
+      logs: [transferLog({ from: PAYER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY })],
+    })
+    const store = freshStore()
+    // The mined hash is mid-verify elsewhere (e.g. presented in parallel
+    // as a hash credential) — fresh inflight, NOT stale-reclaimable.
+    const seededTs = Date.now()
+    await store.update(txHashKey(CHAIN_ID, MINED_HASH), () => ({
+      op: 'set',
+      value: { state: 'inflight' as const, ts: seededTs },
+      result: true as const,
+    }))
+    const ctx = buildCtx({ store, publicClient: stubPublicClient({ receipt }) })
+
+    await expect(
+      verifyTransaction({ credential: buildCredential({ rawTx }), request: baseRequest, ctx }),
+    ).rejects.toThrow(
+      /replaced by .* concurrent verify in progress.*retry after the inflight window expires/,
+    )
+
+    // The credential's own slot stays inflight (reclaimed after TTL)...
+    expect((await store.get(txHashKey(CHAIN_ID, expectedHash)))?.state).toBe('inflight')
+    // ...and the concurrent owner's mined slot is untouched (same ts —
+    // proves the failed verify neither stole nor released it).
+    const minedSlot = await store.get(txHashKey(CHAIN_ID, MINED_HASH))
+    expect(minedSlot?.state).toBe('inflight')
+    expect(minedSlot?.ts).toBe(seededTs)
+  })
+
+  test('replacement consume order: mined hash consumed FIRST even when the original-key write keeps failing', async () => {
+    // The mined-hash slot guards the transfer that actually settled
+    // on-chain (a hash credential could redeem it again); the original
+    // never-mined hash merely blocks RLP resubmission. Step 15 must
+    // consume the mined hash first, each write independently best-effort
+    // — a failure on one key must never skip the other. (The pre-fix
+    // sequential markConsumed(key)-then-markConsumed(minedKey) inside one
+    // try skipped the mined hash whenever the original write threw.)
+    const rawTx = await signERC20TransferTx()
+    const expectedHash = keccak256(rawTx)
+    const receipt = buildReceipt({
+      txHash: MINED_HASH,
+      logs: [transferLog({ from: PAYER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY })],
+    })
+    const store = keyedConsumedFailureStore(
+      txHashKey(CHAIN_ID, expectedHash),
+      'ECONNRESET: store blip at original-key markConsumed',
+    )
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const ctx = buildCtx({ store, publicClient: stubPublicClient({ receipt }) })
+
+      const out = await verifyTransaction({
+        credential: buildCredential({ rawTx }),
+        request: baseRequest,
+        ctx,
+      })
+
+      // The paid payer still gets the receipt referencing the mined hash.
+      expect(out.status).toBe('success')
+      expect(out.reference).toBe(MINED_HASH)
+      // The mined slot is terminally consumed despite the sibling failure...
+      expect((await store.get(txHashKey(CHAIN_ID, MINED_HASH)))?.state).toBe('consumed')
+      // ...while the original slot stays inflight (still blocks replay;
+      // operator warned to promote it manually).
+      expect((await store.get(txHashKey(CHAIN_ID, expectedHash)))?.state).toBe('inflight')
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/markConsumed failed after 3 attempts.*remains inflight/),
+        expect.any(String),
+      )
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  test('replacement paying a different charge: original rejected, mined slot released', async () => {
+    const rawTx = await signERC20TransferTx()
+    const expectedHash = keccak256(rawTx)
+    // Replacement succeeded but transferred a different amount — not THIS
+    // charge's payment. Its slot must be released (it may legitimately
+    // match a different challenge), while the credential is rejected.
+    const receipt = buildReceipt({
+      txHash: MINED_HASH,
+      logs: [
+        transferLog({ from: PAYER, to: RECIPIENT, value: BigInt(AMOUNT) + 1n, address: CURRENCY }),
+      ],
+    })
+    const ctx = buildCtx({ publicClient: stubPublicClient({ receipt }) })
+
+    await expect(
+      verifyTransaction({ credential: buildCredential({ rawTx }), request: baseRequest, ctx }),
+    ).rejects.toThrow(/no matching Transfer event/)
+    expect((await ctx.store.get(txHashKey(CHAIN_ID, expectedHash)))?.state).toBe('rejected')
+    expect(await ctx.store.get(txHashKey(CHAIN_ID, MINED_HASH))).toBeNull()
   })
 })
 
@@ -440,7 +648,7 @@ describe('verifyTransaction replay pre-state (step 10)', () => {
   test('already consumed → throws REPLAY', async () => {
     const rawTx = await signERC20TransferTx()
     const store = freshStore()
-    await store.update(txKey(CHAIN_ID, keccak256(rawTx)), () => ({
+    await store.update(txHashKey(CHAIN_ID, keccak256(rawTx)), () => ({
       op: 'set',
       value: { state: 'consumed' as const, ts: Date.now() },
       result: true as const,
@@ -459,7 +667,7 @@ describe('verifyTransaction replay pre-state (step 10)', () => {
   test('already rejected → throws REJECTED', async () => {
     const rawTx = await signERC20TransferTx()
     const store = freshStore()
-    await store.update(txKey(CHAIN_ID, keccak256(rawTx)), () => ({
+    await store.update(txHashKey(CHAIN_ID, keccak256(rawTx)), () => ({
       op: 'set',
       value: { state: 'rejected' as const, ts: Date.now(), reason: 'previous revert' },
       result: true as const,
@@ -478,7 +686,7 @@ describe('verifyTransaction replay pre-state (step 10)', () => {
   test('concurrent inflight → throws CONCURRENT', async () => {
     const rawTx = await signERC20TransferTx()
     const store = freshStore()
-    await store.update(txKey(CHAIN_ID, keccak256(rawTx)), () => ({
+    await store.update(txHashKey(CHAIN_ID, keccak256(rawTx)), () => ({
       op: 'set',
       value: { state: 'inflight' as const, ts: Date.now() },
       result: true as const,
@@ -503,7 +711,14 @@ describe('verifyTransaction broadcast error categorization (step 11)', () => {
   test('definite-rejected error → release + throw', async () => {
     const rawTx = await signERC20TransferTx()
     const ctx = buildCtx({
-      publicClient: stubPublicClient({ sendError: new Error('invalid signature') }),
+      // A genuine rejection: the node refused the tx AND it is neither
+      // mined nor in the mempool (the verifier now confirms via lookups
+      // instead of pattern-matching the error message).
+      publicClient: stubPublicClient({
+        sendError: new Error('invalid signature'),
+        receiptNotFound: true,
+        mempoolNotFound: true,
+      }),
     })
 
     await expect(
@@ -515,7 +730,7 @@ describe('verifyTransaction broadcast error categorization (step 11)', () => {
     ).rejects.toThrow(/sendRawTransaction rejected.*invalid signature/)
 
     // Slot released for retry
-    expect(await ctx.store.get(txKey(CHAIN_ID, keccak256(rawTx)))).toBeNull()
+    expect(await ctx.store.get(txHashKey(CHAIN_ID, keccak256(rawTx)))).toBeNull()
   })
 
   test('"already known" error + receipt exists → proceed to verify receipt', async () => {
@@ -537,7 +752,7 @@ describe('verifyTransaction broadcast error categorization (step 11)', () => {
       ctx,
     })
     expect(out.reference).toBe(keccak256(rawTx))
-    expect((await ctx.store.get(txKey(CHAIN_ID, keccak256(rawTx))))?.state).toBe('consumed')
+    expect((await ctx.store.get(txHashKey(CHAIN_ID, keccak256(rawTx))))?.state).toBe('consumed')
   })
 
   test('"nonce too low" + receipt missing + mempool missing → release + throw', async () => {
@@ -556,9 +771,9 @@ describe('verifyTransaction broadcast error categorization (step 11)', () => {
         request: baseRequest,
         ctx,
       }),
-    ).rejects.toThrow(/not found in mempool/)
+    ).rejects.toThrow(/not found on-chain or in mempool/)
 
-    expect(await ctx.store.get(txKey(CHAIN_ID, keccak256(rawTx)))).toBeNull()
+    expect(await ctx.store.get(txHashKey(CHAIN_ID, keccak256(rawTx)))).toBeNull()
   })
 
   test('"already known" + getTransactionReceipt RPC ERROR (not NotFound) → keep inflight + surface RPC error', async () => {
@@ -583,10 +798,10 @@ describe('verifyTransaction broadcast error categorization (step 11)', () => {
         request: baseRequest,
         ctx,
       }),
-    ).rejects.toThrow(/getTransactionReceipt RPC error after possibly-accepted send.*ETIMEDOUT/)
+    ).rejects.toThrow(/getTransactionReceipt RPC error after failed send.*ETIMEDOUT/)
 
     // Slot remains inflight — we genuinely don't know whether the tx landed.
-    const stored = await ctx.store.get(txKey(CHAIN_ID, keccak256(rawTx)))
+    const stored = await ctx.store.get(txHashKey(CHAIN_ID, keccak256(rawTx)))
     expect(stored?.state).toBe('inflight')
   })
 
@@ -609,10 +824,83 @@ describe('verifyTransaction broadcast error categorization (step 11)', () => {
         request: baseRequest,
         ctx,
       }),
-    ).rejects.toThrow(/getTransaction RPC error after possibly-accepted send.*ETIMEDOUT/)
+    ).rejects.toThrow(/getTransaction RPC error after failed send.*ETIMEDOUT/)
 
-    const stored = await ctx.store.get(txKey(CHAIN_ID, keccak256(rawTx)))
+    const stored = await ctx.store.get(txHashKey(CHAIN_ID, keccak256(rawTx)))
     expect(stored?.state).toBe('inflight')
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  Repriced-tx nonce probe after send error (step 11)                        */
+/* -------------------------------------------------------------------------- */
+
+describe('verifyTransaction repriced-tx nonce probe (step 11)', () => {
+  // All three cases share the same precondition: the node rejected the
+  // send AND the credential's hash is neither mined nor in the mempool.
+  // That used to release unconditionally ("genuine rejection; nonce
+  // unconsumed") — false when the payer's wallet repriced the tx (same
+  // (from, nonce), different hash): the original hash never mines but
+  // the nonce IS consumed. The verifier now probes getTransactionCount
+  // before deciding. The fixture tx is signed with nonce 0.
+
+  test('sender nonce already consumed → slot stays inflight + replaced message', async () => {
+    const rawTx = await signERC20TransferTx()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        sendError: new Error('nonce too low'),
+        receiptNotFound: true,
+        mempoolNotFound: true,
+        transactionCount: 1, // latest count 1 > tx nonce 0 → consumed by another tx
+      }),
+    })
+
+    await expect(
+      verifyTransaction({ credential: buildCredential({ rawTx }), request: baseRequest, ctx }),
+    ).rejects.toThrow(
+      /appears to have been replaced \(sender account nonce already consumed\).*present the mined transaction hash as a hash credential/,
+    )
+
+    // Keep inflight: releasing would re-admit a credential whose tx can
+    // never mine while the replacement settled the nonce.
+    expect((await ctx.store.get(txHashKey(CHAIN_ID, keccak256(rawTx))))?.state).toBe('inflight')
+  })
+
+  test('sender nonce NOT consumed → release as before (genuine rejection)', async () => {
+    const rawTx = await signERC20TransferTx()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        sendError: new Error('nonce too low'),
+        receiptNotFound: true,
+        mempoolNotFound: true,
+        transactionCount: 0, // count 0 <= tx nonce 0 → nonce unconsumed
+      }),
+    })
+
+    await expect(
+      verifyTransaction({ credential: buildCredential({ rawTx }), request: baseRequest, ctx }),
+    ).rejects.toThrow(/not found on-chain or in mempool/)
+
+    expect(await ctx.store.get(txHashKey(CHAIN_ID, keccak256(rawTx)))).toBeNull()
+  })
+
+  test('getTransactionCount RPC error → slot stays inflight + uncertainty message', async () => {
+    const rawTx = await signERC20TransferTx()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        sendError: new Error('nonce too low'),
+        receiptNotFound: true,
+        mempoolNotFound: true,
+        transactionCountError: new Error('ETIMEDOUT: nonce probe failed'),
+      }),
+    })
+
+    await expect(
+      verifyTransaction({ credential: buildCredential({ rawTx }), request: baseRequest, ctx }),
+    ).rejects.toThrow(/getTransactionCount RPC error after failed send.*ETIMEDOUT/)
+
+    // We genuinely don't know whether the nonce was consumed → inflight.
+    expect((await ctx.store.get(txHashKey(CHAIN_ID, keccak256(rawTx))))?.state).toBe('inflight')
   })
 })
 
@@ -637,7 +925,7 @@ describe('verifyTransaction receipt assertions', () => {
       }),
     ).rejects.toThrow(/reverted on-chain/)
 
-    expect((await ctx.store.get(txKey(CHAIN_ID, keccak256(rawTx))))?.state).toBe('rejected')
+    expect((await ctx.store.get(txHashKey(CHAIN_ID, keccak256(rawTx))))?.state).toBe('rejected')
   })
 
   test('Transfer log from != recoveredSender → markRejected', async () => {
@@ -659,7 +947,7 @@ describe('verifyTransaction receipt assertions', () => {
       }),
     ).rejects.toThrow(/no matching Transfer event/)
 
-    expect((await ctx.store.get(txKey(CHAIN_ID, keccak256(rawTx))))?.state).toBe('rejected')
+    expect((await ctx.store.get(txHashKey(CHAIN_ID, keccak256(rawTx))))?.state).toBe('rejected')
   })
 
   test('Transfer log amount mismatch → markRejected', async () => {
@@ -678,7 +966,7 @@ describe('verifyTransaction receipt assertions', () => {
       }),
     ).rejects.toThrow(/no matching Transfer event/)
 
-    expect((await ctx.store.get(txKey(CHAIN_ID, keccak256(rawTx))))?.state).toBe('rejected')
+    expect((await ctx.store.get(txHashKey(CHAIN_ID, keccak256(rawTx))))?.state).toBe('rejected')
   })
 })
 
@@ -730,23 +1018,27 @@ describe('verifyTransaction — terminal-phase store-write failure keeps slot in
     try {
       const ctx = buildCtx({ store, publicClient: stubPublicClient({ receipt }) })
 
-      await expect(
-        verifyTransaction({
-          credential: buildCredential({ rawTx }),
-          request: baseRequest,
-          ctx,
-        }),
-      ).rejects.toThrow(/ECONNRESET: Redis dropped right at markConsumed/)
+      // The payment mined and matched — the paid payer gets their receipt
+      // even though the consumed-write failed. The slot staying inflight
+      // still blocks replay.
+      const out = await verifyTransaction({
+        credential: buildCredential({ rawTx }),
+        request: baseRequest,
+        ctx,
+      })
+      expect(out.status).toBe('success')
+      expect(out.reference).toBe(expectedHash)
 
       // CRITICAL: slot remains inflight. Releasing would re-admit the
       // same txHash for another verify cycle — the tx already mined, so
       // it would match again on retry → double-record the same payment.
-      const slot = await store.get(txKey(CHAIN_ID, expectedHash))
+      const slot = await store.get(txHashKey(CHAIN_ID, expectedHash))
       expect(slot?.state).toBe('inflight')
 
       // Operator visibility: warn fires so inflight isn't a silent leak.
+      // (consumeSlotBestEffort retried the write 3x before giving up.)
       expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringMatching(/terminal-phase store write failed.*slot remains inflight/),
+        expect.stringMatching(/markConsumed failed after 3 attempts.*remains inflight/),
         expect.any(String),
       )
     } finally {
@@ -790,7 +1082,7 @@ describe('verifyTransaction — terminal-phase store-write failure keeps slot in
         }),
       ).rejects.toThrow(/ECONNRESET: Redis dropped right at markRejected/)
 
-      const slot = await store.get(txKey(CHAIN_ID, expectedHash))
+      const slot = await store.get(txHashKey(CHAIN_ID, expectedHash))
       expect(slot?.state).toBe('inflight')
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringMatching(/terminal-phase store write failed.*slot remains inflight/),

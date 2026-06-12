@@ -33,6 +33,7 @@ import {
   permit2Domain,
   permit2SingleTypes,
 } from '../protocol/TypedData.js'
+import { CANONICAL_PERMIT2_ADDRESS } from '../protocol/Version.js'
 import {
   assertCredentialTypeAccepted,
   assertMatchesChallengeRequest,
@@ -167,9 +168,31 @@ export async function createPermit2Credential(
     }
   }
 
+  // Spec §10.5 SHOULD: "clients SHOULD verify the contract address
+  // matches the canonical deployment." Warn (not throw) so legitimate
+  // fork/mirror deployments keep working while a tampered or
+  // misconfigured challenge is at least visible.
+  if (opts.permit2Address.toLowerCase() !== CANONICAL_PERMIT2_ADDRESS.toLowerCase()) {
+    // eslint-disable-next-line no-console -- §10.5 client-side visibility
+    console.warn(
+      `createPermit2Credential: permit2Address ${opts.permit2Address} is not the canonical ` +
+        `Permit2 deployment (${CANONICAL_PERMIT2_ADDRESS}) — verify this is an intentional ` +
+        'fork/mirror deployment before approving tokens to it (spec §10.5)',
+    )
+  }
+
   const domain = permit2Domain(opts.chainId, opts.permit2Address)
   const nonce = BigInt(opts.nonce)
   const deadline = BigInt(opts.deadline)
+
+  // Fail BEFORE the wallet signature prompt: an expired deadline is
+  // guaranteed server rejection (verifier step 2).
+  const nowSec = BigInt(Math.floor(Date.now() / 1000))
+  if (deadline <= nowSec) {
+    throw new Error(
+      `createPermit2Credential: deadline ${deadline} is not in the future (now=${nowSec})`,
+    )
+  }
 
   // Permit2 `spender` field MUST equal the on-chain `msg.sender` at
   // settlement time, because Permit2's PermitHash._hashWithWitness

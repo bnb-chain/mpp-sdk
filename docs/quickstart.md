@@ -11,8 +11,9 @@ pair (e.g. `ethereum` / `USDC`) by changing two strings; see
 [Curated pairs](#curated-chain--token-pairs).
 
 > Prefer reading code? [`examples/charge-server`](../examples/charge-server)
-> + [`examples/charge-demo`](../examples/charge-demo) are the full, running
-> version of everything below.
+>
+> - [`examples/charge-demo`](../examples/charge-demo) are the full, running
+>   version of everything below.
 
 ## Contents
 
@@ -35,11 +36,11 @@ Peers: `mppx ^0.6.28`, `viem ^2.51.0`. **Node ≥ 22.**
 
 Three entry points:
 
-| Import | Use it for |
-| --- | --- |
-| `@bnb-chain/mpp/server` | The server factory (`chargeAsync` / `preflightCharge`), composed with `Mppx.create()`. |
-| `@bnb-chain/mpp/client` | The four credential constructors (`createHashCredential`, `createPermit2Credential`, …). |
-| `@bnb-chain/mpp` | Universal helpers — `chargeFromDecimal` (decimal → base units) and the `Payment-Receipt` codec. |
+| Import                  | Use it for                                                                                      |
+| ----------------------- | ----------------------------------------------------------------------------------------------- |
+| `@bnb-chain/mpp/server` | The server factory (`chargeAsync` / `preflightCharge`), composed with `Mppx.create()`.          |
+| `@bnb-chain/mpp/client` | The four credential constructors (`createHashCredential`, `createPermit2Credential`, …).        |
+| `@bnb-chain/mpp`        | Universal helpers — `chargeFromDecimal` (decimal → base units) and the `Payment-Receipt` codec. |
 
 ## Concepts in 30 seconds
 
@@ -90,9 +91,7 @@ import { chargeAsync } from '@bnb-chain/mpp/server'
 
 // Settlement signer — broadcasts Permit2 settlement; must hold gas (tBNB on
 // BSC Testnet). Required because TEST_USDT advertises permit2.
-const settlementAccount = privateKeyToAccount(
-  process.env.SETTLEMENT_PRIVATE_KEY as `0x${string}`,
-)
+const settlementAccount = privateKeyToAccount(process.env.SETTLEMENT_PRIVATE_KEY as `0x${string}`)
 
 const charge = await chargeAsync({
   chain: 'bsc-testnet',
@@ -122,9 +121,7 @@ app.get('/article', async (c) => {
   if (result.status === 402) return result.challenge // sends WWW-Authenticate
 
   // Paid + verified + settled. withReceipt attaches the Payment-Receipt header.
-  return result.withReceipt(
-    c.json({ title: 'Premium Article', paidAt: new Date().toISOString() }),
-  )
+  return result.withReceipt(c.json({ title: 'Premium Article', paidAt: new Date().toISOString() }))
 })
 
 serve({ fetch: app.fetch, port: 3000 }, (i) =>
@@ -168,11 +165,7 @@ All signing inputs (`chainId`, `currency`, `recipient`, `amount`,
 ```ts
 // pay.ts — a Node payer (tsx). In a browser, see the wallet note below.
 import { Challenge } from 'mppx'
-import {
-  http,
-  createWalletClient,
-  encodeFunctionData,
-} from 'viem'
+import { http, createWalletClient, encodeFunctionData } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { bscTestnet } from 'viem/chains'
 
@@ -205,9 +198,18 @@ const wallet = createWalletClient({ account: payer, chain: bscTestnet, transport
 const txHash = await wallet.sendTransaction({
   to: currency,
   data: encodeFunctionData({
-    abi: [{ type: 'function', name: 'transfer', stateMutability: 'nonpayable',
-      inputs: [{ name: 'to', type: 'address' }, { name: 'amount', type: 'uint256' }],
-      outputs: [{ type: 'bool' }] }],
+    abi: [
+      {
+        type: 'function',
+        name: 'transfer',
+        stateMutability: 'nonpayable',
+        inputs: [
+          { name: 'to', type: 'address' },
+          { name: 'amount', type: 'uint256' },
+        ],
+        outputs: [{ type: 'bool' }],
+      },
+    ],
     functionName: 'transfer',
     args: [recipient, BigInt(amount)],
   }),
@@ -228,13 +230,13 @@ const randomNonce = (): string => {
 
 const credential = await createPermit2Credential({
   challenge,
-  account: payer,            // a viem LocalAccount
+  account: payer, // a viem LocalAccount
   chainId,
-  permit2Address,            // from the challenge — NOT a hard-coded constant
+  permit2Address, // from the challenge — NOT a hard-coded constant
   currency,
   recipient,
   amount,
-  nonce: randomNonce(),                                  // unordered, single-use
+  nonce: randomNonce(), // unordered, single-use
   deadline: String(Math.floor(Date.now() / 1000) + 600), // +10 min
   // splits: omit — the SDK reads them from the challenge if present
 })
@@ -249,7 +251,7 @@ const credential = await createPermit2Credential({
 
 ```ts
 const paid = await fetch(URL, { headers: { Authorization: credential } })
-console.log(paid.status)                          // 200
+console.log(paid.status) // 200
 const receiptHeader = paid.headers.get('Payment-Receipt')!
 console.log(await paid.json())
 ```
@@ -278,12 +280,12 @@ const receipt = deserializeEvmReceipt(receiptHeader)
 `chain` / `token` are restricted to the curated matrix (v1 — no arbitrary
 BYO ERC-20). A few pairs:
 
-| `chain` | `token` | decimals | notes |
-| --- | --- | --- | --- |
-| `bsc-testnet` | `TEST_USDT` | 18 | testnet (this guide); permit2 / transaction / hash |
-| `ethereum` | `USDC` | 6 | EIP-3009 → also `authorization` |
-| `base` | `USDC` | 6 | EIP-3009 → also `authorization` |
-| `bsc` | `BINANCE_PEG_USDT` | 18 | permit2 / transaction / hash |
+| `chain`       | `token`            | decimals | notes                                              |
+| ------------- | ------------------ | -------- | -------------------------------------------------- |
+| `bsc-testnet` | `TEST_USDT`        | 18       | testnet (this guide); permit2 / transaction / hash |
+| `ethereum`    | `USDC`             | 6        | EIP-3009 → also `authorization`                    |
+| `base`        | `USDC`             | 6        | EIP-3009 → also `authorization`                    |
+| `bsc`         | `BINANCE_PEG_USDT` | 18       | permit2 / transaction / hash                       |
 
 An unsupported pair throws `CuratedLookupError`. The full matrix +
 verification notes live in `src/server/curated.ts`.

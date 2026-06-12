@@ -17,9 +17,10 @@
  * because the verifier re-computes it from the challenge and rejects on
  * mismatch.
  *
- * `validAfter` / `validBefore` default to `now-60s` / `now+10min` which
- * gives a comfortable ~10 minute window; pass explicit values for tighter
- * windows or for advance-scheduled transfers.
+ * `validAfter` defaults to `now-60s`. `validBefore` defaults to the
+ * challenge `expires` timestamp (spec §5.3.2 SHOULD), capped at
+ * `now+10min`; pass explicit values for tighter windows or for
+ * advance-scheduled transfers.
  *
  * EIP-712 domain (`tokenName` + `tokenVersion`) must come from the
  * SDK's curated token matrix — `getCuratedEip712Domain(chain, token)` on
@@ -64,9 +65,12 @@ export interface CreateAuthorizationCredentialOptions {
    */
   readonly validAfter?: string | bigint
   /**
-   * EIP-3009 `validBefore`, unix seconds. Default `now + 600` (10 min
-   * window). Tighten to reduce replay risk if you have a known
-   * settlement-latency budget.
+   * EIP-3009 `validBefore`, unix seconds. Default: the challenge's
+   * `expires` timestamp when present (spec §5.3.2 SHOULD: "validBefore
+   * SHOULD correspond to the challenge expires timestamp"), capped at
+   * `now + 600`; plain `now + 600` when the challenge has no expires.
+   * Tighten to reduce replay risk if you have a known settlement-latency
+   * budget.
    */
   readonly validBefore?: string | bigint
   /**
@@ -76,6 +80,27 @@ export interface CreateAuthorizationCredentialOptions {
    * for audit / logging.
    */
   readonly source?: string
+}
+
+/**
+ * Default `validBefore` per spec §5.3.2: the challenge `expires`
+ * timestamp when present and sane, otherwise (or when expires is further
+ * out) `now + 600`. `challenge.expires` is OPTIONAL in the mppx
+ * Challenge schema, hence the fallback.
+ */
+function defaultValidBefore(
+  opts: Pick<CreateAuthorizationCredentialOptions, 'challenge'>,
+  nowSec: bigint,
+): bigint {
+  const fallback = nowSec + 600n
+  const expiresIso = opts.challenge.expires
+  if (expiresIso === undefined) return fallback
+  const expiresMs = Date.parse(expiresIso)
+  if (!Number.isFinite(expiresMs)) return fallback
+  const expiresSec = BigInt(Math.floor(expiresMs / 1000))
+  // Already-expired challenges fail the in-the-future check below with a
+  // clear message rather than silently widening to the fallback window.
+  return expiresSec < fallback ? expiresSec : fallback
 }
 
 export async function createAuthorizationCredential(
@@ -104,7 +129,21 @@ export async function createAuthorizationCredential(
 
   const nowSec = BigInt(Math.floor(Date.now() / 1000))
   const validAfter = opts.validAfter !== undefined ? BigInt(opts.validAfter) : nowSec - 60n
-  const validBefore = opts.validBefore !== undefined ? BigInt(opts.validBefore) : nowSec + 600n
+  const validBefore =
+    opts.validBefore !== undefined ? BigInt(opts.validBefore) : defaultValidBefore(opts, nowSec)
+
+  // Fail BEFORE the wallet signature prompt: a window the server is
+  // guaranteed to reject must never cost the user a signing interaction.
+  if (validBefore <= nowSec) {
+    throw new Error(
+      `createAuthorizationCredential: validBefore ${validBefore} is not in the future (now=${nowSec})`,
+    )
+  }
+  if (validAfter >= validBefore) {
+    throw new Error(
+      `createAuthorizationCredential: validAfter ${validAfter} >= validBefore ${validBefore} — empty validity window`,
+    )
+  }
 
   const value = BigInt(opts.amount)
   const from = opts.account.address

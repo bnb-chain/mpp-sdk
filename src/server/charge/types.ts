@@ -56,7 +56,37 @@ export interface ServerParameters {
   readonly settlementWalletClient?: WalletClient
 
   // On-chain behaviour
+  /**
+   * Confirmation depth required before a credential is accepted / a
+   * settlement receipt is returned (spec §7.5 server policy). Applies to
+   * ALL FOUR credential paths: hash + transaction verification depth AND
+   * the permit2 / authorization settlement receipt wait. Defaults to the
+   * chain's curated value (reorg buffer).
+   */
   readonly confirmations?: number
+  /**
+   * Max milliseconds the settling verifiers (permit2 / authorization /
+   * transaction) wait for the settlement receipt while holding the HTTP
+   * request open. Unset → viem default (180s). Deployments behind load
+   * balancers with shorter idle timeouts should set this below the LB
+   * timeout so clients receive a retryable error instead of a severed
+   * connection (the replay slot stays inflight either way and is
+   * reclaimed after `inflightTtlMs` once stale). Must be a positive safe
+   * integer when present — enforced by preflightCharge at boot.
+   */
+  readonly settlementTimeoutMs?: number
+  /**
+   * Age in milliseconds after which a stale `inflight` replay slot is
+   * reclaimable by a retry (see Replay.ts `reserve`). Defaults to 10
+   * minutes. Enforced by preflightCharge at boot: must be a positive
+   * safe integer satisfying
+   * `inflightTtlMs >= (settlementTimeoutMs ?? 180_000) + 120_000`
+   * (viem's default receipt-wait timeout plus a worst-case mining-delay
+   * margin) — a shorter TTL would let a retry reclaim a slot whose
+   * settlement is still inside `waitForTransactionReceipt` and
+   * double-broadcast it.
+   */
+  readonly inflightTtlMs?: number
   /** §8.4 hash verifier source-binding policy. Defaults to 'lax_from'. */
   readonly hashFromPolicy?: 'strict_from' | 'lax_from'
 
@@ -91,9 +121,10 @@ export interface ResolvedChargeParams extends ServerParameters {
     readonly store: ChargeStore
     readonly verifyChallengeBinding: VerifyChallengeBindingFn
     /**
-     * Effective confirmations depth used by hash + transaction verifiers.
-     * Resolved from `params.confirmations` or the chain's curated default
-     * (`curatedDefaultConfirmations`).
+     * Effective confirmations depth used by ALL FOUR verifiers (hash +
+     * transaction verification depth; permit2 + authorization settlement
+     * receipt wait). Resolved from `params.confirmations` or the chain's
+     * curated default (`curatedDefaultConfirmations`).
      */
     readonly confirmations: number
     /**

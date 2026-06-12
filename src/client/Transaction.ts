@@ -94,6 +94,19 @@ export async function createTransactionCredential(
     amount: opts.amount,
   })
 
+  // Fail BEFORE signing: the server cross-checks source against the
+  // recovered tx sender, so a source not matching the signing account is
+  // a guaranteed rejection.
+  if (opts.source !== undefined) {
+    const expectedSource = `did:pkh:eip155:${opts.chainId}:${opts.account.address}`
+    if (opts.source.toLowerCase() !== expectedSource.toLowerCase()) {
+      throw new Error(
+        `createTransactionCredential: opts.source '${opts.source}' does not match the signing ` +
+          `account ('${expectedSource}')`,
+      )
+    }
+  }
+
   const data = encodeFunctionData({
     abi: ERC20_TRANSFER_ABI,
     functionName: 'transfer',

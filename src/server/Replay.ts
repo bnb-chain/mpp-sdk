@@ -124,7 +124,7 @@ export interface ReplaySlotValue {
  * Key shape for every replay slot. Templated `${prefix}:evm:charge:${...}`
  * to keep the EVM Charge namespace isolated from other intents sharing the
  * same backing store. Enforced by the key-factory return types (permit2Key,
- * authKey, txKey, hashKey) — every key flowing through the store APIs goes
+ * authKey, txHashKey) — every key flowing through the store APIs goes
  * through one of those factories.
  */
 export type ReplayKey = `${string}:evm:charge:${string}`
@@ -146,42 +146,85 @@ export type ChargeStore = Store.AtomicStore<ReplayItemMap>
 /* -------------------------------------------------------------------------- */
 
 /**
+ * Default age after which a stale `inflight` slot becomes reclaimable by
+ * a new `reserve()`. Comfortably above viem's 180s receipt-wait default
+ * plus worst-case mining delay on the curated chains.
+ */
+export const DEFAULT_INFLIGHT_TTL_MS = 10 * 60 * 1000
+
+/**
  * Atomically claim a replay slot.
  *
  * Returns `true` iff the slot was free (and is now `inflight`); `false` if
  * any prior state is present (inflight from a concurrent verify, consumed
  * from a successful settlement, or rejected from a known-bad credential).
  *
+ * Stale-inflight reclaim: a crash, receipt-wait timeout, or severed
+ * connection can strand a slot in `inflight`. Without recovery, every
+ * retry would fail "concurrent verify in progress" forever. A slot whose
+ * `ts` is older than `inflightTtlMs` (default 10min) is therefore
+ * reclaimed — atomically, inside the same CAS — and the retry re-enters
+ * verification. This is safe because every verifier re-checks on-chain
+ * state after reserve (nonce consumption / receipt lookups), so a
+ * settlement that DID land while the slot was stranded is detected
+ * rather than double-executed. Terminal states (consumed / rejected) are
+ * NEVER reclaimed.
+ *
  * MUST be implemented via `store.update` — never a separate `has` + `set`
  * pair (spec §9.3: that opens a TOCTOU double-spend window).
  */
-export async function reserve(store: ChargeStore, key: ReplayKey): Promise<boolean> {
+export async function reserve(
+  store: ChargeStore,
+  key: ReplayKey,
+  opts?: { readonly inflightTtlMs?: number | undefined },
+): Promise<boolean> {
+  const inflightTtlMs = opts?.inflightTtlMs ?? DEFAULT_INFLIGHT_TTL_MS
   return withStoreUnavailableWrap('reserve', key, () =>
     store.update(key, (current) => {
-      if (current !== null) return { op: 'noop', result: false }
+      if (current !== null) {
+        const stale = current.state === 'inflight' && Date.now() - current.ts >= inflightTtlMs
+        if (!stale) return { op: 'noop', result: false }
+        // fall through: reclaim the stale inflight slot
+      }
       return { op: 'set', value: { state: 'inflight', ts: Date.now() }, result: true }
     }),
   )
 }
 
 /**
- * Mark a reserved slot as successfully settled. Permanent — no caller may
- * release this slot afterwards.
+ * Mark a reserved slot as successfully settled. Permanent — and the
+ * permanence is enforced by the CAS itself: a slot already in a terminal
+ * state (`consumed` / `rejected`) is never overwritten. After a
+ * stale-inflight reclaim race two flows can each believe they own the
+ * slot; without this guard the loser's late `markRejected` could
+ * downgrade a settled payment (or this call could flip a `rejected`
+ * verdict to `consumed`). Re-marking the same terminal state is a
+ * harmless noop — the existing value (and its `ts`) is kept.
  */
 export async function markConsumed(store: ChargeStore, key: ReplayKey): Promise<void> {
   await withStoreUnavailableWrap('markConsumed', key, () =>
-    store.update(key, () => ({
-      op: 'set',
-      value: { state: 'consumed', ts: Date.now() },
-      result: true as const,
-    })),
+    store.update(key, (current) => {
+      if (current !== null && current.state !== 'inflight') {
+        // Terminal states are write-once — keep the existing value.
+        return { op: 'noop', result: false as const }
+      }
+      return {
+        op: 'set',
+        value: { state: 'consumed', ts: Date.now() },
+        result: true as const,
+      }
+    }),
   )
 }
 
 /**
  * Mark a reserved slot as known-bad with a diagnostic reason. Permanent
  * unless an operator policy explicitly documents TTL-based cleanup for the
- * pre-broadcast case (see file header).
+ * pre-broadcast case (see file header). Like `markConsumed`, the
+ * permanence is enforced by the CAS itself: a slot already in a terminal
+ * state (`consumed` / `rejected`) is never overwritten — a late loser of
+ * a stale-inflight reclaim race cannot downgrade a `consumed` slot, and
+ * re-marking an already-`rejected` slot keeps the FIRST reason (and `ts`).
  */
 export async function markRejected(
   store: ChargeStore,
@@ -189,11 +232,17 @@ export async function markRejected(
   reason: string,
 ): Promise<void> {
   await withStoreUnavailableWrap('markRejected', key, () =>
-    store.update(key, () => ({
-      op: 'set',
-      value: { state: 'rejected', ts: Date.now(), reason },
-      result: true as const,
-    })),
+    store.update(key, (current) => {
+      if (current !== null && current.state !== 'inflight') {
+        // Terminal states are write-once — keep the existing value.
+        return { op: 'noop', result: false as const }
+      }
+      return {
+        op: 'set',
+        value: { state: 'rejected', ts: Date.now(), reason },
+        result: true as const,
+      }
+    }),
   )
 }
 
@@ -267,7 +316,12 @@ export function permit2Key(
   signer: Address,
   nonce: string,
 ): ReplayKey {
-  return `${NAMESPACE}:evm:charge:permit2:${chainId}:${permit2Address.toLowerCase()}:${signer.toLowerCase()}:${nonce}`
+  // Canonicalize via BigInt: the EIP-712 message hashes BigInt(nonce), so
+  // "1" and "01" carry the identical signature. Keying on the raw wire
+  // string would give re-encodings of the same nonce distinct slots —
+  // concurrent submissions of both would each pass reserve() and
+  // double-broadcast the settlement.
+  return `${NAMESPACE}:evm:charge:permit2:${chainId}:${permit2Address.toLowerCase()}:${signer.toLowerCase()}:${BigInt(nonce).toString()}`
 }
 
 /**
@@ -285,12 +339,17 @@ export function authKey(chainId: number, token: Address, from: Address, nonce: H
   return `${NAMESPACE}:evm:charge:auth:${chainId}:${token.toLowerCase()}:${from.toLowerCase()}:${nonce.toLowerCase()}`
 }
 
-/** Replay key for a transaction credential, scoped by (chainId, txHash). */
-export function txKey(chainId: number, txHash: Hex): ReplayKey {
-  return `${NAMESPACE}:evm:charge:tx:${chainId}:${txHash.toLowerCase()}`
-}
-
-/** Replay key for a hash credential, scoped by (chainId, txHash). */
-export function hashKey(chainId: number, txHash: Hex): ReplayKey {
-  return `${NAMESPACE}:evm:charge:hash:${chainId}:${txHash.toLowerCase()}`
+/**
+ * Replay key for an on-chain transaction hash — shared by `transaction`
+ * AND `hash` credentials.
+ *
+ * Spec §8 defines the SAME replay token for both credential types: the
+ * transaction hash. They MUST share one keyspace — a transfer settled via
+ * a `transaction` credential must not be redeemable again as a `hash`
+ * credential for a second equal-priced challenge (or vice versa). Keying
+ * by credential type would split that single token into two independent
+ * slots and let one on-chain transfer settle two charges.
+ */
+export function txHashKey(chainId: number, txHash: Hex): ReplayKey {
+  return `${NAMESPACE}:evm:charge:txhash:${chainId}:${txHash.toLowerCase()}`
 }

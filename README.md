@@ -15,7 +15,7 @@ Brings the BNB Chain ecosystem (BSC, opBNB) plus the wider EVM landscape (Ethere
 | **Receipt**           | `draft §7.6` `Payment-Receipt` via a browser-safe codec (`buildEvmReceipt` / `serializeEvmReceipt`)                            |
 | **Replay protection** | 3-state atomic store (inflight / consumed / rejected); durable backend required in production                                  |
 
-All four credential paths are live end-to-end (see `examples/charge-server` + `examples/charge-demo`). For the full picture see [`docs/`](docs/) — architecture, spec compliance / extensions, replay store, and example walkthroughs. Release notes are managed with [Changesets](https://github.com/changesets/changesets) (`.changeset/`); `CHANGELOG.md` is generated at publish time.
+All four credential paths are live end-to-end (see `examples/charge-server` + `examples/charge-demo`). For the full picture see [`docs/`](docs/) — architecture, spec compliance / extensions, replay store, and example walkthroughs. Release notes are managed with [Changesets](https://github.com/changesets/changesets) (`.changeset/`); `CHANGELOG.md` is generated at publish time — see [`docs/releasing.md`](docs/releasing.md) for the release pipeline.
 
 v1 limits: curated token presets only (no arbitrary BYO ERC-20), and the SDK adds one spec extension (`methodDetails.permit2Spender`) that `draft-evm-charge-00` doesn't define but Permit2 settlement requires — see [`docs/spec-compliance.md`](docs/spec-compliance.md).
 
@@ -95,8 +95,11 @@ What the SDK enforces and what it doesn't:
 
 Suggested durable backends:
 
-- **Redis** — `SET key value NX PX <ttl>` for atomic reserve; works on
-  Upstash, AWS ElastiCache, self-hosted.
+- **Redis** — `SET key value NX` for atomic reserve; works on
+  Upstash, AWS ElastiCache, self-hosted. Do NOT attach a backend TTL
+  (`PX` / `EXPIRE`) — terminal slots must never expire, and stale
+  `inflight` slots are reclaimed by `reserve()` itself (see
+  [`docs/replay-store.md`](docs/replay-store.md)).
 - **Postgres** — `INSERT ... ON CONFLICT DO NOTHING` for atomic reserve;
   works on Neon, Supabase, RDS.
 - **Cloudflare KV / DO** — `put` with `conditional-write` for KV, or
@@ -197,7 +200,7 @@ The table below lists the **EIP-3009-enabled** anchors (where the `authorization
 | bsc         | FDUSD            | [`0xc5f0...6409`](https://bscscan.com/address/0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409)          | 18       | yes (First Digital Labs, domain `First Digital USD` / `1`)                     |
 | bsc         | U                | [`0xcE24...6666`](https://bscscan.com/address/0xcE24439F2D9C6a2289F741120FE202248B666666)          | 18       | yes (United Stables `$U`, domain `United Stables` / `1`)                       |
 | sepolia     | USDC             | [`0x1c7D...7238`](https://sepolia.etherscan.io/address/0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238) | 6        | yes (Circle native, domain `USDC` / `2`) — testnet, see `examples/charge-demo` |
-| bsc-testnet | TEST_USDT        | TODO (pin verified contract before live tests)                                                     | 18       | no                                                                             |
+| bsc-testnet | TEST_USDT        | [`0x3376...4dDd`](https://testnet.bscscan.com/address/0x337610d27c682E347C9cD60BD4b3b107C9d34dDd)  | 18       | no — testnet-only (PancakeSwap test USDT), see `examples/charge-server`        |
 
 ### Expanded coverage
 
@@ -226,6 +229,8 @@ Issuer-native stablecoins curated across the supported chains. These advertise `
 | bsc                                                                         | 56      | 3                     | reorg buffer |
 | opbnb                                                                       | 204     | 1                     |              |
 | sepolia / _-sepolia / _-amoy / avalanche-fuji / bsc-testnet / opbnb-testnet | various | 0                     | dev velocity |
+
+The default confirmations depth is overridable via `ServerParameters.confirmations` and applies to **all four credential paths** — the verification depth for `hash` / `transaction` AND the settlement-receipt wait for `permit2` / `authorization`. Two related `ServerParameters` knobs: `settlementTimeoutMs` caps how long the settling verifiers hold the HTTP request open waiting for the settlement receipt (unset → viem's 180 s default; set it below your load balancer's idle timeout), and `inflightTtlMs` sets the age after which a stale `inflight` replay slot becomes reclaimable by a retry (default 10 min; keep it comfortably above `settlementTimeoutMs` — see [`docs/replay-store.md`](docs/replay-store.md)).
 
 Permit2 deployment is auto-probed at `preflightCharge` time via `eth_getCode` against the resolved address. v1 does not open arbitrary BYO chain — `rpcUrl` and `chainOverride` may only override an existing preset's RPC / viem `Chain` metadata.
 

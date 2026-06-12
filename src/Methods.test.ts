@@ -7,6 +7,9 @@
  *      decimals 0..36, address hex shape)
  *   3. Cross-field check: sum(splits[].amount) < amount
  *   4. Unknown / denylist fields are stripped from output (not rejected)
+ *   5. credentialPayload wire schema (per-type discriminated union guards:
+ *      signature 64/65-byte lengths, decimal-string nonce/deadline, bytes32
+ *      nonce/hash, minLength(1) arrays)
  *
  * Test addresses are explicit lowercase 20-byte hex. Using `'0x...'` triggers
  * the address-regex schema first and masks downstream REQUIRED-field guards.
@@ -292,7 +295,165 @@ describe('chargeMethod.schema.request denylist (SDK internals stripped on parse)
 })
 
 /* -------------------------------------------------------------------------- */
-/*  5. Method identity sanity                                                 */
+/*  5. credentialPayload wire schema                                          */
+/* -------------------------------------------------------------------------- */
+
+const credentialPayload = chargeMethod.schema.credential.payload
+
+// evmSignature accepts exactly 64-byte (EIP-2098 compact, 0x + 128 hex) or
+// 65-byte (r||s||v, 0x + 130 hex). Anything else — like 0x + 100 hex — rejects.
+const SIG_64_BYTE = `0x${'cd'.repeat(64)}`
+const SIG_65_BYTE = `0x${'ab'.repeat(65)}`
+const SIG_WRONG_LENGTH = `0x${'a'.repeat(100)}`
+const BYTES32 = `0x${'11'.repeat(32)}`
+
+const VALID_PERMIT2_PAYLOAD = {
+  type: 'permit2',
+  permit: {
+    permitted: [{ token: CURRENCY, amount: '1000000' }],
+    nonce: '1',
+    deadline: '1700000000',
+  },
+  transferDetails: [{ to: RECIPIENT, requestedAmount: '1000000' }],
+  witness: { challengeHash: BYTES32 },
+  signature: SIG_65_BYTE,
+} as const
+
+const VALID_AUTHORIZATION_PAYLOAD = {
+  type: 'authorization',
+  from: CURRENCY,
+  to: RECIPIENT,
+  value: '1000000',
+  validAfter: '0',
+  validBefore: '1700000000',
+  nonce: BYTES32,
+  signature: SIG_65_BYTE,
+} as const
+
+describe('credentialPayload wire schema', () => {
+  describe('permit2', () => {
+    test('happy path: valid permit2 payload parses (65-byte r||s||v signature)', () => {
+      expect(() => credentialPayload.parse(VALID_PERMIT2_PAYLOAD)).not.toThrow()
+    })
+
+    test('accepts 64-byte EIP-2098 compact signature', () => {
+      expect(() =>
+        credentialPayload.parse({ ...VALID_PERMIT2_PAYLOAD, signature: SIG_64_BYTE }),
+      ).not.toThrow()
+    })
+
+    test('rejects signature with wrong hex length (0x + 100 chars)', () => {
+      expect(() =>
+        credentialPayload.parse({ ...VALID_PERMIT2_PAYLOAD, signature: SIG_WRONG_LENGTH }),
+      ).toThrow(/signature/i)
+    })
+
+    test('rejects empty permit.permitted [] (minLength 1)', () => {
+      expect(() =>
+        credentialPayload.parse({
+          ...VALID_PERMIT2_PAYLOAD,
+          permit: { ...VALID_PERMIT2_PAYLOAD.permit, permitted: [] },
+        }),
+      ).toThrow(/permitted/i)
+    })
+
+    test('rejects empty transferDetails [] (minLength 1)', () => {
+      expect(() =>
+        credentialPayload.parse({ ...VALID_PERMIT2_PAYLOAD, transferDetails: [] }),
+      ).toThrow(/transferDetails/i)
+    })
+
+    test('rejects non-decimal nonce "0x12" (uint256 decimal string only)', () => {
+      expect(() =>
+        credentialPayload.parse({
+          ...VALID_PERMIT2_PAYLOAD,
+          permit: { ...VALID_PERMIT2_PAYLOAD.permit, nonce: '0x12' },
+        }),
+      ).toThrow(/nonce/i)
+    })
+
+    test('rejects non-decimal nonce "abc"', () => {
+      expect(() =>
+        credentialPayload.parse({
+          ...VALID_PERMIT2_PAYLOAD,
+          permit: { ...VALID_PERMIT2_PAYLOAD.permit, nonce: 'abc' },
+        }),
+      ).toThrow(/nonce/i)
+    })
+
+    test('rejects non-decimal deadline (unix seconds decimal string only)', () => {
+      expect(() =>
+        credentialPayload.parse({
+          ...VALID_PERMIT2_PAYLOAD,
+          permit: { ...VALID_PERMIT2_PAYLOAD.permit, deadline: '0x12' },
+        }),
+      ).toThrow(/deadline/i)
+    })
+  })
+
+  describe('authorization', () => {
+    test('happy path: valid bytes32 nonce parses', () => {
+      expect(() => credentialPayload.parse(VALID_AUTHORIZATION_PAYLOAD)).not.toThrow()
+    })
+
+    test('rejects nonce that is too short (not 32 bytes)', () => {
+      expect(() =>
+        credentialPayload.parse({ ...VALID_AUTHORIZATION_PAYLOAD, nonce: '0x1234' }),
+      ).toThrow(/nonce/i)
+    })
+
+    test('rejects nonce without 0x prefix', () => {
+      expect(() =>
+        credentialPayload.parse({ ...VALID_AUTHORIZATION_PAYLOAD, nonce: '11'.repeat(32) }),
+      ).toThrow(/nonce/i)
+    })
+
+    test('accepts 64-byte EIP-2098 compact signature', () => {
+      expect(() =>
+        credentialPayload.parse({ ...VALID_AUTHORIZATION_PAYLOAD, signature: SIG_64_BYTE }),
+      ).not.toThrow()
+    })
+
+    test('rejects signature with wrong hex length (0x + 100 chars)', () => {
+      expect(() =>
+        credentialPayload.parse({ ...VALID_AUTHORIZATION_PAYLOAD, signature: SIG_WRONG_LENGTH }),
+      ).toThrow(/signature/i)
+    })
+  })
+
+  describe('transaction', () => {
+    test('happy path: 0x-prefixed hex raw transaction parses (length unconstrained)', () => {
+      expect(() =>
+        credentialPayload.parse({ type: 'transaction', signature: '0x02f87082' }),
+      ).not.toThrow()
+    })
+
+    test('rejects malformed signature (not hex)', () => {
+      expect(() => credentialPayload.parse({ type: 'transaction', signature: 'not-hex' })).toThrow(
+        /signature/i,
+      )
+    })
+  })
+
+  describe('hash', () => {
+    test('happy path: valid 32-byte tx hash parses', () => {
+      expect(() => credentialPayload.parse({ type: 'hash', hash: BYTES32 })).not.toThrow()
+    })
+
+    test('rejects hash that is too short (not 32 bytes)', () => {
+      expect(() => credentialPayload.parse({ type: 'hash', hash: '0x1234' })).toThrow(/hash/i)
+    })
+
+    test('rejects hash without 0x prefix', () => {
+      expect(() => credentialPayload.parse({ type: 'hash', hash: 'de'.repeat(32) })).toThrow(
+        /hash/i,
+      )
+    })
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  6. Method identity sanity                                                 */
 /* -------------------------------------------------------------------------- */
 
 test('chargeMethod identity matches draft (name=evm, intent=charge)', () => {

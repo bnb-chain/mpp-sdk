@@ -148,7 +148,9 @@ export function permit2Domain(chainId: number, permit2Address: Address) {
  * 32-byte opaque identifiers per the EIP-3009 standard, not counters.
  */
 export function eip3009Nonce(challengeId: string, realm: string): Hex {
-  return keccak256(encodePacked(['string', 'string'], [challengeId, realm]))
+  // Byte-identical to computeChallengeHash by spec design — alias rather
+  // than duplicate so the two derivations can never drift.
+  return computeChallengeHash(challengeId, realm)
 }
 
 /**

@@ -18,6 +18,14 @@
  * fail-closed tests. Together those two test surfaces cover the full path
  * spec §14.5.1.2 mandates: verifier success → buildEvmReceipt → wire bytes
  * preserved on header decode.
+ *
+ * The second describe block covers the draft §7.6/§9 HTTP error contract:
+ * failing credentials driven through the full mppx HTTP route
+ * (`handler.evm.charge(...)(Request)`) must produce a 402 Response with a
+ * fresh `WWW-Authenticate: Payment` challenge, an `application/problem+json`
+ * body using the §9 standard problem types, and — critically — NO
+ * `Payment-Receipt` header (§7.6: "Servers MUST NOT include a
+ * Payment-Receipt header on error responses").
  */
 
 import { Credential } from 'mppx'
@@ -149,5 +157,166 @@ describe('§14.5.1.2 — hash credential real mppx pipeline', () => {
       externalId: 'order-int-1',
       timestamp: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/),
     })
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  §7.6 + §9 — HTTP error contract through the real mppx route               */
+/* -------------------------------------------------------------------------- */
+
+const TX_REVERTED = `0x${'ee'.repeat(32)}` as const
+
+/**
+ * Stub publicClient whose receipt lookup returns a REVERTED transaction.
+ * Confirmations still pass (blockNumber 100, latest 200 → 101 ≥ 12), so
+ * `verifyHash` reaches step 4 (`receipt.status !== 'success'`) and throws
+ * `Errors.VerificationFailedError` — the §9 `verification-failed` case.
+ */
+function revertedStubPublicClient(): PublicClient {
+  return {
+    async getTransactionReceipt() {
+      return {
+        blockHash: `0x${'a'.repeat(64)}`,
+        blockNumber: 100n,
+        contractAddress: null,
+        cumulativeGasUsed: 0n,
+        effectiveGasPrice: 0n,
+        from: PAYER,
+        gasUsed: 0n,
+        logs: [],
+        logsBloom: '0x',
+        status: 'reverted' as const,
+        to: USDC_ETHEREUM,
+        transactionHash: TX_REVERTED,
+        transactionIndex: 0,
+        type: 'eip1559' as const,
+      }
+    },
+    async getBlockNumber() {
+      return 200n
+    },
+  } as unknown as PublicClient
+}
+
+/** Builds the full real-mppx HTTP route used by every error-contract test. */
+async function setupHttpRoute(publicClient: PublicClient) {
+  const prepared = await preflightChargeForTest(
+    {
+      chain: 'ethereum',
+      token: 'USDC',
+      recipient: RECIPIENT,
+      credentialTypes: ['hash'],
+      challengeBinding: { mode: 'mppx-managed' },
+    },
+    {
+      mockedIsContractDeployed: () => true,
+      publicClient,
+    },
+  )
+  const server = charge(prepared)
+  // Explicit realm: route-mode challenges derive realm from the Request URL
+  // hostname when Mppx.create has none, while `handler.challenge.*` (no
+  // captured request) falls back to mppx's default realm — the Tier-2 pinned
+  // `realm` binding would then reject the credential with invalid-challenge
+  // before the verifier ever runs. Pinning the realm here (as any real
+  // deployment does) keeps both sides identical.
+  const handler = Mppx.create({
+    methods: [server],
+    realm: 'api.test.example',
+    secretKey: SECRET,
+  })
+  const fullRequestArgs = {
+    amount: AMOUNT,
+    externalId: 'order-int-err',
+  }
+  // The configured route: `(input: Request) => Promise<MethodFn.Response>`.
+  // On failure mppx returns `{ status: 402, challenge: Response }` where
+  // `challenge` is the actual HTTP Response built by the transport's
+  // `respondChallenge` (evmHttpTransport inherits it from Transport.http()).
+  const route = handler.evm.charge(fullRequestArgs)
+  return { handler, route, fullRequestArgs }
+}
+
+/** Narrows the mppx route result to the 402 branch and returns the Response. */
+function expect402Response(
+  result: Awaited<ReturnType<Awaited<ReturnType<typeof setupHttpRoute>>['route']>>,
+): Response {
+  expect(result.status).toBe(402)
+  if (result.status !== 402) throw new Error('expected 402 route result')
+  return result.challenge
+}
+
+describe('§7.6 + §9 — HTTP error contract through real mppx route', () => {
+  test('reverted tx → 402, fresh WWW-Authenticate, problem+json verification-failed, NO Payment-Receipt', async () => {
+    const { handler, route, fullRequestArgs } = await setupHttpRoute(revertedStubPublicClient())
+
+    // Issue a real challenge through mppx (HMAC id = HMAC(SECRET)) and bind
+    // a hash credential whose receipt lookup will come back reverted.
+    const challenge = await handler.challenge.evm.charge(fullRequestArgs)
+    const credential = Credential.from({
+      challenge,
+      payload: { type: 'hash', hash: TX_REVERTED },
+    })
+
+    // Full pipeline: Authorization parse → HMAC → stable binding → Expires
+    // → payload schema → verifyHash (throws VerificationFailedError on the
+    // reverted receipt) → transport.respondChallenge.
+    const result = await route(
+      new Request('https://api.test.example/resource', {
+        headers: { Authorization: Credential.serialize(credential) },
+      }),
+    )
+    const response = expect402Response(result)
+
+    // (1) §9: HTTP 402 Payment Required.
+    expect(response.status).toBe(402)
+
+    // (2) §9: a fresh `WWW-Authenticate: Payment` challenge is present.
+    const wwwAuthenticate = response.headers.get('WWW-Authenticate')
+    expect(wwwAuthenticate).not.toBeNull()
+    expect(wwwAuthenticate!.startsWith('Payment ')).toBe(true)
+    expect(wwwAuthenticate).toMatch(/id="[^"]+"/)
+
+    // (3) §7.6: "Servers MUST NOT include a Payment-Receipt header on error
+    // responses".
+    expect(response.headers.get('Payment-Receipt')).toBeNull()
+
+    // (4) §9: Problem Details body with one of the three standard types —
+    // a failing on-chain verification maps to `verification-failed`.
+    expect(response.headers.get('Content-Type')).toBe('application/problem+json')
+    const problem = await response.json()
+    expect(problem.status).toBe(402)
+    expect(problem.type).toContain('verification-failed')
+    expect(problem.detail).toMatch(/reverted/i)
+  })
+
+  test('malformed Authorization credential → 402, NO Payment-Receipt, problem+json malformed-credential', async () => {
+    // happyStubPublicClient is never reached — the credential fails to
+    // deserialize before any verifier runs.
+    const { route } = await setupHttpRoute(happyStubPublicClient())
+
+    const result = await route(
+      new Request('https://api.test.example/resource', {
+        headers: { Authorization: 'Payment not-valid-base64url-credential!!!' },
+      }),
+    )
+    const response = expect402Response(result)
+
+    expect(response.status).toBe(402)
+    const wwwAuthenticate = response.headers.get('WWW-Authenticate')
+    expect(wwwAuthenticate).not.toBeNull()
+    expect(wwwAuthenticate!.startsWith('Payment ')).toBe(true)
+    expect(response.headers.get('Payment-Receipt')).toBeNull()
+
+    // mppx maps a garbage Authorization value (Credential.deserialize throws
+    // InvalidCredentialEncodingError) to Errors.MalformedCredentialError,
+    // whose problem type URI is
+    // `https://paymentauth.org/problems/malformed-credential` — which IS one
+    // of the three §9 standard types (malformed-credential /
+    // invalid-challenge / verification-failed).
+    expect(response.headers.get('Content-Type')).toBe('application/problem+json')
+    const problem = await response.json()
+    expect(problem.status).toBe(402)
+    expect(problem.type).toContain('malformed-credential')
   })
 })

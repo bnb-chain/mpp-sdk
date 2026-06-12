@@ -90,10 +90,7 @@ export function App(): JSX.Element {
   // credential back for settlement. Forced true (not persisted) so the demo
   // can't be flipped into local-only mode from a stale localStorage value.
   const serverMode = true
-  const [serverEndpoint] = usePersistedString<string>(
-    STORAGE_KEYS.serverEndpoint,
-    DEFAULT_ENDPOINT,
-  )
+  const [serverEndpoint] = usePersistedString<string>(STORAGE_KEYS.serverEndpoint, DEFAULT_ENDPOINT)
 
   // ── Non-persisted shared state ───────────────────────────────────────
   const [splits, setSplits] = useState<DemoState['splits']>([])

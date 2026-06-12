@@ -4,7 +4,12 @@
  *   - reserve is atomic CAS — two parallel callers cannot both succeed
  *   - markConsumed / markRejected are permanent — release/reserve cannot
  *     resurrect the slot
+ *   - terminal states are write-once (CAS-enforced) — after a
+ *     stale-inflight reclaim race, a late markRejected cannot downgrade
+ *     a consumed slot (and vice versa)
  *   - release only works on `inflight` (consumed / rejected are permanent)
+ *   - stale `inflight` slots (ts older than inflightTtlMs, default 10min)
+ *     are reclaimed by reserve; consumed / rejected are NEVER reclaimed
  *   - keys lowercase all address inputs (EIP-55 insensitivity)
  *   - keys carry the full discriminators required to prevent cross-token /
  *     cross-deployment collisions
@@ -15,16 +20,17 @@ import { describe, expect, test } from 'vitest'
 
 import {
   type ChargeStore,
+  type ReplayKey,
+  type ReplaySlotValue,
   authKey,
   getReplaySlot,
-  hashKey,
   markConsumed,
   markRejected,
   permit2Key,
   release,
   ReplayStoreUnavailableError,
   reserve,
-  txKey,
+  txHashKey,
 } from './Replay.js'
 
 const PERMIT2 = '0x000000000022d473030f116ddee9f6b43ac78ba3'
@@ -43,7 +49,7 @@ const freshStore = (): ChargeStore => Store.memory() as ChargeStore
 describe('reserve (atomic CAS)', () => {
   test('first reserve returns true; slot now inflight', async () => {
     const store = freshStore()
-    const key = txKey(1, TX_HASH)
+    const key = txHashKey(1, TX_HASH)
     expect(await reserve(store, key)).toBe(true)
     const slot = await store.get(key)
     expect(slot?.state).toBe('inflight')
@@ -52,14 +58,14 @@ describe('reserve (atomic CAS)', () => {
 
   test('second reserve returns false while inflight', async () => {
     const store = freshStore()
-    const key = txKey(1, TX_HASH)
+    const key = txHashKey(1, TX_HASH)
     expect(await reserve(store, key)).toBe(true)
     expect(await reserve(store, key)).toBe(false)
   })
 
   test('parallel reserves: exactly one returns true', async () => {
     const store = freshStore()
-    const key = txKey(1, TX_HASH)
+    const key = txHashKey(1, TX_HASH)
     const results = await Promise.all(Array.from({ length: 20 }, () => reserve(store, key)))
     expect(results.filter((r) => r === true)).toHaveLength(1)
   })
@@ -72,7 +78,7 @@ describe('reserve (atomic CAS)', () => {
 describe('markConsumed (permanent)', () => {
   test('inflight → consumed; reserve still returns false', async () => {
     const store = freshStore()
-    const key = txKey(1, TX_HASH)
+    const key = txHashKey(1, TX_HASH)
     await reserve(store, key)
     await markConsumed(store, key)
     expect((await store.get(key))?.state).toBe('consumed')
@@ -81,7 +87,7 @@ describe('markConsumed (permanent)', () => {
 
   test('release after consumed is a noop (slot stays consumed)', async () => {
     const store = freshStore()
-    const key = txKey(1, TX_HASH)
+    const key = txHashKey(1, TX_HASH)
     await reserve(store, key)
     await markConsumed(store, key)
     await release(store, key)
@@ -96,7 +102,7 @@ describe('markConsumed (permanent)', () => {
 describe('markRejected (permanent + reason)', () => {
   test('inflight → rejected; reason is preserved', async () => {
     const store = freshStore()
-    const key = txKey(1, TX_HASH)
+    const key = txHashKey(1, TX_HASH)
     await reserve(store, key)
     await markRejected(store, key, 'on-chain reverted')
     const slot = await store.get(key)
@@ -106,7 +112,7 @@ describe('markRejected (permanent + reason)', () => {
 
   test('reserve after rejected returns false (slot stays rejected)', async () => {
     const store = freshStore()
-    const key = txKey(1, TX_HASH)
+    const key = txHashKey(1, TX_HASH)
     await reserve(store, key)
     await markRejected(store, key, 'Transfer log mismatch')
     expect(await reserve(store, key)).toBe(false)
@@ -115,7 +121,7 @@ describe('markRejected (permanent + reason)', () => {
 
   test('release after rejected is a noop (slot stays rejected)', async () => {
     const store = freshStore()
-    const key = txKey(1, TX_HASH)
+    const key = txHashKey(1, TX_HASH)
     await reserve(store, key)
     await markRejected(store, key, 'sig invalid')
     await release(store, key)
@@ -125,12 +131,78 @@ describe('markRejected (permanent + reason)', () => {
   test('consumed ≠ rejected (state strings are distinct)', async () => {
     const a = freshStore()
     const b = freshStore()
-    await reserve(a, txKey(1, TX_HASH))
-    await reserve(b, txKey(1, TX_HASH))
-    await markConsumed(a, txKey(1, TX_HASH))
-    await markRejected(b, txKey(1, TX_HASH), 'reverted')
-    expect((await a.get(txKey(1, TX_HASH)))?.state).toBe('consumed')
-    expect((await b.get(txKey(1, TX_HASH)))?.state).toBe('rejected')
+    await reserve(a, txHashKey(1, TX_HASH))
+    await reserve(b, txHashKey(1, TX_HASH))
+    await markConsumed(a, txHashKey(1, TX_HASH))
+    await markRejected(b, txHashKey(1, TX_HASH), 'reverted')
+    expect((await a.get(txHashKey(1, TX_HASH)))?.state).toBe('consumed')
+    expect((await b.get(txHashKey(1, TX_HASH)))?.state).toBe('rejected')
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  Terminal write-once (CAS-enforced)                                        */
+/* -------------------------------------------------------------------------- */
+
+describe('terminal states are write-once (CAS-enforced)', () => {
+  test('markRejected on a consumed slot is a noop (no downgrade)', async () => {
+    const store = freshStore()
+    const key = txHashKey(1, TX_HASH)
+    await reserve(store, key)
+    await markConsumed(store, key)
+    // Stale-inflight reclaim race: the flow that lost the race may still
+    // attempt its own terminal write. It must not downgrade the settled
+    // payment to rejected — that would erase the consumed audit state.
+    await markRejected(store, key, 'late loser write')
+    const slot = await store.get(key)
+    expect(slot?.state).toBe('consumed')
+    expect(slot?.reason).toBeUndefined()
+  })
+
+  test('markConsumed on a rejected slot is a noop (reason preserved)', async () => {
+    const store = freshStore()
+    const key = txHashKey(1, TX_HASH)
+    await reserve(store, key)
+    await markRejected(store, key, 'on-chain reverted')
+    await markConsumed(store, key)
+    const slot = await store.get(key)
+    expect(slot?.state).toBe('rejected')
+    expect(slot?.reason).toBe('on-chain reverted')
+  })
+
+  test('re-marking consumed is a harmless noop (ts not refreshed)', async () => {
+    const store = freshStore()
+    const key = txHashKey(1, TX_HASH)
+    // Write directly with a distinct old ts so a refresh would be visible.
+    const oldTs = Date.now() - 60_000
+    await store.update(key, () => ({
+      op: 'set',
+      value: { state: 'consumed', ts: oldTs },
+      result: true as const,
+    }))
+    await markConsumed(store, key)
+    const slot = await store.get(key)
+    expect(slot?.state).toBe('consumed')
+    expect(slot?.ts).toBe(oldTs)
+  })
+
+  test('re-marking rejected keeps the FIRST reason (no overwrite)', async () => {
+    const store = freshStore()
+    const key = txHashKey(1, TX_HASH)
+    await reserve(store, key)
+    await markRejected(store, key, 'first reason')
+    await markRejected(store, key, 'second reason')
+    const slot = await store.get(key)
+    expect(slot?.state).toBe('rejected')
+    expect(slot?.reason).toBe('first reason')
+  })
+
+  test('inflight slots are still writable (normal terminal transition)', async () => {
+    const store = freshStore()
+    const key = txHashKey(1, TX_HASH)
+    await reserve(store, key)
+    await markConsumed(store, key)
+    expect((await store.get(key))?.state).toBe('consumed')
   })
 })
 
@@ -141,7 +213,7 @@ describe('markRejected (permanent + reason)', () => {
 describe('release', () => {
   test('inflight → free (entry deleted)', async () => {
     const store = freshStore()
-    const key = txKey(1, TX_HASH)
+    const key = txHashKey(1, TX_HASH)
     await reserve(store, key)
     await release(store, key)
     expect(await store.get(key)).toBeNull()
@@ -149,7 +221,7 @@ describe('release', () => {
 
   test('released slot can be re-reserved', async () => {
     const store = freshStore()
-    const key = txKey(1, TX_HASH)
+    const key = txHashKey(1, TX_HASH)
     await reserve(store, key)
     await release(store, key)
     expect(await reserve(store, key)).toBe(true)
@@ -157,9 +229,107 @@ describe('release', () => {
 
   test('release on missing slot is noop', async () => {
     const store = freshStore()
-    const key = txKey(1, TX_HASH)
+    const key = txHashKey(1, TX_HASH)
     await release(store, key)
     expect(await store.get(key)).toBeNull()
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  Stale-inflight reclaim                                                    */
+/* -------------------------------------------------------------------------- */
+
+describe('stale-inflight reclaim', () => {
+  /**
+   * Write a slot directly (bypassing reserve) so each test fully controls
+   * the slot's `ts` age — the reclaim decision is `Date.now() - ts >= ttl`.
+   */
+  async function writeSlot(
+    store: ChargeStore,
+    key: ReplayKey,
+    value: ReplaySlotValue,
+  ): Promise<void> {
+    await store.update(key, () => ({ op: 'set', value, result: true as const }))
+  }
+
+  test('fresh inflight slot is NOT reclaimable (reserve returns false)', async () => {
+    const store = freshStore()
+    const key = txHashKey(1, TX_HASH)
+    const freshTs = Date.now()
+    await writeSlot(store, key, { state: 'inflight', ts: freshTs })
+
+    expect(await reserve(store, key)).toBe(false)
+
+    // Slot untouched — the losing reserve must not refresh a live slot's ts
+    // (that would let serial losers keep a crashed verify pinned forever).
+    const slot = await store.get(key)
+    expect(slot?.state).toBe('inflight')
+    expect(slot?.ts).toBe(freshTs)
+  })
+
+  test('inflight slot older than the default TTL IS reclaimed (ts refreshed)', async () => {
+    const store = freshStore()
+    const key = txHashKey(1, TX_HASH)
+    // 11 minutes in the past — comfortably beyond the 10min default TTL.
+    const staleTs = Date.now() - 11 * 60 * 1000
+    await writeSlot(store, key, { state: 'inflight', ts: staleTs })
+
+    expect(await reserve(store, key)).toBe(true)
+
+    // The reclaiming reserve re-enters verification: the slot is inflight
+    // again with a REFRESHED ts (a second concurrent retry must now wait
+    // out a full TTL, not instantly reclaim the same stale timestamp).
+    const slot = await store.get(key)
+    expect(slot?.state).toBe('inflight')
+    expect(slot?.ts).toBeGreaterThan(staleTs)
+  })
+
+  test('reserve honors a custom inflightTtlMs', async () => {
+    const store = freshStore()
+    const key = txHashKey(1, TX_HASH)
+    // 5 seconds old: fresh under the 10min default, stale under a 1s TTL.
+    const ts = Date.now() - 5_000
+    await writeSlot(store, key, { state: 'inflight', ts })
+
+    // Default TTL: not stale → not reclaimable.
+    expect(await reserve(store, key)).toBe(false)
+    // Custom 1s TTL: stale → reclaimed.
+    expect(await reserve(store, key, { inflightTtlMs: 1000 })).toBe(true)
+    expect((await store.get(key))?.ts).toBeGreaterThan(ts)
+  })
+
+  test('consumed slots are NEVER reclaimed regardless of age', async () => {
+    const store = freshStore()
+    const key = txHashKey(1, TX_HASH)
+    // A year in the past — far beyond any plausible TTL.
+    const ancientTs = Date.now() - 365 * 24 * 60 * 60 * 1000
+    await writeSlot(store, key, { state: 'consumed', ts: ancientTs })
+
+    expect(await reserve(store, key)).toBe(false)
+    // Even an absurdly aggressive TTL must not resurrect a settled payment.
+    expect(await reserve(store, key, { inflightTtlMs: 1 })).toBe(false)
+
+    const slot = await store.get(key)
+    expect(slot?.state).toBe('consumed')
+    expect(slot?.ts).toBe(ancientTs)
+  })
+
+  test('rejected slots are NEVER reclaimed regardless of age', async () => {
+    const store = freshStore()
+    const key = txHashKey(1, TX_HASH)
+    const ancientTs = Date.now() - 365 * 24 * 60 * 60 * 1000
+    await writeSlot(store, key, {
+      state: 'rejected',
+      ts: ancientTs,
+      reason: 'on-chain reverted',
+    })
+
+    expect(await reserve(store, key)).toBe(false)
+    expect(await reserve(store, key, { inflightTtlMs: 1 })).toBe(false)
+
+    const slot = await store.get(key)
+    expect(slot?.state).toBe('rejected')
+    expect(slot?.reason).toBe('on-chain reverted')
   })
 })
 
@@ -190,9 +360,17 @@ describe('key factories — lowercase address normalization', () => {
     expect(upper).toBe(lower)
   })
 
-  test('txKey + hashKey lowercase txHash', () => {
-    expect(txKey(1, TX_HASH.toUpperCase() as `0x${string}`)).toBe(txKey(1, TX_HASH))
-    expect(hashKey(1, TX_HASH.toUpperCase() as `0x${string}`)).toBe(hashKey(1, TX_HASH))
+  test('txHashKey lowercases txHash', () => {
+    expect(txHashKey(1, TX_HASH.toUpperCase() as `0x${string}`)).toBe(txHashKey(1, TX_HASH))
+  })
+
+  test('permit2Key canonicalizes nonce via BigInt (leading zeros collapse)', () => {
+    // "1" and "01" hash to the identical EIP-712 message (BigInt(nonce)) —
+    // they MUST map to the same replay slot or a concurrent re-encoding
+    // bypasses the inflight guard and double-broadcasts the settlement.
+    expect(permit2Key(1, PERMIT2, SIGNER, '01')).toBe(permit2Key(1, PERMIT2, SIGNER, '1'))
+    expect(permit2Key(1, PERMIT2, SIGNER, '0042')).toBe(permit2Key(1, PERMIT2, SIGNER, '42'))
+    expect(permit2Key(1, PERMIT2, SIGNER, '10')).not.toBe(permit2Key(1, PERMIT2, SIGNER, '1'))
   })
 })
 
@@ -209,17 +387,20 @@ describe('key factories — cross-namespace collision prevention', () => {
     expect(usdc).not.toBe(usdt)
   })
 
-  test('txKey differs across chainId', () => {
-    expect(txKey(1, TX_HASH)).not.toBe(txKey(56, TX_HASH))
+  test('txHashKey differs across chainId', () => {
+    expect(txHashKey(1, TX_HASH)).not.toBe(txHashKey(56, TX_HASH))
   })
 
-  test('credential-type prefixes differ (tx vs hash) even on same (chainId, hash)', () => {
-    expect(txKey(1, TX_HASH)).not.toBe(hashKey(1, TX_HASH))
+  test('txHashKey carries NO credential-type discriminator (spec §8 shared token)', () => {
+    // Both `transaction` and `hash` credentials use the tx hash as their
+    // replay token (spec §8) — one transfer must settle at most one charge
+    // regardless of which credential type presents it. The key is therefore
+    // scoped by (chainId, txHash) only.
+    expect(txHashKey(1, TX_HASH)).toBe(`bnb-mpp:evm:charge:txhash:1:${TX_HASH}`)
   })
 
   test('replay namespace prefix is bnb-mpp', () => {
-    expect(txKey(1, TX_HASH).startsWith('bnb-mpp:evm:charge:')).toBe(true)
-    expect(hashKey(1, TX_HASH).startsWith('bnb-mpp:evm:charge:')).toBe(true)
+    expect(txHashKey(1, TX_HASH).startsWith('bnb-mpp:evm:charge:')).toBe(true)
     expect(authKey(1, TOKEN, SIGNER, NONCE32).startsWith('bnb-mpp:evm:charge:')).toBe(true)
     expect(permit2Key(1, PERMIT2, SIGNER, '42').startsWith('bnb-mpp:evm:charge:')).toBe(true)
   })
@@ -247,7 +428,7 @@ describe('ReplayStoreUnavailableError', () => {
     } as unknown as ChargeStore
   }
 
-  const key = txKey(1, TX_HASH)
+  const key = txHashKey(1, TX_HASH)
 
   test('reserve() wraps backend throw in ReplayStoreUnavailableError', async () => {
     const store = brokenStore()

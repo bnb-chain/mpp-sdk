@@ -32,8 +32,9 @@ export interface VerifyRouterCtx {
   readonly publicClient: PublicClient
   readonly store: ChargeStore
   readonly chainId: number
-  readonly permit2Address: `0x${string}`
   readonly confirmations: number
+  readonly settlementTimeoutMs: number | undefined
+  readonly inflightTtlMs: number | undefined
   readonly hashFromPolicy: 'strict_from' | 'lax_from' | undefined
   readonly settlementSigner: WalletClient | undefined
   readonly eip712: { readonly name: string; readonly version: string } | undefined
@@ -50,12 +51,19 @@ export function makeVerifyRouter(
     publicClient,
     store,
     chainId,
-    permit2Address,
     confirmations,
+    settlementTimeoutMs,
+    inflightTtlMs,
     hashFromPolicy,
     settlementSigner,
     eip712,
   } = ctx
+  // Optional knobs forwarded to every verifier ctx (spread keeps
+  // exactOptionalPropertyTypes happy — only present when configured).
+  const optionalKnobs = {
+    ...(settlementTimeoutMs !== undefined && { settlementTimeoutMs }),
+    ...(inflightTtlMs !== undefined && { inflightTtlMs }),
+  }
   return async function verify({ credential, request }) {
     await verifyChallengeBinding(credential, request as Record<string, unknown>)
 
@@ -83,7 +91,10 @@ export function makeVerifyRouter(
     const accepted: readonly string[] = r.methodDetails?.credentialTypes ?? ['transaction', 'hash']
     const payloadType = credential.payload.type
     if (!accepted.includes(payloadType)) {
-      throw new Errors.InvalidPayloadError({
+      // VerificationFailedError → §9 problem type 'verification-failed'.
+      // (InvalidPayloadError maps to 'invalid-payload', which is NOT one
+      // of the three problem types §9 enumerates as MUST-use.)
+      throw new Errors.VerificationFailedError({
         reason:
           `credential.payload.type '${payloadType}' is not in challenge.request.methodDetails.` +
           `credentialTypes [${accepted.join(', ')}]` +
@@ -105,7 +116,9 @@ export function makeVerifyRouter(
       r.methodDetails.splits.length > 0 &&
       payloadType !== 'permit2'
     ) {
-      throw new Errors.InvalidPayloadError({
+      // VerificationFailedError → §9 problem type 'verification-failed'
+      // (same rationale as the accepted-types gate above).
+      throw new Errors.VerificationFailedError({
         reason:
           `credential.payload.type '${payloadType}' cannot fulfill a splits-bearing ` +
           `challenge — spec §4.2.3 / §10 require permit2 for splits (single batch ` +
@@ -115,12 +128,12 @@ export function makeVerifyRouter(
     }
 
     // ctx shared across read-only verifiers; settlement-bound verifiers
-    // spread this + add settlementSigner.
+    // spread this + add settlementSigner. (permit2Address intentionally
+    // absent — every verifier reads it from the wire request.)
     const readCtx = {
       publicClient,
       store,
       chainId,
-      permit2Address,
       confirmations,
       hashFromPolicy: hashFromPolicy ?? ('lax_from' as const),
     }
@@ -143,6 +156,8 @@ export function makeVerifyRouter(
             store: readCtx.store,
             chainId: readCtx.chainId,
             settlementSigner,
+            confirmations: readCtx.confirmations,
+            ...optionalKnobs,
           },
         })
 
@@ -170,6 +185,8 @@ export function makeVerifyRouter(
             chainId: readCtx.chainId,
             settlementSigner,
             eip712,
+            confirmations: readCtx.confirmations,
+            ...optionalKnobs,
           },
         })
 
@@ -183,6 +200,7 @@ export function makeVerifyRouter(
             store: readCtx.store,
             chainId: readCtx.chainId,
             confirmations: readCtx.confirmations,
+            ...optionalKnobs,
           },
         })
 
@@ -199,6 +217,7 @@ export function makeVerifyRouter(
             chainId: readCtx.chainId,
             confirmations: readCtx.confirmations,
             hashFromPolicy: readCtx.hashFromPolicy,
+            ...(inflightTtlMs !== undefined && { inflightTtlMs }),
           },
         })
 

@@ -29,6 +29,7 @@ import {
   type TransactionReceipt,
   encodeAbiParameters,
   encodeEventTopics,
+  TransactionReceiptNotFoundError,
 } from 'viem'
 import { describe, expect, test, vi } from 'vitest'
 
@@ -37,7 +38,7 @@ import {
   terminalFailureStore,
 } from '../../test/helpers/server/terminalFailureStore.js'
 import { type HashVerifierArgs, type HashVerifierCtx, verifyHash } from './Hash.js'
-import { type ChargeStore, hashKey } from './Replay.js'
+import { type ChargeStore, txHashKey } from './Replay.js'
 
 /* -------------------------------------------------------------------------- */
 /*  Fixtures                                                                  */
@@ -123,13 +124,17 @@ interface StubReceiptMap {
   /** Throw a TransactionReceiptNotFoundError-shaped error if true. */
   notFound?: boolean
   receipt?: TransactionReceipt
+  rpcError?: Error
 }
 
 function stubPublicClient(args: { receipt: StubReceiptMap; latestBlock?: bigint }): PublicClient {
   const { receipt: rmap, latestBlock = 100n } = args
   return {
     async getTransactionReceipt() {
-      if (rmap.notFound) throw new Error('TransactionReceiptNotFoundError: receipt not yet mined')
+      // The REAL viem class — the verifier narrows on instanceof to
+      // distinguish "not mined yet" from generic RPC failures.
+      if (rmap.notFound) throw new TransactionReceiptNotFoundError({ hash: TX_HASH })
+      if (rmap.rpcError) throw rmap.rpcError
       return rmap.receipt!
     },
     async getBlockNumber() {
@@ -206,7 +211,7 @@ describe('verifyHash happy path (lax_from default)', () => {
     expect(out.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 
     // Slot marked consumed
-    const slot = await ctx.store.get(hashKey(CHAIN_ID, TX_HASH))
+    const slot = await ctx.store.get(txHashKey(CHAIN_ID, TX_HASH))
     expect(slot?.state).toBe('consumed')
   })
 
@@ -265,7 +270,7 @@ describe('verifyHash step 1 (atomic reserve)', () => {
   test('throws REPLAY when slot already consumed', async () => {
     const store = freshStore()
     // Pre-mark consumed
-    await store.update(hashKey(CHAIN_ID, TX_HASH), () => ({
+    await store.update(txHashKey(CHAIN_ID, TX_HASH), () => ({
       op: 'set',
       value: { state: 'consumed' as const, ts: Date.now() },
       result: true as const,
@@ -282,7 +287,7 @@ describe('verifyHash step 1 (atomic reserve)', () => {
 
   test('throws REJECTED when slot already rejected', async () => {
     const store = freshStore()
-    await store.update(hashKey(CHAIN_ID, TX_HASH), () => ({
+    await store.update(txHashKey(CHAIN_ID, TX_HASH), () => ({
       op: 'set',
       value: { state: 'rejected' as const, ts: Date.now(), reason: 'log mismatch from earlier' },
       result: true as const,
@@ -299,7 +304,7 @@ describe('verifyHash step 1 (atomic reserve)', () => {
 
   test('throws CONCURRENT when slot is inflight from another verify', async () => {
     const store = freshStore()
-    await store.update(hashKey(CHAIN_ID, TX_HASH), () => ({
+    await store.update(txHashKey(CHAIN_ID, TX_HASH), () => ({
       op: 'set',
       value: { state: 'inflight' as const, ts: Date.now() },
       result: true as const,
@@ -329,7 +334,7 @@ describe('verifyHash step 2 (receipt not found)', () => {
     ).rejects.toThrow(/not be broadcast yet/)
 
     // Slot released — retry path
-    const slot = await ctx.store.get(hashKey(CHAIN_ID, TX_HASH))
+    const slot = await ctx.store.get(txHashKey(CHAIN_ID, TX_HASH))
     expect(slot).toBeNull()
   })
 })
@@ -362,7 +367,7 @@ describe('verifyHash step 3 (insufficient confirmations)', () => {
     ).rejects.toThrow(/insufficient confirmations: have 1, need 12/)
 
     // Released for retry
-    const slot = await ctx.store.get(hashKey(CHAIN_ID, TX_HASH))
+    const slot = await ctx.store.get(txHashKey(CHAIN_ID, TX_HASH))
     expect(slot).toBeNull()
   })
 
@@ -395,7 +400,7 @@ describe('verifyHash step 4 (tx reverted)', () => {
       verifyHash({ credential: buildCredential(), request: buildRequest(), ctx }),
     ).rejects.toThrow(/reverted on-chain/)
 
-    const slot = await ctx.store.get(hashKey(CHAIN_ID, TX_HASH))
+    const slot = await ctx.store.get(txHashKey(CHAIN_ID, TX_HASH))
     expect(slot?.state).toBe('rejected')
     expect(slot?.reason).toMatch(/reverted/)
   })
@@ -419,7 +424,7 @@ describe('verifyHash step 5 (Transfer log mismatch → markRejected)', () => {
       verifyHash({ credential: buildCredential(), request: buildRequest(), ctx }),
     ).rejects.toThrow(/no matching Transfer event/)
 
-    expect((await ctx.store.get(hashKey(CHAIN_ID, TX_HASH)))?.state).toBe('rejected')
+    expect((await ctx.store.get(txHashKey(CHAIN_ID, TX_HASH)))?.state).toBe('rejected')
   })
 
   test('wrong recipient → markRejected', async () => {
@@ -435,7 +440,7 @@ describe('verifyHash step 5 (Transfer log mismatch → markRejected)', () => {
       verifyHash({ credential: buildCredential(), request: buildRequest(), ctx }),
     ).rejects.toThrow(/no matching Transfer event/)
 
-    expect((await ctx.store.get(hashKey(CHAIN_ID, TX_HASH)))?.state).toBe('rejected')
+    expect((await ctx.store.get(txHashKey(CHAIN_ID, TX_HASH)))?.state).toBe('rejected')
   })
 
   test('wrong amount → markRejected', async () => {
@@ -448,7 +453,7 @@ describe('verifyHash step 5 (Transfer log mismatch → markRejected)', () => {
       verifyHash({ credential: buildCredential(), request: buildRequest(), ctx }),
     ).rejects.toThrow(/no matching Transfer event/)
 
-    expect((await ctx.store.get(hashKey(CHAIN_ID, TX_HASH)))?.state).toBe('rejected')
+    expect((await ctx.store.get(txHashKey(CHAIN_ID, TX_HASH)))?.state).toBe('rejected')
   })
 
   test('accepts mixed-case address from on-chain log (lowercase comparison)', async () => {
@@ -501,7 +506,7 @@ describe('verifyHash step 6 (strict_from policy)', () => {
       verifyHash({ credential: buildCredential(), request: buildRequest(), ctx }),
     ).rejects.toThrow(/requires credential.source/)
 
-    expect((await ctx.store.get(hashKey(CHAIN_ID, TX_HASH)))?.state).toBe('rejected')
+    expect((await ctx.store.get(txHashKey(CHAIN_ID, TX_HASH)))?.state).toBe('rejected')
   })
 
   test('credential.source format wrong → markRejected', async () => {
@@ -518,7 +523,7 @@ describe('verifyHash step 6 (strict_from policy)', () => {
       /must match 'did:pkh:eip155/,
     )
 
-    expect((await ctx.store.get(hashKey(CHAIN_ID, TX_HASH)))?.state).toBe('rejected')
+    expect((await ctx.store.get(txHashKey(CHAIN_ID, TX_HASH)))?.state).toBe('rejected')
   })
 
   test('credential.source address ≠ Transfer.from → markRejected', async () => {
@@ -537,7 +542,7 @@ describe('verifyHash step 6 (strict_from policy)', () => {
       /Transfer.from .* does not match credential.source/,
     )
 
-    expect((await ctx.store.get(hashKey(CHAIN_ID, TX_HASH)))?.state).toBe('rejected')
+    expect((await ctx.store.get(txHashKey(CHAIN_ID, TX_HASH)))?.state).toBe('rejected')
   })
 })
 
@@ -561,11 +566,12 @@ describe('verifyHash error class', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('verifyHash — terminal-phase store-write failure keeps slot inflight', () => {
-  test('markConsumed throws → slot stays inflight (no release, no double-spend window)', async () => {
+  test('markConsumed fails on all retries → slot stays inflight (no release, no double-spend window)', async () => {
     // Properly-typed shared helper (see test/helpers/server/terminalFailureStore.ts).
-    // Models Redis transient outage right at the markConsumed CAS. Previously
-    // the outer safety net would release() the slot — and the user could
-    // replay the same txHash for a SECOND match → double-spend.
+    // Models a SUSTAINED Redis outage at the markConsumed CAS — every one
+    // of consumeSlotBestEffort's 3 attempts fails. Previously the outer
+    // safety net would release() the slot — and the user could replay the
+    // same txHash for a SECOND match → double-spend.
     const receipt = buildReceipt({
       logs: [transferLog({ from: PAYER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY })],
     })
@@ -580,22 +586,57 @@ describe('verifyHash — terminal-phase store-write failure keeps slot inflight'
         publicClient: stubPublicClient({ receipt: { receipt } }),
       })
 
-      await expect(
-        verifyHash({ credential: buildCredential(), request: buildRequest(), ctx }),
-      ).rejects.toThrow(/ECONNRESET: Redis dropped right at markConsumed/)
+      // The payment is confirmed on-chain — the paid payer gets their
+      // receipt even though the consumed-write failed. The slot staying
+      // inflight still blocks replay.
+      const out = await verifyHash({ credential: buildCredential(), request: buildRequest(), ctx })
+      expect(out.status).toBe('success')
+      expect(out.reference).toBe(TX_HASH)
 
       // CRITICAL: slot remains inflight. Releasing here would re-admit the
       // SAME txHash for another verify cycle — the tx already matched once,
       // so it would match again → double-spend.
-      const slot = await store.get(hashKey(CHAIN_ID, TX_HASH))
+      const slot = await store.get(txHashKey(CHAIN_ID, TX_HASH))
       expect(slot?.state).toBe('inflight')
 
       // Operator hint surfaces in console.warn so the inflight slot isn't
-      // a silent leak.
+      // a silent leak — this exact fragment is the operator alert string
+      // documented in docs/replay-store.md.
       expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringMatching(/terminal-phase store write failed.*slot remains inflight/),
+        expect.stringMatching(/markConsumed failed after 3 attempts.*remains inflight/),
         expect.any(String),
       )
+      expect(warnSpy.mock.calls[0]?.[0]).toContain('[verifyHash]')
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  test('markConsumed transient blip → retry succeeds, slot lands consumed, no warn', async () => {
+    // consumeSlotBestEffort retries markConsumed 3x — a one-off CAS
+    // failure (Redis blip) must end with the slot terminally `consumed`
+    // and NO operator warn (nothing to alert on; the retry closed it).
+    const receipt = buildReceipt({
+      logs: [transferLog({ from: PAYER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY })],
+    })
+    let consumedAttempts = 0
+    const store = terminalFailureStore({
+      failOn: (probe) => failOnState('consumed')(probe) && ++consumedAttempts === 1,
+      message: 'ECONNRESET: Redis blipped once at markConsumed',
+    })
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const ctx = buildCtx({
+        store,
+        publicClient: stubPublicClient({ receipt: { receipt } }),
+      })
+
+      const out = await verifyHash({ credential: buildCredential(), request: buildRequest(), ctx })
+      expect(out.status).toBe('success')
+
+      const slot = await store.get(txHashKey(CHAIN_ID, TX_HASH))
+      expect(slot?.state).toBe('consumed')
+      expect(warnSpy).not.toHaveBeenCalled()
     } finally {
       warnSpy.mockRestore()
     }
@@ -635,7 +676,7 @@ describe('verifyHash — terminal-phase store-write failure keeps slot inflight'
         verifyHash({ credential: buildCredential(), request: buildRequest(), ctx }),
       ).rejects.toThrow(/ECONNRESET: Redis dropped right at markRejected/)
 
-      const slot = await store.get(hashKey(CHAIN_ID, TX_HASH))
+      const slot = await store.get(txHashKey(CHAIN_ID, TX_HASH))
       expect(slot?.state).toBe('inflight')
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringMatching(/terminal-phase store write failed.*slot remains inflight/),

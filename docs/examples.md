@@ -1,15 +1,37 @@
 # Examples
 
-Three runnable examples under `examples/`. The first two are designed to
-run **together** — the browser demo drives real end-to-end flows against
-the local server; the third (`bnb-wire-demo`) is a standalone CLI
-inspector that needs no server.
+Runnable examples under `examples/`, in two tiers.
 
-| Example                                      | What it is                                                                                                                                                                                                     |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+## Start here — one demo per audience
+
+Three minimal demos, one per integration role. They compose: the client
+demo pays both servers.
+
+| Audience                   | Example                                            | What it shows                                                                                                                                                                                             |
+| -------------------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Merchants**              | [`merchant-demo`](../examples/merchant-demo)       | A plain API endpoint (`server-plain.ts`) and the same endpoint charging 1 TEST_USDT via MPP (`server.ts`) — the entire integration diff is ~10 lines. Payer-funded by default (no server-side key).       |
+| **API consumers / agents** | [`client-demo`](../examples/client-demo)           | Node CLI payer: fetch the 402, build a credential (`@bnb-chain/mpp/client`, all four types), retry with `Authorization`, decode the `Payment-Receipt`.                                                    |
+| **Facilitators**           | [`facilitator-demo`](../examples/facilitator-demo) | An `mppx/proxy` gateway that onboards an **unmodified** merchant API onto MPP: 402-gates routes, verifies + settles, forwards paid traffic upstream, auto-serves `/openapi.json` + `/llms.txt` discovery. |
+
+```bash
+# terminal 1 — merchant (after `cp .env.example .env` in the example dir)
+pnpm --filter @bnb-chain/mpp-example-merchant-demo start
+
+# terminal 2 — pay it (PAYER_PRIVATE_KEY funded with tBNB + test USDT)
+pnpm --filter @bnb-chain/mpp-example-client-demo start
+```
+
+## Full examples
+
+The production-shaped pair below runs **together** — the browser demo
+drives real end-to-end flows against the local server; `bnb-wire-demo`
+is a standalone CLI inspector that needs no server.
+
+| Example                                      | What it is                                                                                                                                                                                                                  |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`charge-server`](../examples/charge-server) | Minimal Hono HTTP server using `@bnb-chain/mpp/server`. Six protected routes (article / download / tip / split / hash-only / stored-lookup) + a public `/api/config`, BSC Testnet USDT, `permit2` / `transaction` / `hash`. |
-| [`charge-demo`](../examples/charge-demo)     | React + shadcn/ui + wagmi browser app driving the full client flow against the server.                                                                                                                         |
-| [`bnb-wire-demo`](../examples/bnb-wire-demo) | Standalone CLI wire-shape inspector for BNB Chain stablecoins — resolves each `(chain, token)` via the SDK and prints the challenge / credentialTypes / EIP-712 domain / receipt shape. No on-chain broadcast. |
+| [`charge-demo`](../examples/charge-demo)     | React + shadcn/ui + wagmi browser app driving the full client flow against the server.                                                                                                                                      |
+| [`bnb-wire-demo`](../examples/bnb-wire-demo) | Standalone CLI wire-shape inspector for BNB Chain stablecoins — resolves each `(chain, token)` via the SDK and prints the challenge / credentialTypes / EIP-712 domain / receipt shape. No on-chain broadcast.              |
 
 ## Running both together
 
@@ -75,19 +97,23 @@ matrix resolves a given token before wiring up a charge-server.
 pnpm --filter @bnb-chain/mpp-example-bnb-wire-demo start
 ```
 
-## What you need on-chain (Sepolia)
+## What you need on-chain (BSC Testnet)
 
-- **hash** — the connected wallet broadcasts the transfer: needs Sepolia
-  ETH (gas) + Sepolia USDC.
-- **permit2** — wallet needs Sepolia USDC + a one-time Permit2 approval
-  (the demo's allowance panel does it); the server's settlement signer
-  needs Sepolia ETH for gas.
-- **authorization** — wallet needs Sepolia USDC; server signer needs
-  Sepolia ETH for gas. No prior approval.
-- **transaction** — the demo signs with an in-page random key (MetaMask
-  can't expose a pre-signed-unbroadcast RLP), so end-to-end settlement
-  intentionally fails at broadcast (the key is unfunded). The wire shape
-  is real; production callers sign with their own funded keystore.
+All bundled examples run on `bsc-testnet` / `TEST_USDT` (a plain BEP-20,
+no EIP-3009 — so no `authorization` path):
 
-Faucets: [sepoliafaucet.com](https://sepoliafaucet.com) (ETH),
-[faucet.circle.com](https://faucet.circle.com) (USDC).
+- **hash** — the payer wallet broadcasts the transfer: needs tBNB (gas)
+  \+ test USDT.
+- **permit2** — payer needs test USDT + a one-time Permit2 approval
+  (charge-demo's allowance panel or client-demo's auto-approve does it);
+  the server's settlement signer needs tBNB for gas.
+- **transaction** — the payer pre-signs an EIP-1559 transfer the server
+  broadcasts; gas comes from the payer's balance. (In the browser
+  charge-demo this signs with an in-page random key — MetaMask can't
+  expose a pre-signed-unbroadcast RLP — so settlement intentionally fails
+  at broadcast there; the Node client-demo signs with its own funded key
+  and settles for real.)
+
+Faucets: [BNB Chain testnet faucet](https://testnet.bnbchain.org/faucet-smart)
+(tBNB); test USDT is PancakeSwap's BSC Testnet USDT at
+[`0x337610…34dDd`](https://testnet.bscscan.com/token/0x337610d27c682E347C9cD60BD4b3b107C9d34dDd).

@@ -1,0 +1,82 @@
+name: release
+
+# Changesets-driven release pipeline (mirrors mppx commit 5aed74b
+# `.github/workflows/main.yml`, adapted to this repo's `v1` base branch).
+#
+# On every push to v1:
+#   1. `verify` re-runs the full CI gate (lint/types/tests/build) via
+#      workflow_call — a release can never outrun a red branch.
+#   2. `changesets` either:
+#      - opens/updates the "chore: version package" PR when unreleased
+#        changesets exist (runs `pnpm changeset:version`), or
+#      - publishes to npm + creates the git tag and GitHub Release when
+#        that PR has just been merged (runs `pnpm changeset:publish`,
+#        i.e. `zile publish:prepare && changeset publish && zile publish:post`).
+#
+# npm auth uses OIDC trusted publishing (no long-lived token): configure
+# GitHub Actions as a Trusted Publisher on the npm package
+# (repo `bnb-chain/mpp-sdk`, workflow `release.yml`), which also makes npm
+# generate provenance attestations. Setup + first-publish bootstrap:
+# docs/releasing.md.
+
+on:
+  push:
+    branches: [v1, main]
+
+permissions: {}
+
+# Queue (never cancel) overlapping release runs: cancelling mid-publish
+# could leave npm published but the git tag / GitHub Release missing.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: verify
+    permissions:
+      contents: read
+    uses: ./.github/workflows/verify.yml
+
+  changesets:
+    name: version PR or npm publish
+    # Guard forks: publishing only ever runs from the canonical repo.
+    if: github.repository == 'bnb-chain/mpp-sdk'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # version-PR commits, git tags, GitHub Releases
+      id-token: write # npm OIDC trusted publishing + provenance
+      pull-requests: write # open/update the version PR
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The changesets action authenticates with GITHUB_TOKEN below;
+          # don't leave the default credential in .git/config.
+          persist-credentials: false
+
+      - uses: ./.github/actions/install-dependencies
+
+      # Node 22 bundles npm 10.x, but `changeset publish` shells out to
+      # `npm publish`, and OIDC trusted publishing requires npm >= 11.5.1.
+      - name: Upgrade npm for OIDC trusted publishing
+        run: npm install --global npm@11
+
+      - name: Build dist/
+        run: pnpm build
+
+      - name: Version PR or publish
+        uses: changesets/action@63a615b9cd06ba9a3e6d13796c7fbcb080a60a0b # v1.8.0
+        with:
+          title: 'chore: version package'
+          commit: 'chore: version package'
+          version: pnpm run changeset:version
+          publish: pnpm run changeset:publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Token fallback (only if Trusted Publishing is not configured):
+          # add an npm granular access token with publish rights on
+          # @bnb-chain/mpp as the NPM_TOKEN repo secret and uncomment:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # NPM_CONFIG_PROVENANCE: true

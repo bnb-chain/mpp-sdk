@@ -6,8 +6,12 @@ on top of [`mppx@0.6.28`](https://github.com/wevm/mppx) (commit
 [`5aed74b`](https://github.com/wevm/mppx/tree/5aed74bfe46315ff3f27524ea8bb72e251bf771d)).
 
 This document lists where the SDK extends or makes choices the draft
-leaves open. There is exactly **one wire extension** (`permit2Spender`);
-everything else is a compliant implementation choice.
+leaves open. There is exactly **one wire extension** (`permit2Spender`).
+Everything else stays within the draft's letter, but several entries
+under [Compliance choices](#compliance-choices) are deliberate
+deviations from a SHOULD, stricter-than-spec validation, or a documented
+resolution of a spec contradiction — read them before assuming
+"vanilla draft" interop behaviour.
 
 ## Extension: `methodDetails.permit2Spender`
 
@@ -109,6 +113,141 @@ deterministic, browser-safe codec independent of future mppx
 
 See the [Tokens](../README.md#tokens) table for the current matrix and
 the per-preset semantics.
+
+### `credentialTypes` default ordering (draft §4.2.2 SHOULD deviation)
+
+Draft §4.2.2: "Servers that support Permit2 SHOULD include `permit2` as
+the first entry to indicate preference." The SDK deviates for EIP-3009
+tokens: `getAcceptedCredentialTypes` (`src/server/curated.ts`) returns
+
+- `['authorization', 'permit2', 'transaction', 'hash']` for
+  `(chain, token)` pairs with `eip3009Supported: true` — authorization
+  first because it is the most gas-efficient path for the payer (a
+  single on-chain settlement, signed once);
+- `['permit2', 'transaction', 'hash']` otherwise — permit2 first per
+  the SHOULD (still 1-tx for the payer).
+
+The order is semantic (clients SHOULD pick the first type they support,
+draft Table 2) and the server's request hook rejects route overrides
+that reorder or substitute the resolved array.
+
+### Strict wire schema: positive `amount`, `decimals` ≤ 36
+
+`src/Methods.ts` (the single wire schema shared by server AND client) is
+stricter than draft §4.1 Table 1 / §4.2 Table 2 in two places:
+
+- **`amount` must be a positive base-units integer string** — the regex
+  `/^[1-9]\d*$/` rejects `'0'`, leading zeros, and decimal points.
+  Table 1 only says "Amount in base units (stringified integer)", which
+  literally admits `'0'`.
+- **`decimals` is capped at 36** — Table 2 places no upper bound
+  (ERC-20 `decimals()` is a uint8, 0–255). Real stablecoins top out at
+  18; a value above 36 is almost certainly a wei/gwei confusion, so the
+  schema rejects it.
+
+Because the same schema parses inbound challenges on the client, these
+constraints also apply to **third-party challenges**: a challenge from
+another implementation carrying `amount: "0"` or `decimals: 40` fails
+schema parse in this SDK's client.
+
+### `credential.source` REQUIRED for `permit2` (draft Table 4 deviation)
+
+Draft Table 4 marks the credential envelope's `source` field OPTIONAL.
+The SDK **requires** it for `permit2` credentials: §6.1 step 1 says the
+EIP-712 signature must be "valid and recover[…] to the source address",
+which makes `source` the verification's identity anchor — viem's
+recovery is math-only and returns _some_ address even for a garbage
+signature, so without `source` there is nothing to compare the
+recovered signer against. `verifyPermit2` (`src/server/Permit2.ts`,
+step 11) rejects a permit2 credential that omits it. For
+`authorization` / `transaction` the payload itself carries the
+authoritative identity, so `source` stays optional there — but is
+cross-checked whenever present.
+
+### `credential.source` accepts only `did:pkh:eip155`
+
+The draft only SHOULD-recommends the `did:pkh` method ("The source
+field, if present, SHOULD use the did:pkh method…"). The SDK
+hard-requires the exact format `did:pkh:eip155:{chainId}:{address}` —
+any other DID method (`did:key`, `did:web`, …) is **rejected**, not
+ignored (`assertDidPkhSourceMatches` in
+`src/server/charge/verifierKit.ts`). Rationale: a `source` the verifier
+cannot decode cannot be compared against the recovered signer, and
+silently skipping the check would downgrade the §6.1 binding.
+
+### Spec contradiction in §5.2.3: `externalId` vs. the witness struct
+
+Draft §5.2.3 contains two normative statements that cannot both be
+satisfied:
+
+1. "When externalId is present in the challenge request, the client
+   MUST include it in the EIP-712 witness struct."
+2. "Implementations MUST use the exact type string above" — and that
+   type string, `PaymentWitness(bytes32 challengeHash)`, has **no
+   `externalId` field**.
+
+The SDK follows the exact type string (#2): `src/protocol/TypedData.ts`
+pins `PERMIT2_WITNESS_TYPE_STRING` to the §5.2.3 literal and the
+`PaymentWitness` struct to exactly `{ bytes32 challengeHash }`.
+`externalId` is still cryptographically bound — transitively:
+`challengeHash = keccak256(challenge.id ‖ challenge.realm)`, and
+`challenge.id` binds the full serialized request (including
+`externalId`) via challenge binding. This contradiction is
+errata-worthy against `draft-evm-charge-00`: statement #1 should read
+"bound via the witness challengeHash", not "included in the witness
+struct".
+
+### `hashFromPolicy: 'strict_from'` is a consistency check, not submitter authentication
+
+The opt-in `strict_from` policy (`src/server/Hash.ts`, step 6) requires
+`credential.source` and checks it equals the on-chain `Transfer.from`.
+That is a consistency check between what the credential claims and what
+happened on-chain — it does **not** authenticate the HTTP submitter:
+anyone who observes a tx hash on a public chain can read
+`Transfer.from` from the receipt and construct a matching `source`. It
+therefore does not close §10.4's hash-credential binding weakness ("the
+server … cannot prove the payment was created for a specific challenge
+instance"). Operators who need real challenge binding should follow
+§10.4's MAY mitigations instead: prefer `permit2` / `authorization`
+ordering in `credentialTypes`, or restrict `hash` to low-value charges.
+
+### EIP-55 wire encoding (draft §4.1 SHOULD)
+
+Addresses the server emits on the wire (`currency`, `recipient`,
+`methodDetails.permit2Address`, `permit2Spender`, `splits[].recipient`)
+are EIP-55 checksummed via viem `getAddress`
+(`src/server/charge/defaults.ts`), per §4.1's "Implementations SHOULD
+use EIP-55 mixed-case encoding". Inbound, the schema accepts any casing
+(no EIP-55 enforcement) and every comparison stays case-insensitive by
+decoded 20-byte value per §4.1's MUST — the checksumming is
+wire-cosmetic only.
+
+**Upgrade note (pre→post EIP-55 casing):** "wire-cosmetic" holds for
+every verifier comparison, but the `mppx-hmac` and `stored-lookup`
+challenge-binding modes byte-compare the **serialized request** — a
+challenge issued by a pre-EIP-55 server (lowercase addresses on the
+wire) re-presented to a post-EIP-55 server serializes differently and
+fails binding. The window is transient: it only affects challenges
+IN-FLIGHT across the upgrade and is bounded by challenge expiry
+(typically ~5 min). Harmless for v0.1.0 — the pre-casing builds were
+never released, so no live deployment can hold a pre-upgrade
+challenge.
+
+### `validBefore` ↔ `challenge.expires` binding (draft §5.3.2 SHOULD)
+
+§5.3.2: "validBefore SHOULD correspond to the challenge expires
+timestamp." The SDK enforces this from both sides:
+
+- **Client** (`src/client/Authorization.ts`) — `validBefore` defaults
+  to the challenge's `expires` timestamp, capped at `now + 600`
+  seconds (plain `now + 600` when the challenge carries no `expires`).
+- **Server** (`src/server/Authorization.ts`) — rejects an authorization
+  whose `validBefore` exceeds `challenge.expires` by more than a 600 s
+  tolerance (`VALID_BEFORE_TOLERANCE_SEC`). A `validBefore` far beyond
+  `expires` would leave a signed, anyone-can-submit transfer redeemable
+  on-chain long after the challenge window closed. The tolerance
+  accommodates clients that sign a fixed `now+10min` window against a
+  typical ~5 min challenge expiry.
 
 ### Replay protection (`spec §9`)
 

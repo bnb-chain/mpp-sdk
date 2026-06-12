@@ -2,8 +2,13 @@
  * Permit2 credential verifier unit tests (spec §8.1).
  *
  * Coverage matrix:
- *   - Local validation: deadline / length / token / recipient / amount /
- *     splits / witness mismatches all reject before any RPC or slot reserve.
+ *   - Local validation (spec §6.1 / §8.1 steps 2-9): deadline,
+ *     permit.permitted.length, transferDetails.length, token,
+ *     permitted-amount < requestedAmount (single + batch index),
+ *     recipient, primary amount (amount - sum(splits)), per-split
+ *     recipient + per-split amount, and witness mismatches all reject
+ *     BEFORE any RPC or slot reservation (the §6.1 money-path tests
+ *     additionally assert no replay slot was written).
  *   - credential.source REQUIRED + matches recovered signer.
  *   - Replay pre-state (consumed / rejected / inflight) terminates early.
  *   - On-chain: balance / allowance / simulate / revert all `release`
@@ -138,13 +143,30 @@ interface StubPublicClientConfig {
   simulateError?: Error
   receipt?: TransactionReceipt
   waitError?: Error
+  /** Permit2 nonceBitmap word returned for the credential's wordPos. */
+  nonceBitmap?: bigint
+  /** Arbitrary RPC error on the nonceBitmap read. */
+  nonceBitmapError?: Error
 }
 
 function stubPublicClient(config: StubPublicClientConfig = {}): PublicClient {
   return {
-    async readContract({ functionName }: { functionName: string }) {
+    async readContract({
+      functionName,
+      args,
+    }: {
+      functionName: string
+      args?: readonly unknown[]
+    }) {
       if (functionName === 'balanceOf') return config.balance ?? BigInt(AMOUNT) * 10n
       if (functionName === 'allowance') return config.allowance ?? BigInt(AMOUNT) * 10n
+      if (functionName === 'nonceBitmap') {
+        if (config.nonceBitmapError) throw config.nonceBitmapError
+        // The configured word lives at the credential's wordPos
+        // (nonce >> 8); any other word reads empty — catches wordPos
+        // math bugs in the verifier's probe.
+        return (args?.[1] as bigint) === BigInt(NONCE) >> 8n ? (config.nonceBitmap ?? 0n) : 0n
+      }
       throw new Error(`unexpected readContract: ${functionName}`)
     },
     async simulateContract() {
@@ -263,7 +285,15 @@ function buildCredentialSingle(
   } as unknown as Permit2VerifierArgs['credential']
 }
 
-function buildCredentialBatch(signature: `0x${string}`): Permit2VerifierArgs['credential'] {
+function buildCredentialBatch(
+  signature: `0x${string}`,
+  overrides: {
+    permittedSplitAmount?: string
+    primaryTransferAmount?: string
+    splitTransferTo?: `0x${string}`
+    splitTransferAmount?: string
+  } = {},
+): Permit2VerifierArgs['credential'] {
   return {
     challenge: {
       id: CHALLENGE_ID,
@@ -278,14 +308,17 @@ function buildCredentialBatch(signature: `0x${string}`): Permit2VerifierArgs['cr
       permit: {
         permitted: [
           { token: CURRENCY, amount: PRIMARY_AMOUNT },
-          { token: CURRENCY, amount: SPLIT_AMOUNT },
+          { token: CURRENCY, amount: overrides.permittedSplitAmount ?? SPLIT_AMOUNT },
         ],
         nonce: NONCE,
         deadline: DEADLINE,
       },
       transferDetails: [
-        { to: RECIPIENT, requestedAmount: PRIMARY_AMOUNT },
-        { to: SPLIT_RECIPIENT, requestedAmount: SPLIT_AMOUNT },
+        { to: RECIPIENT, requestedAmount: overrides.primaryTransferAmount ?? PRIMARY_AMOUNT },
+        {
+          to: overrides.splitTransferTo ?? SPLIT_RECIPIENT,
+          requestedAmount: overrides.splitTransferAmount ?? SPLIT_AMOUNT,
+        },
       ],
       witness: { challengeHash: CHALLENGE_HASH },
       signature,
@@ -327,6 +360,7 @@ function buildCtx(
   return {
     store: freshStore(),
     chainId: CHAIN_ID,
+    confirmations: 1,
     ...overrides,
   }
 }
@@ -528,6 +562,163 @@ describe('verifyPermit2 local validation (no slot reservation)', () => {
     ).rejects.toThrow(/transferDetails\[0\].to .* != recipient/)
   })
 
+  test('permit.permitted.length != expected (2 entries for no-splits challenge) → throws, no slot written', async () => {
+    const sig = await signSinglePermit()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient(),
+      settlementSigner: stubWalletClient(),
+    })
+    // No-splits challenge expects exactly 1 permitted entry; smuggle in 2.
+    const base = buildCredentialSingle(sig)
+    const credential = {
+      ...base,
+      payload: {
+        ...base.payload,
+        permit: {
+          ...base.payload.permit,
+          permitted: [
+            { token: CURRENCY, amount: AMOUNT },
+            { token: CURRENCY, amount: AMOUNT },
+          ],
+        },
+      },
+    } as unknown as Permit2VerifierArgs['credential']
+
+    await expect(verifyPermit2({ credential, request: singleRequest, ctx })).rejects.toThrow(
+      /permit\.permitted\.length 2 != expected 1/,
+    )
+
+    // Local validation rejects BEFORE Replay.reserve — no slot may exist.
+    expect(await ctx.store.get(permit2Key(CHAIN_ID, PERMIT2, SIGNER, NONCE))).toBeNull()
+  })
+
+  test('transferDetails.length != expected → throws, no slot written', async () => {
+    const sig = await signSinglePermit()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient(),
+      settlementSigner: stubWalletClient(),
+    })
+    // permitted.length passes (1 === 1) so the transferDetails branch fires.
+    const base = buildCredentialSingle(sig)
+    const credential = {
+      ...base,
+      payload: {
+        ...base.payload,
+        transferDetails: [
+          { to: RECIPIENT, requestedAmount: AMOUNT },
+          { to: SPLIT_RECIPIENT, requestedAmount: SPLIT_AMOUNT },
+        ],
+      },
+    } as unknown as Permit2VerifierArgs['credential']
+
+    await expect(verifyPermit2({ credential, request: singleRequest, ctx })).rejects.toThrow(
+      /transferDetails\.length 2 != expected 1/,
+    )
+
+    expect(await ctx.store.get(permit2Key(CHAIN_ID, PERMIT2, SIGNER, NONCE))).toBeNull()
+  })
+
+  test('permit.permitted[0].amount < transferDetails[0].requestedAmount → throws, no slot written', async () => {
+    const sig = await signSinglePermit()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient(),
+      settlementSigner: stubWalletClient(),
+    })
+
+    await expect(
+      verifyPermit2({
+        credential: buildCredentialSingle(sig, { permittedAmount: '1' }),
+        request: singleRequest,
+        ctx,
+      }),
+    ).rejects.toThrow(
+      /permit\.permitted\[0\]\.amount 1 < transferDetails\[0\]\.requestedAmount 1000000/,
+    )
+
+    expect(await ctx.store.get(permit2Key(CHAIN_ID, PERMIT2, SIGNER, NONCE))).toBeNull()
+  })
+
+  test('batch: permit.permitted[1].amount < transferDetails[1].requestedAmount → throws, no slot written', async () => {
+    const sig = await signBatchPermit()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient(),
+      settlementSigner: stubWalletClient(),
+    })
+
+    await expect(
+      verifyPermit2({
+        credential: buildCredentialBatch(sig, { permittedSplitAmount: '1' }),
+        request: batchRequest,
+        ctx,
+      }),
+    ).rejects.toThrow(
+      /permit\.permitted\[1\]\.amount 1 < transferDetails\[1\]\.requestedAmount 100000/,
+    )
+
+    expect(await ctx.store.get(permit2Key(CHAIN_ID, PERMIT2, SIGNER, NONCE))).toBeNull()
+  })
+
+  test('batch: transferDetails[0].requestedAmount != amount - sum(splits) → throws, no slot written', async () => {
+    const sig = await signBatchPermit()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient(),
+      settlementSigner: stubWalletClient(),
+    })
+
+    // '1' keeps step 5 happy (permitted[0] >= 1) so the primary-amount
+    // identity check (step 7) is the branch that fires:
+    // expectedPrimary = 1000000 - 100000 = 900000.
+    await expect(
+      verifyPermit2({
+        credential: buildCredentialBatch(sig, { primaryTransferAmount: '1' }),
+        request: batchRequest,
+        ctx,
+      }),
+    ).rejects.toThrow(/transferDetails\[0\]\.requestedAmount 1 != amount - sum\(splits\) = 900000/)
+
+    expect(await ctx.store.get(permit2Key(CHAIN_ID, PERMIT2, SIGNER, NONCE))).toBeNull()
+  })
+
+  test('batch: transferDetails[1].to != splits[0].recipient → throws, no slot written', async () => {
+    const sig = await signBatchPermit()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient(),
+      settlementSigner: stubWalletClient(),
+    })
+
+    await expect(
+      verifyPermit2({
+        credential: buildCredentialBatch(sig, {
+          splitTransferTo: '0x7777777777777777777777777777777777777777',
+        }),
+        request: batchRequest,
+        ctx,
+      }),
+    ).rejects.toThrow(/transferDetails\[1\]\.to .* != splits\[0\]\.recipient/)
+
+    expect(await ctx.store.get(permit2Key(CHAIN_ID, PERMIT2, SIGNER, NONCE))).toBeNull()
+  })
+
+  test('batch: transferDetails[1].requestedAmount != splits[0].amount → throws, no slot written', async () => {
+    const sig = await signBatchPermit()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient(),
+      settlementSigner: stubWalletClient(),
+    })
+
+    // '99999' < permitted[1] (100000) so step 5 passes; the per-split
+    // amount identity (step 8) is the branch that fires.
+    await expect(
+      verifyPermit2({
+        credential: buildCredentialBatch(sig, { splitTransferAmount: '99999' }),
+        request: batchRequest,
+        ctx,
+      }),
+    ).rejects.toThrow(/transferDetails\[1\]\.requestedAmount 99999 != splits\[0\]\.amount 100000/)
+
+    expect(await ctx.store.get(permit2Key(CHAIN_ID, PERMIT2, SIGNER, NONCE))).toBeNull()
+  })
+
   test('witness.challengeHash mismatch → throws', async () => {
     const sig = await signSinglePermit()
     const ctx = buildCtx({
@@ -654,6 +845,86 @@ describe('verifyPermit2 on-chain pre-broadcast failures release the slot', () =>
         ctx,
       }),
     ).rejects.toThrow(/simulate\/broadcast failed.*SignatureExpired/)
+
+    expect(await ctx.store.get(permit2Key(CHAIN_ID, PERMIT2, SIGNER, NONCE))).toBeNull()
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  Simulate-failure nonceBitmap probe (already-landed settlement)            */
+/* -------------------------------------------------------------------------- */
+
+describe('verifyPermit2 simulate-failure nonceBitmap probe', () => {
+  test('simulate fails + nonceBitmap shows nonce consumed → slot stays inflight + operator message', async () => {
+    // Models a receipt-wait timeout + stale-inflight reclaim where OUR
+    // OWN earlier settlement attempt landed in between: the retry's
+    // simulate reverts (InvalidNonce) but the payer HAS paid. Releasing
+    // here would hand a paid payer a terminal-looking failure and
+    // re-admit the credential into a retry loop against a burned nonce.
+    const sig = await signSinglePermit()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        simulateError: new Error('InvalidNonce'),
+        // Exactly the credential's bit (nonce & 255) set in the word at
+        // wordPos (nonce >> 8) — the nonce is consumed on-chain.
+        nonceBitmap: 1n << (BigInt(NONCE) & 255n),
+      }),
+      settlementSigner: stubWalletClient(),
+    })
+
+    await expect(
+      verifyPermit2({
+        credential: buildCredentialSingle(sig),
+        request: singleRequest,
+        ctx,
+      }),
+    ).rejects.toThrow(
+      /permit2 nonce is already consumed on-chain.*earlier settlement attempt may have landed.*mark the slot manually/,
+    )
+
+    expect((await ctx.store.get(permit2Key(CHAIN_ID, PERMIT2, SIGNER, NONCE)))?.state).toBe(
+      'inflight',
+    )
+  })
+
+  test('simulate fails + nonceBitmap bit clear → release as before', async () => {
+    const sig = await signSinglePermit()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        simulateError: new Error('InvalidSigner'),
+        nonceBitmap: 0n, // bit clear → genuinely no on-chain state change
+      }),
+      settlementSigner: stubWalletClient(),
+    })
+
+    await expect(
+      verifyPermit2({
+        credential: buildCredentialSingle(sig),
+        request: singleRequest,
+        ctx,
+      }),
+    ).rejects.toThrow(/simulate\/broadcast failed.*InvalidSigner/)
+
+    expect(await ctx.store.get(permit2Key(CHAIN_ID, PERMIT2, SIGNER, NONCE))).toBeNull()
+  })
+
+  test('simulate fails + nonceBitmap read fails → release as before (original error surfaces)', async () => {
+    const sig = await signSinglePermit()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        simulateError: new Error('InvalidSigner'),
+        nonceBitmapError: new Error('ETIMEDOUT: bitmap probe failed'),
+      }),
+      settlementSigner: stubWalletClient(),
+    })
+
+    await expect(
+      verifyPermit2({
+        credential: buildCredentialSingle(sig),
+        request: singleRequest,
+        ctx,
+      }),
+    ).rejects.toThrow(/simulate\/broadcast failed.*InvalidSigner/)
 
     expect(await ctx.store.get(permit2Key(CHAIN_ID, PERMIT2, SIGNER, NONCE))).toBeNull()
   })
@@ -827,6 +1098,65 @@ describe('verifyPermit2 replay pre-state terminates early', () => {
       }),
     ).rejects.toThrow(/already consumed/)
   })
+
+  test('already rejected → terminal with stored reason', async () => {
+    const sig = await signSinglePermit()
+    const store = freshStore()
+    await store.update(permit2Key(CHAIN_ID, PERMIT2, SIGNER, NONCE), () => ({
+      op: 'set',
+      value: {
+        state: 'rejected' as const,
+        ts: Date.now(),
+        reason: 'Transfer log mismatch at expected index 0',
+      },
+      result: true as const,
+    }))
+    const ctx = buildCtx({
+      store,
+      publicClient: stubPublicClient(),
+      settlementSigner: stubWalletClient(),
+    })
+
+    await expect(
+      verifyPermit2({
+        credential: buildCredentialSingle(sig),
+        request: singleRequest,
+        ctx,
+      }),
+    ).rejects.toThrow(/previously rejected: Transfer log mismatch at expected index 0/)
+
+    // Terminal state is permanent — the failed verify must not mutate it.
+    expect((await store.get(permit2Key(CHAIN_ID, PERMIT2, SIGNER, NONCE)))?.state).toBe('rejected')
+  })
+
+  test('fresh inflight (concurrent verify) → terminal, slot not stolen', async () => {
+    // ts = now → well inside DEFAULT_INFLIGHT_TTL_MS, so the stale-inflight
+    // reclaim in Replay.reserve must NOT kick in; reserve returns false and
+    // the verifier reports the concurrent-verify conflict.
+    const sig = await signSinglePermit()
+    const store = freshStore()
+    await store.update(permit2Key(CHAIN_ID, PERMIT2, SIGNER, NONCE), () => ({
+      op: 'set',
+      value: { state: 'inflight' as const, ts: Date.now() },
+      result: true as const,
+    }))
+    const ctx = buildCtx({
+      store,
+      publicClient: stubPublicClient(),
+      settlementSigner: stubWalletClient(),
+    })
+
+    await expect(
+      verifyPermit2({
+        credential: buildCredentialSingle(sig),
+        request: singleRequest,
+        ctx,
+      }),
+    ).rejects.toThrow(/concurrent verify in progress/)
+
+    // The competing verify still owns the slot.
+    expect((await store.get(permit2Key(CHAIN_ID, PERMIT2, SIGNER, NONCE)))?.state).toBe('inflight')
+  })
 })
 
 /* -------------------------------------------------------------------------- */
@@ -836,11 +1166,9 @@ describe('verifyPermit2 replay pre-state terminates early', () => {
 describe('verifyPermit2 — terminal-phase store-write failure keeps slot inflight', () => {
   test('markConsumed throws after on-chain success → slot stays inflight (no release)', async () => {
     // Models Redis transient outage right at the markConsumed CAS, AFTER
-    // the Permit2 contract call succeeded on-chain. The Permit2 nonce
-    // is consumed; releasing the slot here would re-admit the same
-    // credential → next reserve+verify would re-call the Permit2 contract,
-    // which would revert "InvalidNonce", confusing the user. Keeping
-    // the slot inflight; TTL / operator handles cleanup.
+    // the Permit2 contract call succeeded on-chain. The payer HAS paid —
+    // they get their receipt; the slot stays inflight (still blocks
+    // replay) and the operator is warned to promote it to consumed.
     const sig = await signSinglePermit()
     const receipt = buildReceipt([
       transferLog({ from: SIGNER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY }),
@@ -857,21 +1185,20 @@ describe('verifyPermit2 — terminal-phase store-write failure keeps slot inflig
         settlementSigner: stubWalletClient(),
       })
 
-      await expect(
-        verifyPermit2({
-          credential: buildCredentialSingle(sig),
-          request: singleRequest,
-          ctx,
-        }),
-      ).rejects.toThrow(/ECONNRESET: Redis dropped right at markConsumed/)
+      const out = await verifyPermit2({
+        credential: buildCredentialSingle(sig),
+        request: singleRequest,
+        ctx,
+      })
+      expect(out.status).toBe('success')
 
       // CRITICAL: slot stays inflight.
       const slot = await store.get(permit2Key(CHAIN_ID, PERMIT2, SIGNER, NONCE))
       expect(slot?.state).toBe('inflight')
 
-      // Operator visibility.
+      // Operator visibility. (consumeSlotBestEffort retried 3x first.)
       expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringMatching(/terminal-phase store write failed.*slot remains inflight/),
+        expect.stringMatching(/markConsumed failed after 3 attempts.*remains inflight/),
         expect.any(String),
       )
     } finally {

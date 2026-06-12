@@ -1,10 +1,12 @@
 name: verify
 
 on:
-  push:
-    branches: [main, v1, v1.0.0-rewrite]
   pull_request:
     branches: [main, v1]
+  # Reused as the pre-publish gate by release.yml (pushes to v1 run verify
+  # through that call, so there is no separate `push` trigger here — it
+  # would double-run every job on release pushes).
+  workflow_call: {}
 
 # Cancel in-flight runs for the same branch when a new push arrives.
 concurrency:
@@ -45,12 +47,19 @@ jobs:
         # gate manually via `pnpm test -- --project live` from a workstation
         # with the right env vars (see test/live/*.test.ts headers).
         #
-        # NOTE: the `--` separator is REQUIRED. Without it, pnpm 11+ can
-        # intercept `--project` as its own argument and the run fails with
-        # "Unknown option: 'project'". Tested manifest: pnpm@11.0.8 forwards
-        # bare flags, but the contract isn't guaranteed across pnpm versions
-        # — always use `--` to pass flags through to the test script.
-        run: pnpm test -- --project unit --project interop
+        # NOTE: do NOT insert a `--` separator before the flags. pnpm 11
+        # forwards `--` literally to the script, and `vp test` (vitest CLI)
+        # treats everything after a literal `--` as positional test-name
+        # filters — the `--project` and `--coverage` flags would be
+        # silently IGNORED (all projects run, live self-skips, coverage
+        # off). Verified on pnpm@11.0.8: bare flags after the script name
+        # forward verbatim and are parsed as real flags.
+        #
+        # Coverage enforcement: @vitest/coverage-v8 provider with the
+        # thresholds configured in vite.config.ts (70% statements /
+        # branches / functions). The run fails if coverage drops below
+        # them (current: ~92% stmts / ~81% branch on unit + interop).
+        run: pnpm test --project unit --project interop --coverage.enabled=true
 
   build:
     name: zile build

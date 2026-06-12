@@ -27,14 +27,17 @@
  *    13. ERC20.balanceOf(recoveredSigner) >= totalAmount → release on fail
  *    14. ERC20.allowance(recoveredSigner, permit2Address) >= totalAmount → release on fail
  *    15. simulateContract(permitWitnessTransferFrom / permitBatchWitnessTransferFrom)
- *        → release on fail
+ *        → on fail, probe nonceBitmap first: nonce already consumed →
+ *        keep inflight (an earlier settlement attempt may have landed);
+ *        otherwise release
  *    16. writeContract → waitForTransactionReceipt. Broadcast failure →
- *        release; timeout → keep inflight (TTL); revert → release (nonce
+ *        release; timeout → keep inflight (reclaimed after
+ *        inflightTtlMs); revert → release (nonce
  *        unconsumed on-chain).
  *    17. parseEventLogs(Transfer) strictly matches ALL expected transfers
  *        (currency, recoveredSigner-as-from, each (to, value) pair in order).
  *        Mismatch → markRejected (nonce IS consumed on-chain; permanent).
- *    18. Replay.markConsumed.
+ *    18. consumeSlotBestEffort (a store blip never fails a paid payer).
  *    19. buildEvmReceipt with settlement txHash as `reference` + echo externalId.
  *
  * The receipt.status === success + log mismatch case is the most subtle
@@ -49,12 +52,10 @@ import {
   type Hex,
   type PublicClient,
   type WalletClient,
-  compactSignatureToSignature,
   encodeAbiParameters,
   keccak256,
-  parseCompactSignature,
   parseEventLogs,
-  serializeSignature,
+  recoverTypedDataAddress,
   toBytes,
 } from 'viem'
 
@@ -65,16 +66,16 @@ import {
   permit2Domain,
   permit2SingleTypes,
 } from '../protocol/TypedData.js'
-import { type EvmReceipt, buildEvmReceipt } from './Receipt.js'
 import {
-  type ChargeStore,
-  getReplaySlot,
-  markConsumed,
-  markRejected,
-  permit2Key,
-  release,
-  reserve,
-} from './Replay.js'
+  TRANSFER_EVENT_ABI,
+  assertDidPkhSourceMatches,
+  consumeSlotBestEffort,
+  handleVerifierFailure,
+  normalizeEvmSignature,
+  throwReserveConflict,
+} from './charge/verifierKit.js'
+import { type EvmReceipt, buildEvmReceipt } from './Receipt.js'
+import { type ChargeStore, markRejected, permit2Key, release, reserve } from './Replay.js'
 
 /* -------------------------------------------------------------------------- */
 /*  ctx + args                                                                */
@@ -97,6 +98,20 @@ export interface Permit2VerifierCtx {
   readonly store: ChargeStore
   readonly chainId: number
   readonly settlementSigner: WalletClient
+  /**
+   * Confirmation depth for the settlement receipt wait (deployment policy,
+   * spec §7.5). Same knob the transaction/hash verifiers honor.
+   */
+  readonly confirmations: number
+  /**
+   * Max milliseconds to wait for the settlement receipt. Unset → viem
+   * default (180s). Deployments behind load balancers with shorter idle
+   * timeouts should set this below the LB timeout so the client receives
+   * the retryable error instead of a severed connection.
+   */
+  readonly settlementTimeoutMs?: number
+  /** Stale-inflight reclaim age forwarded to Replay.reserve. */
+  readonly inflightTtlMs?: number
 }
 
 interface PermitPayload {
@@ -254,15 +269,22 @@ const PERMIT2_BATCH_ABI = [
   },
 ] as const
 
-const TRANSFER_EVENT_ABI = [
+/**
+ * Permit2 `nonceBitmap` read — probes whether an unordered nonce is
+ * already consumed on-chain (wordPos = nonce >> 8, bit = nonce & 255).
+ * Used by the simulate/broadcast failure path to distinguish "credential
+ * is retryable" from "our own earlier settlement attempt already landed".
+ */
+const PERMIT2_NONCE_BITMAP_ABI = [
   {
-    type: 'event',
-    name: 'Transfer',
+    type: 'function',
+    name: 'nonceBitmap',
     inputs: [
-      { name: 'from', type: 'address', indexed: true },
-      { name: 'to', type: 'address', indexed: true },
-      { name: 'value', type: 'uint256', indexed: false },
+      { name: 'owner', type: 'address' },
+      { name: 'wordPos', type: 'uint256' },
     ],
+    outputs: [{ type: 'uint256' }],
+    stateMutability: 'view',
   },
 ] as const
 
@@ -282,7 +304,15 @@ export async function verifyPermit2({
   request,
   ctx,
 }: Permit2VerifierArgs): Promise<EvmReceipt> {
-  const { publicClient, store, chainId, settlementSigner } = ctx
+  const {
+    publicClient,
+    store,
+    chainId,
+    settlementSigner,
+    confirmations,
+    settlementTimeoutMs,
+    inflightTtlMs,
+  } = ctx
   const { permit, transferDetails, witness, signature } = credential.payload
   const { amount, currency, recipient, externalId } = request
   // Wire truth — spec §8.1 + draft Table 2. Domain / allowance / replay
@@ -415,34 +445,18 @@ export async function verifyPermit2({
   // ── Step 10: EIP-712 verify + recover signer ──────────────────────────
   const domain = permit2Domain(chainId, permit2Address)
 
-  // Normalize EIP-2098 compact (64-byte) signatures to
-  // standard r||s||v (65-byte) form. The wire schema (Methods.ts
-  // `evmSignature`) accepts both lengths, but viem's recoverTypedDataAddress
-  // AND the Permit2 contract's permitWitnessTransferFrom both REQUIRE
-  // the 65-byte form. Without normalization a spec-compliant compact
-  // sig produces "invalid signature length" at step 10 (verifier) AND
-  // at step 16 (contract call) — both rejections.
-  //
-  // The single `normalizedSignature` value flows downstream to both the
-  // recover path here and the simulate/writeContract paths at step 16.
-  // 130 hex chars (incl. 0x prefix) = 64 bytes = compact; 132 = 65 bytes
-  // = standard (we count payload bytes via length-2 to drop the 0x).
-  const sigHexLen = signature.length - 2
-  const normalizedSignature: Hex =
-    sigHexLen === 128
-      ? serializeSignature(compactSignatureToSignature(parseCompactSignature(signature)))
-      : signature
+  // Normalize to canonical 65-byte r||s||v (legacy 27/28 v) form — the
+  // wire schema accepts EIP-2098 compact and yParity-final-byte variants,
+  // but viem recovery, parseSignature, and the Permit2 contract's
+  // on-chain ecrecover all want the canonical shape. The single
+  // `normalizedSignature` value flows to both the recover path here and
+  // the simulate/writeContract paths at step 16.
+  const normalizedSignature = normalizeEvmSignature(signature)
 
   // Build the typed-data message reading from credential.payload. nonce +
   // deadline are uint256 represented as decimal strings → BigInt.
   let recoveredSigner: Address
   try {
-    // Recover the expected signer by trying both single and batch typed
-    // data shapes. Use credential.source to short-circuit if possible.
-    // Note: verifyTypedData (viem) requires `address` arg = candidate signer.
-    // We need to RECOVER the signer first; verifyTypedData returns boolean.
-    // viem has `recoverTypedDataAddress` for recovery.
-    const { recoverTypedDataAddress } = await import('viem')
     if (isBatch) {
       const message = {
         permitted: permit.permitted.map((p) => ({
@@ -494,43 +508,29 @@ export async function verifyPermit2({
   // need a separate verifyTypedData double-call.
 
   // ── Step 11: credential.source matches recoveredSigner ────────────────
-  if (credential.source === undefined) {
-    throw new Errors.VerificationFailedError({
-      ...(challengeId && { id: challengeId }),
-      reason: `permit2 requires credential.source (draft §6.1): expected 'did:pkh:eip155:${chainId}:${recoveredSigner}'`,
-    })
-  }
-  const sourcePattern = new RegExp(`^did:pkh:eip155:${chainId}:(0x[0-9a-fA-F]{40})$`)
-  const sourceMatch = sourcePattern.exec(credential.source)
-  if (!sourceMatch) {
-    throw new Errors.VerificationFailedError({
-      ...(challengeId && { id: challengeId }),
-      reason: `credential.source must match 'did:pkh:eip155:${chainId}:<address>'; got '${credential.source}'`,
-    })
-  }
-  if (sourceMatch[1]!.toLowerCase() !== recoveredSigner.toLowerCase()) {
-    throw new Errors.VerificationFailedError({
-      ...(challengeId && { id: challengeId }),
-      reason: `credential.source (${sourceMatch[1]}) does not match recovered Permit2 signer (${recoveredSigner})`,
-    })
-  }
+  assertDidPkhSourceMatches({
+    chainId,
+    source: credential.source,
+    required: true,
+    expectedAddress: recoveredSigner,
+    challengeId,
+    requiredReason: `permit2 requires credential.source (draft §6.1): expected 'did:pkh:eip155:${chainId}:${recoveredSigner}'`,
+    expectedLabel: 'recovered Permit2 signer',
+  })
 
   // ── Step 12: atomic reserve ───────────────────────────────────────────
   const key = permit2Key(chainId, permit2Address, recoveredSigner, permit.nonce)
-  const claimed = await reserve(store, key)
+  const claimed = await reserve(store, key, { inflightTtlMs })
   if (!claimed) {
-    // Normalized read so a backend failure surfaces as
-    // ReplayStoreUnavailableError instead of raw Redis/Postgres error.
-    const current = await getReplaySlot(store, key)
-    const reasonText =
-      current?.state === 'consumed'
-        ? `permit2 credential already consumed (signer=${recoveredSigner}, nonce=${permit.nonce})`
-        : current?.state === 'rejected'
-          ? `permit2 credential previously rejected: ${current.reason ?? 'unknown'}`
-          : `concurrent verify in progress for permit2 credential (signer=${recoveredSigner}, nonce=${permit.nonce})`
-    throw new Errors.VerificationFailedError({
-      ...(challengeId && { id: challengeId }),
-      reason: reasonText,
+    await throwReserveConflict({
+      store,
+      key,
+      challengeId,
+      describe: {
+        consumed: `permit2 credential already consumed (signer=${recoveredSigner}, nonce=${permit.nonce})`,
+        rejected: (reason) => `permit2 credential previously rejected: ${reason ?? 'unknown'}`,
+        inflight: `concurrent verify in progress for permit2 credential (signer=${recoveredSigner}, nonce=${permit.nonce})`,
+      },
     })
   }
 
@@ -542,13 +542,21 @@ export async function verifyPermit2({
   // terminal. Safety-net release locked out from that point.
   let terminalPhase = false
   try {
-    // ── Step 13: balanceOf ──────────────────────────────────────────────
-    const balance = (await publicClient.readContract({
-      address: currency,
-      abi: ERC20_READ_ABI,
-      functionName: 'balanceOf',
-      args: [recoveredSigner],
-    })) as bigint
+    // ── Steps 13-14: balanceOf + allowance (independent reads, parallel) ─
+    const [balance, allowance] = (await Promise.all([
+      publicClient.readContract({
+        address: currency,
+        abi: ERC20_READ_ABI,
+        functionName: 'balanceOf',
+        args: [recoveredSigner],
+      }),
+      publicClient.readContract({
+        address: currency,
+        abi: ERC20_READ_ABI,
+        functionName: 'allowance',
+        args: [recoveredSigner, permit2Address],
+      }),
+    ])) as [bigint, bigint]
     if (balance < totalAmount) {
       await release(store, key)
       throw new Errors.VerificationFailedError({
@@ -556,14 +564,6 @@ export async function verifyPermit2({
         reason: `signer balance ${balance} < totalAmount ${totalAmount}`,
       })
     }
-
-    // ── Step 14: allowance(signer, permit2Address) ──────────────────────
-    const allowance = (await publicClient.readContract({
-      address: currency,
-      abi: ERC20_READ_ABI,
-      functionName: 'allowance',
-      args: [recoveredSigner, permit2Address],
-    })) as bigint
     if (allowance < totalAmount) {
       await release(store, key)
       throw new Errors.VerificationFailedError({
@@ -586,6 +586,9 @@ export async function verifyPermit2({
       account: settlementSigner.account!,
     }
 
+    // simulate first, then write with the EXACT request the simulation
+    // validated (viem's simulate→request idiom) — guarantees the broadcast
+    // call can't drift from what was simulated.
     let txHash: Hex
     try {
       if (isBatch) {
@@ -601,8 +604,7 @@ export async function verifyPermit2({
           to: d.to,
           requestedAmount: BigInt(d.requestedAmount),
         }))
-        // simulate first
-        await publicClient.simulateContract({
+        const { request: simRequest } = await publicClient.simulateContract({
           ...baseArgs,
           abi: PERMIT2_BATCH_ABI,
           functionName: 'permitWitnessTransferFrom',
@@ -616,18 +618,8 @@ export async function verifyPermit2({
           ],
         })
         txHash = await settlementSigner.writeContract({
-          ...baseArgs,
+          ...simRequest,
           chain: settlementSigner.chain ?? null,
-          abi: PERMIT2_BATCH_ABI,
-          functionName: 'permitWitnessTransferFrom',
-          args: [
-            permitTuple,
-            detailsTuples,
-            recoveredSigner,
-            witnessHash,
-            PERMIT2_WITNESS_TYPE_STRING,
-            normalizedSignature, // normalized to 65-byte form for contract
-          ],
         })
       } else {
         const permitTuple = {
@@ -642,7 +634,7 @@ export async function verifyPermit2({
           to: transferDetails[0]!.to,
           requestedAmount: BigInt(transferDetails[0]!.requestedAmount),
         }
-        await publicClient.simulateContract({
+        const { request: simRequest } = await publicClient.simulateContract({
           ...baseArgs,
           abi: PERMIT2_SINGLE_ABI,
           functionName: 'permitWitnessTransferFrom',
@@ -656,23 +648,46 @@ export async function verifyPermit2({
           ],
         })
         txHash = await settlementSigner.writeContract({
-          ...baseArgs,
+          ...simRequest,
           chain: settlementSigner.chain ?? null,
-          abi: PERMIT2_SINGLE_ABI,
-          functionName: 'permitWitnessTransferFrom',
-          args: [
-            permitTuple,
-            detailsTuple,
-            recoveredSigner,
-            witnessHash,
-            PERMIT2_WITNESS_TYPE_STRING,
-            normalizedSignature, // normalized to 65-byte form for contract
-          ],
         })
       }
     } catch (settleErr) {
-      // simulate or broadcast failed before any on-chain state change.
-      // Nonce is unconsumed; release so the client can retry.
+      // simulate or broadcast failed — USUALLY before any on-chain state
+      // change. But not always: if our own earlier settlement attempt
+      // landed after a receipt-wait timeout + stale-inflight reclaim, the
+      // Permit2 nonce is ALREADY consumed and the simulate revert
+      // (InvalidNonce) would otherwise hand a PAID payer a terminal-
+      // looking failure while releasing the slot. Probe the Permit2
+      // nonceBitmap (wordPos = nonce >> 8, bit = nonce & 255) to decide.
+      const nonceBig = BigInt(permit.nonce)
+      let nonceConsumed = false
+      try {
+        const bitmap = (await publicClient.readContract({
+          address: permit2Address,
+          abi: PERMIT2_NONCE_BITMAP_ABI,
+          functionName: 'nonceBitmap',
+          args: [recoveredSigner, nonceBig >> 8n],
+        })) as bigint
+        nonceConsumed = ((bitmap >> (nonceBig & 255n)) & 1n) === 1n
+      } catch {
+        // Bitmap probe failed — fall through to the release path below;
+        // the original settleErr is the actionable signal.
+      }
+      if (nonceConsumed) {
+        // Nonce burned on-chain → keep the slot INFLIGHT (no release).
+        // reserve() reclaims it after inflightTtlMs; meanwhile the
+        // operator can locate the settlement tx and resolve the slot.
+        throw new Errors.VerificationFailedError({
+          ...(challengeId && { id: challengeId }),
+          reason:
+            'permit2 nonce is already consumed on-chain — an earlier settlement attempt may ' +
+            'have landed; operator: locate the settlement tx from the settlement signer ' +
+            'history and mark the slot manually',
+        })
+      }
+      // Nonce unconsumed (or probe failed): no on-chain state change to
+      // protect; release so the client can retry.
       await release(store, key)
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
@@ -680,15 +695,22 @@ export async function verifyPermit2({
       })
     }
 
-    // Wait for receipt
+    // Wait for receipt at the deployment's confirmation depth (spec §7.5
+    // policy — same knob the transaction/hash verifiers honor).
     let receipt: Awaited<ReturnType<PublicClient['waitForTransactionReceipt']>>
     try {
-      receipt = await publicClient.waitForTransactionReceipt({ hash: txHash })
+      receipt = await publicClient.waitForTransactionReceipt({
+        hash: txHash,
+        confirmations,
+        ...(settlementTimeoutMs !== undefined && { timeout: settlementTimeoutMs }),
+      })
     } catch (waitErr) {
-      // Timeout — keep inflight per spec §8.1 step 16; TTL handles cleanup.
+      // Timeout — keep the slot inflight: the tx may still mine and burn
+      // the nonce. reserve() reclaims stale inflight slots after
+      // inflightTtlMs, at which point a retry re-runs the on-chain probes.
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
-        reason: `permit2 waitForTransactionReceipt failed; slot remains inflight (TTL cleanup): ${
+        reason: `permit2 waitForTransactionReceipt failed; slot remains inflight until reclaim: ${
           waitErr instanceof Error ? waitErr.message : String(waitErr)
         }`,
       })
@@ -753,7 +775,12 @@ export async function verifyPermit2({
     }
 
     // ── Step 18: mark consumed ──────────────────────────────────────────
-    await markConsumed(store, key)
+    // The payment settled on-chain and the Transfer logs matched — the
+    // payer has paid. A store failure here must NOT surface as an error
+    // to a paid payer: consumeSlotBestEffort retries the write and warns
+    // instead of throwing; the slot staying inflight already blocks
+    // replay, and the receipt is their proof of the payment that happened.
+    await consumeSlotBestEffort(store, key, '[verifyPermit2]')
 
     // ── Step 19: build receipt ──────────────────────────────────────────
     return buildEvmReceipt({
@@ -767,43 +794,22 @@ export async function verifyPermit2({
     })
   } catch (err) {
     // Safety net for unexpected errors that bypass our explicit
-    // release/markRejected handling. If the slot is still inflight,
-    // release it so the user can retry.
-    //
-    // The secondary store.get/release calls here MUST NOT
-    // mask the original `err`. If the store backend itself is the cause
-    // of `err` (e.g. earlier reserve() threw ReplayStoreUnavailableError),
-    // these cleanup calls will throw too — swallow+log them so the user
-    // sees the original failure.
+    // release/markRejected handling (see handleVerifierFailure).
     //
     // If `terminalPhase` is set, the Permit2 nonce IS consumed
     // on-chain and a terminal store-write was in flight. Releasing here
     // would re-admit a credential whose nonce is burned — the next
     // reserve+verify would re-execute the Permit2 contract call, which
     // would revert "InvalidNonce", and the user would see a misleading
-    // error. Keep the slot inflight; TTL or operator handles cleanup.
-    if (err instanceof Errors.VerificationFailedError) throw err
-    if (terminalPhase) {
-      // eslint-disable-next-line no-console -- terminal-phase operator hint
-      console.warn(
-        '[verifyPermit2] terminal-phase store write failed; slot remains inflight ' +
-          '(TTL cleanup) to avoid double-spend. Original error:',
-        err instanceof Error ? err.message : String(err),
-      )
-      throw err
-    }
-    try {
-      const current = await getReplaySlot(store, key)
-      if (current?.state === 'inflight') {
-        await release(store, key)
-      }
-    } catch (cleanupErr) {
-      // eslint-disable-next-line no-console -- intentional one-off operator hint
-      console.warn(
-        '[verifyPermit2] safety-net cleanup failed; original error takes precedence:',
-        cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
-      )
-    }
-    throw err
+    // error. Keep the slot inflight — reserve() reclaims it after
+    // inflightTtlMs and the retry re-checks on-chain nonce state.
+    return await handleVerifierFailure({
+      err,
+      store,
+      key,
+      terminalPhase,
+      label: '[verifyPermit2]',
+      cleanupNoun: 'cleanup',
+    })
   }
 }

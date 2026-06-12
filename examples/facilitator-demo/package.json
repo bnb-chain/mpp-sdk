@@ -1,0 +1,27 @@
+{
+  "name": "@bnb-chain/mpp-example-facilitator-demo",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Facilitator pattern — an mppx/proxy gateway that onboards an unmodified merchant API onto MPP: 402-gates routes, verifies + settles with @bnb-chain/mpp, and forwards paid traffic upstream.",
+  "type": "module",
+  "scripts": {
+    "prestart": "pnpm -C ../.. build",
+    "start": "node --env-file-if-exists=.env --import tsx --no-warnings src/facilitator.ts",
+    "start:upstream": "node --env-file-if-exists=.env --import tsx --no-warnings src/upstream.ts",
+    "check:types": "tsgo --noEmit"
+  },
+  "dependencies": {
+    "@bnb-chain/mpp": "workspace:*",
+    "@hono/node-server": "^1.13.0",
+    "hono": "^4.6.0",
+    "mppx": "^0.6.28",
+    "urlpattern-polyfill": "^10.1.0",
+    "viem": "^2.51.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@typescript/native-preview": "7.0.0-dev.20260323.1",
+    "tsx": "^4.19.0",
+    "typescript": "~5.9.0"
+  }
+}

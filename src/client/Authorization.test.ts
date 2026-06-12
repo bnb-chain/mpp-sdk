@@ -13,7 +13,7 @@ import {
   encodeEventTopics,
 } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 
 import { preflightChargeForTest } from '../../test/helpers/server/preflightChargeForTest.js'
 import { eip3009Nonce } from '../protocol/TypedData.js'
@@ -195,6 +195,86 @@ describe('createAuthorizationCredential — unit', () => {
     const now = Math.floor(Date.now() / 1000)
     expect(Number(payload.validAfter)).toBeLessThanOrEqual(now)
     expect(Number(payload.validBefore)).toBeGreaterThan(now)
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  validBefore defaults (spec §5.3.2 SHOULD) + pre-sign window guard          */
+/* -------------------------------------------------------------------------- */
+
+describe('createAuthorizationCredential — validBefore defaults (spec §5.3.2)', () => {
+  test('default validBefore equals challenge.expires (in seconds) when expires < now+600', async () => {
+    const handler = await buildHandler()
+    const base = await handler.challenge.evm.charge(fullRequest)
+    // expires 2min out — sooner than the now+600 cap, so the default
+    // validBefore must bind EXACTLY to the expires timestamp.
+    const expiresMs = Date.now() + 120_000
+    const challenge = { ...base, expires: new Date(expiresMs).toISOString() }
+
+    const serialized = await createAuthorizationCredential({
+      challenge,
+      account: ACCOUNT,
+      chainId: CHAIN_ID,
+      currency: USDC,
+      recipient: RECIPIENT,
+      amount: AMOUNT,
+      eip712: EIP712,
+    })
+    const payload = Credential.deserialize(serialized).payload as { validBefore: string }
+    expect(payload.validBefore).toBe(String(Math.floor(expiresMs / 1000)))
+  })
+
+  test('default validBefore equals now+600 when challenge has no expires', async () => {
+    const handler = await buildHandler()
+    const base = await handler.challenge.evm.charge(fullRequest)
+    // mppx Challenge schema marks expires OPTIONAL — drop it entirely.
+    const { expires: _expires, ...challenge } = base
+    expect(challenge).not.toHaveProperty('expires')
+
+    const before = Math.floor(Date.now() / 1000)
+    const serialized = await createAuthorizationCredential({
+      challenge,
+      account: ACCOUNT,
+      chainId: CHAIN_ID,
+      currency: USDC,
+      recipient: RECIPIENT,
+      amount: AMOUNT,
+      eip712: EIP712,
+    })
+    const after = Math.floor(Date.now() / 1000)
+    const payload = Credential.deserialize(serialized).payload as { validBefore: string }
+    // now+600 — bracket against before/after to absorb clock ticks during the call.
+    expect(Number(payload.validBefore)).toBeGreaterThanOrEqual(before + 600)
+    expect(Number(payload.validBefore)).toBeLessThanOrEqual(after + 600)
+  })
+
+  test('explicit validAfter >= validBefore throws BEFORE signTypedData is invoked', async () => {
+    const handler = await buildHandler()
+    const challenge = await handler.challenge.evm.charge(fullRequest)
+
+    const signSpy = vi.spyOn(ACCOUNT, 'signTypedData')
+    try {
+      const now = Math.floor(Date.now() / 1000)
+      await expect(
+        createAuthorizationCredential({
+          challenge,
+          account: ACCOUNT,
+          chainId: CHAIN_ID,
+          currency: USDC,
+          recipient: RECIPIENT,
+          amount: AMOUNT,
+          eip712: EIP712,
+          // Empty window: validAfter == validBefore, both in the future.
+          validAfter: String(now + 300),
+          validBefore: String(now + 300),
+        }),
+      ).rejects.toThrow(/validAfter .* >= validBefore .* empty validity window/)
+      // The whole point: never cost the user a signing interaction for a
+      // window the server is guaranteed to reject.
+      expect(signSpy).not.toHaveBeenCalled()
+    } finally {
+      signSpy.mockRestore()
+    }
   })
 })
 

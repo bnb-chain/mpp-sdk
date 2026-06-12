@@ -24,23 +24,34 @@
  *
  *   On-chain (after step-1-8 pass):
  *     9. txHash = keccak256(payload.signature)
- *    10. Replay.reserve(txKey(chainId, txHash)). Already-consumed/rejected/
- *        inflight → terminal throw.
- *    11. sendRawTransaction(payload.signature). Error categorization:
- *        - already-known / nonce-too-low / underpriced (replacement) →
- *          getTransactionReceipt(txHash); if found, continue to step 13.
- *          If not found, getTransaction(txHash) (mempool check); if
- *          pending, continue to step 12. Otherwise release + throw.
- *        - other errors (invalid sig / fee insufficient / chainId
- *          mismatch on node / malformed RLP) → release + throw.
- *    12. waitForTransactionReceipt(txHash). Timeout → keep inflight (TTL
- *        sweeps later); throw retryable verification error. DO NOT
- *        construct a Payment-Receipt (draft §7.6: receipt only on success).
- *    13. receipt.status === 'success'. Reverted → markRejected + throw.
+ *    10. Replay.reserve(txHashKey(chainId, txHash)) — keyspace shared with
+ *        the hash verifier (spec §8: both types use the tx hash as the
+ *        replay token). Already-consumed/rejected/inflight → terminal throw.
+ *    11. sendRawTransaction(payload.signature). On ANY send error:
+ *        getTransactionReceipt(txHash); if found, continue to step 13.
+ *        If not found, getTransaction(txHash) (mempool check); if
+ *        pending, continue to step 12. Neither → probe
+ *        getTransactionCount(sender): nonce already consumed → the tx
+ *        was likely replaced (repriced) → keep inflight + retryable;
+ *        nonce unconsumed → genuine rejection → release + throw. (No
+ *        message-pattern matching: node families phrase "already known"
+ *        / "nonce too low" differently; the receipt/mempool/nonce
+ *        lookups answer the question authoritatively.)
+ *    12. waitForTransactionReceipt(txHash). Timeout → keep inflight;
+ *        throw retryable verification error. DO NOT construct a
+ *        Payment-Receipt (draft §7.6: receipt only on success).
+ *    12.5 Replacement detection: if receipt.transactionHash != txHash,
+ *        viem followed a same-(from, nonce) replacement. Claim the mined
+ *        hash's replay slot too (already consumed/rejected → reject this
+ *        credential). All later checks run against the mined receipt.
+ *    13. receipt.status === 'success'. Reverted → markRejected (both
+ *        hashes on replacement) + throw.
  *    14. parseEventLogs(Transfer) finds (address=currency, from=recoveredSender,
- *        to=recipient, value=amount). No match → markRejected + throw.
- *    15. Replay.markConsumed.
- *    16. buildEvmReceipt with txHash as `reference` + echo externalId.
+ *        to=recipient, value=amount). No match → markRejected + throw
+ *        (replacement slot released — it may pay a different charge).
+ *    15. consumeSlotBestEffort — both hashes on replacement, MINED hash
+ *        FIRST (it guards the transfer that actually settled on-chain).
+ *    16. buildEvmReceipt with the MINED hash as `reference` + echo externalId.
  */
 
 import { type Credential, Errors } from 'mppx'
@@ -56,15 +67,21 @@ import {
   recoverTransactionAddress,
 } from 'viem'
 
+import {
+  TRANSFER_EVENT_ABI,
+  assertDidPkhSourceMatches,
+  consumeSlotBestEffort,
+  handleVerifierFailure,
+  throwReserveConflict,
+} from './charge/verifierKit.js'
 import { type EvmReceipt, buildEvmReceipt } from './Receipt.js'
 import {
   type ChargeStore,
   getReplaySlot,
-  markConsumed,
   markRejected,
   release,
   reserve,
-  txKey,
+  txHashKey,
 } from './Replay.js'
 
 /* -------------------------------------------------------------------------- */
@@ -76,6 +93,13 @@ export interface TransactionVerifierCtx {
   readonly store: ChargeStore
   readonly chainId: number
   readonly confirmations: number
+  /**
+   * Max milliseconds to wait for the broadcast receipt. Unset → viem
+   * default (180s). See Permit2VerifierCtx.settlementTimeoutMs.
+   */
+  readonly settlementTimeoutMs?: number
+  /** Stale-inflight reclaim age forwarded to Replay.reserve. */
+  readonly inflightTtlMs?: number
 }
 
 export interface TransactionVerifierArgs {
@@ -92,18 +116,6 @@ export interface TransactionVerifierArgs {
 /* -------------------------------------------------------------------------- */
 /*  ABI fragments                                                             */
 /* -------------------------------------------------------------------------- */
-
-const TRANSFER_EVENT_ABI = [
-  {
-    type: 'event',
-    name: 'Transfer',
-    inputs: [
-      { name: 'from', type: 'address', indexed: true },
-      { name: 'to', type: 'address', indexed: true },
-      { name: 'value', type: 'uint256', indexed: false },
-    ],
-  },
-] as const
 
 /** ERC-20 `transfer(address,uint256)` function. Selector: 0xa9059cbb. */
 const ERC20_TRANSFER_FUNCTION_ABI = [
@@ -123,32 +135,6 @@ const ERC20_TRANSFER_FUNCTION_ABI = [
 const TRANSFER_SELECTOR = '0xa9059cbb'
 
 /* -------------------------------------------------------------------------- */
-/*  Error categorization for sendRawTransaction                               */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Match node error messages that MAY indicate the tx was already
- * broadcast / mined / replaced. We MUST check the receipt before
- * releasing the slot — blindly releasing on these would let a client
- * resubmit a tx that already settled.
- *
- * Sources: geth / erigon / bsc-geth / arbitrum-nitro error strings.
- */
-const POSSIBLY_ACCEPTED_ERROR_PATTERNS = [
-  /already known/i,
-  /known transaction/i,
-  /nonce too low/i,
-  /replacement transaction underpriced/i,
-  /transaction underpriced.*replacement/i,
-  /transaction with the same hash/i,
-]
-
-function isPossiblyAcceptedError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err)
-  return POSSIBLY_ACCEPTED_ERROR_PATTERNS.some((re) => re.test(message))
-}
-
-/* -------------------------------------------------------------------------- */
 /*  verifyTransaction                                                         */
 /* -------------------------------------------------------------------------- */
 
@@ -157,7 +143,7 @@ export async function verifyTransaction({
   request,
   ctx,
 }: TransactionVerifierArgs): Promise<EvmReceipt> {
-  const { publicClient, store, chainId, confirmations } = ctx
+  const { publicClient, store, chainId, confirmations, settlementTimeoutMs, inflightTtlMs } = ctx
   const { signature: rawTx } = credential.payload
   const { amount, currency, recipient, externalId } = request
   const challengeId = credential.challenge.id
@@ -271,40 +257,29 @@ export async function verifyTransaction({
     })
   }
 
-  if (credential.source !== undefined) {
-    const sourcePattern = new RegExp(`^did:pkh:eip155:${chainId}:(0x[0-9a-fA-F]{40})$`)
-    const sourceMatch = sourcePattern.exec(credential.source)
-    if (!sourceMatch) {
-      throw new Errors.VerificationFailedError({
-        ...(challengeId && { id: challengeId }),
-        reason: `credential.source must match 'did:pkh:eip155:${chainId}:<address>'; got '${credential.source}'`,
-      })
-    }
-    if (sourceMatch[1]!.toLowerCase() !== recoveredSender.toLowerCase()) {
-      throw new Errors.VerificationFailedError({
-        ...(challengeId && { id: challengeId }),
-        reason: `credential.source (${sourceMatch[1]}) does not match recovered sender (${recoveredSender})`,
-      })
-    }
-  }
+  assertDidPkhSourceMatches({
+    chainId,
+    source: credential.source,
+    required: false,
+    expectedAddress: recoveredSender,
+    challengeId,
+    expectedLabel: 'recovered sender',
+  })
 
   // ── Steps 9-10: compute txHash, atomic reserve ─────────────────────────
   const txHash = keccak256(serializedTx) as `0x${string}`
-  const key = txKey(chainId, txHash)
-  const claimed = await reserve(store, key)
+  const key = txHashKey(chainId, txHash)
+  const claimed = await reserve(store, key, { inflightTtlMs })
   if (!claimed) {
-    // Normalized read so a backend failure here surfaces as
-    // ReplayStoreUnavailableError instead of a raw Redis/Postgres error.
-    const current = await getReplaySlot(store, key)
-    const reasonText =
-      current?.state === 'consumed'
-        ? `transaction credential already consumed (txHash=${txHash})`
-        : current?.state === 'rejected'
-          ? `transaction credential previously rejected: ${current.reason ?? 'unknown'}`
-          : `concurrent verify in progress for transaction credential (txHash=${txHash})`
-    throw new Errors.VerificationFailedError({
-      ...(challengeId && { id: challengeId }),
-      reason: reasonText,
+    await throwReserveConflict({
+      store,
+      key,
+      challengeId,
+      describe: {
+        consumed: `transaction credential already consumed (txHash=${txHash})`,
+        rejected: (reason) => `transaction credential previously rejected: ${reason ?? 'unknown'}`,
+        inflight: `concurrent verify in progress for transaction credential (txHash=${txHash})`,
+      },
     })
   }
 
@@ -318,21 +293,17 @@ export async function verifyTransaction({
   let terminalPhase = false
   try {
     // ── Step 11: broadcast ────────────────────────────────────────────
-    let broadcastSucceeded = false
     try {
       await publicClient.sendRawTransaction({ serializedTransaction: serializedTx })
-      broadcastSucceeded = true
     } catch (sendErr) {
-      if (!isPossiblyAcceptedError(sendErr)) {
-        // Definitely-not-accepted: invalid signature / fee insufficient /
-        // chainId mismatch / malformed RLP. Release and surface.
-        await release(store, key)
-        throw new Errors.VerificationFailedError({
-          ...(challengeId && { id: challengeId }),
-          reason: `sendRawTransaction rejected: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`,
-        })
-      }
-      // Possibly-accepted: check receipt before releasing.
+      // ANY send error gets the receipt/mempool fallback before the slot
+      // is released. Errors like "already known" / "nonce too low" mean
+      // the tx may already be mined or pending — but node families phrase
+      // those differently (geth vs Nethermind vs Besu vs reth), so
+      // pattern-matching the message is unreliable. The lookups below are
+      // cheap and answer the only question that matters: did the tx land
+      // (receipt), is it pending (mempool), or is it genuinely rejected
+      // (neither → release + surface the send error)?
       try {
         const existing = await publicClient.getTransactionReceipt({ hash: txHash })
         // Receipt exists → proceed to step 13 with this receipt below
@@ -349,10 +320,11 @@ export async function verifyTransaction({
         // receipt lookup was momentarily unreachable.
         if (!(receiptErr instanceof TransactionReceiptNotFoundError)) {
           // Slot stays inflight — we genuinely don't know whether the tx
-          // landed. TTL handles cleanup. Surface as retryable.
+          // landed. reserve() reclaims the slot after inflightTtlMs.
+          // Surface as retryable.
           throw new Errors.VerificationFailedError({
             ...(challengeId && { id: challengeId }),
-            reason: `getTransactionReceipt RPC error after possibly-accepted send (slot stays inflight, TTL cleanup): ${
+            reason: `getTransactionReceipt RPC error after failed send (slot stays inflight until reclaim): ${
               receiptErr instanceof Error ? receiptErr.message : String(receiptErr)
             }`,
           })
@@ -367,7 +339,7 @@ export async function verifyTransaction({
             await release(store, key)
             throw new Errors.VerificationFailedError({
               ...(challengeId && { id: challengeId }),
-              reason: `sendRawTransaction failed with possibly-accepted error but tx not in mempool: ${
+              reason: `sendRawTransaction rejected and tx not found on-chain or in mempool: ${
                 sendErr instanceof Error ? sendErr.message : String(sendErr)
               }`,
             })
@@ -376,26 +348,64 @@ export async function verifyTransaction({
         } catch (mempoolErr) {
           if (mempoolErr instanceof Errors.VerificationFailedError) throw mempoolErr
           if (mempoolErr instanceof TransactionNotFoundError) {
-            // Confirmed not in mempool either → release (nonce unconsumed).
+            // Not mined and not in mempool — but that alone is NOT proof
+            // of a genuine rejection. If the payer's wallet repriced the
+            // tx (same (from, nonce), different hash), the original hash
+            // never mines yet the nonce IS consumed. Probe the sender's
+            // account nonce before deciding: count > parsed.nonce means
+            // SOME tx from this sender already consumed the slot's nonce.
+            let senderNonce: number
+            try {
+              senderNonce = await publicClient.getTransactionCount({
+                address: recoveredSender,
+                blockTag: 'latest',
+              })
+            } catch (countErr) {
+              // RPC failure on the nonce probe — we genuinely don't know
+              // whether the nonce was consumed. Keep the slot inflight
+              // (reserve() reclaims it after inflightTtlMs).
+              throw new Errors.VerificationFailedError({
+                ...(challengeId && { id: challengeId }),
+                reason: `getTransactionCount RPC error after failed send (slot stays inflight until reclaim): ${
+                  countErr instanceof Error ? countErr.message : String(countErr)
+                }`,
+              })
+            }
+            if (senderNonce > (parsed.nonce ?? 0)) {
+              // The nonce was consumed by a DIFFERENT tx — the
+              // credential's tx was replaced (repriced / sped-up).
+              // Releasing would re-admit a credential that can never
+              // mine; keep the slot inflight and point the payer at the
+              // hash-credential path for the mined replacement.
+              throw new Errors.VerificationFailedError({
+                ...(challengeId && { id: challengeId }),
+                reason:
+                  'transaction appears to have been replaced (sender account nonce already ' +
+                  'consumed); if you sped up the tx, present the mined transaction hash as a ' +
+                  'hash credential',
+              })
+            }
+            // Confirmed not mined, not in mempool, AND nonce unconsumed →
+            // the send error was a genuine rejection; release.
             await release(store, key)
             throw new Errors.VerificationFailedError({
               ...(challengeId && { id: challengeId }),
-              reason: `sendRawTransaction failed and txHash ${txHash} not found in mempool: ${
+              reason: `sendRawTransaction rejected and txHash ${txHash} not found on-chain or in mempool: ${
                 sendErr instanceof Error ? sendErr.message : String(sendErr)
               }`,
             })
           }
-          // RPC failure on getTransaction — keep inflight (TTL cleanup)
+          // RPC failure on getTransaction — keep inflight (reserve()
+          // reclaims stale inflight slots after inflightTtlMs).
           throw new Errors.VerificationFailedError({
             ...(challengeId && { id: challengeId }),
-            reason: `getTransaction RPC error after possibly-accepted send (slot stays inflight, TTL cleanup): ${
+            reason: `getTransaction RPC error after failed send (slot stays inflight until reclaim): ${
               mempoolErr instanceof Error ? mempoolErr.message : String(mempoolErr)
             }`,
           })
         }
       }
     }
-    void broadcastSucceeded
 
     // ── Step 12: wait for receipt (with confirmations) ────────────────
     let receipt: Awaited<ReturnType<PublicClient['waitForTransactionReceipt']>>
@@ -403,15 +413,16 @@ export async function verifyTransaction({
       receipt = await publicClient.waitForTransactionReceipt({
         hash: txHash,
         confirmations,
+        ...(settlementTimeoutMs !== undefined && { timeout: settlementTimeoutMs }),
       })
     } catch (waitErr) {
-      // Timeout: keep slot inflight per spec §8.3 step 12 (TTL handles
-      // cleanup). Throw retryable; do NOT mark rejected, do NOT release —
-      // letting the client retry would otherwise lose the inflight marker
-      // and risk concurrent broadcast attempts.
+      // Timeout: keep slot inflight (reserve() reclaims stale inflight
+      // slots after inflightTtlMs). Throw retryable; do NOT mark rejected,
+      // do NOT release — letting the client retry would otherwise lose the
+      // inflight marker and risk concurrent broadcast attempts.
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
-        reason: `waitForTransactionReceipt timed out or RPC failed; slot remains inflight (TTL cleanup): ${
+        reason: `waitForTransactionReceipt timed out or RPC failed; slot remains inflight until reclaim: ${
           waitErr instanceof Error ? waitErr.message : String(waitErr)
         }`,
       })
@@ -422,9 +433,57 @@ export async function verifyTransaction({
     // we're now in terminal phase. Safety-net release is locked out.
     terminalPhase = true
 
+    // ── Step 12.5: replacement detection ──────────────────────────────
+    // viem's waitForTransactionReceipt (checkReplacement default true)
+    // resolves with the receipt of a same-(from, nonce) REPLACEMENT tx
+    // when the credential's tx was repriced/cancelled out of the mempool.
+    // The mined tx is then a different on-chain identity: all subsequent
+    // status/Transfer checks run against IT, the receipt `reference` must
+    // carry ITS hash, and ITS replay slot must be claimed too — otherwise
+    // the actually-mined hash stays free and can settle a second charge
+    // as a hash credential.
+    const minedHash = receipt.transactionHash
+    let minedKey: ReturnType<typeof txHashKey> | null = null
+    if (minedHash.toLowerCase() !== txHash.toLowerCase()) {
+      minedKey = txHashKey(chainId, minedHash)
+      const minedClaimed = await reserve(store, minedKey, { inflightTtlMs })
+      if (!minedClaimed) {
+        const minedSlot = await getReplaySlot(store, minedKey)
+        if (minedSlot?.state === 'consumed' || minedSlot?.state === 'rejected') {
+          // The mined replacement already settled (or terminally failed)
+          // another charge — this credential cannot be honored.
+          await markRejected(
+            store,
+            key,
+            `tx was replaced by ${minedHash}, which is already ${minedSlot.state} by another credential`,
+          )
+          throw new Errors.VerificationFailedError({
+            ...(challengeId && { id: challengeId }),
+            reason: `transaction was replaced on-chain by ${minedHash}, which already settled another charge`,
+          })
+        }
+        // Replacement hash is concurrently inflight (e.g. presented in
+        // parallel as a hash credential). Keep our slot inflight and
+        // surface retryable — the concurrent verify will reach a terminal
+        // state for the mined hash first. Note the honest retry window:
+        // this credential's own slot also stays inflight until reserve()'s
+        // stale-inflight reclaim (~inflightTtlMs), so an immediate retry
+        // would just hit "concurrent verify in progress" on its own hash.
+        throw new Errors.VerificationFailedError({
+          ...(challengeId && { id: challengeId }),
+          reason: `transaction was replaced by ${minedHash}, which has a concurrent verify in progress; this credential's slot remains inflight — retry after the inflight window expires`,
+        })
+      }
+    }
+
     // ── Step 13: receipt.status ───────────────────────────────────────
     if (receipt.status !== 'success') {
       await markRejected(store, key, `tx reverted on-chain (status=${receipt.status})`)
+      if (minedKey) {
+        // The mined replacement reverted — on-chain-final evidence, mark
+        // its hash rejected too so a hash credential doesn't re-verify it.
+        await markRejected(store, minedKey, `tx reverted on-chain (status=${receipt.status})`)
+      }
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
         reason: `transaction reverted on-chain (status=${receipt.status})`,
@@ -454,6 +513,12 @@ export async function verifyTransaction({
         key,
         `no matching Transfer(${currency}, from=${recoveredSender}, ${recipient}, ${amount}) in tx logs`,
       )
+      if (minedKey) {
+        // The mined replacement succeeded but didn't pay THIS charge. It
+        // may legitimately match a different challenge — release its slot
+        // instead of poisoning a future hash-credential verify of it.
+        await release(store, minedKey)
+      }
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
         reason: `no matching Transfer event for currency=${currency} from=${recoveredSender} to=${recipient} value=${amount}`,
@@ -461,54 +526,51 @@ export async function verifyTransaction({
     }
 
     // ── Step 15: mark consumed ────────────────────────────────────────
-    await markConsumed(store, key)
+    // On replacement, consume BOTH hashes — the MINED hash FIRST: it
+    // guards the transfer that actually settled on-chain (the one a hash
+    // credential could redeem again), while the credential's precomputed
+    // hash merely blocks resubmission of the same signed RLP. Each write
+    // goes through consumeSlotBestEffort so it retries independently and
+    // a failure on one key never skips the other.
+    //
+    // The payment settled and the Transfer log matched — a store failure
+    // here must NOT surface as an error to a paid payer (the helper
+    // warns instead of throwing). The slot staying inflight already
+    // blocks replay; the receipt is their proof.
+    if (minedKey) await consumeSlotBestEffort(store, minedKey, '[verifyTransaction]')
+    await consumeSlotBestEffort(store, key, '[verifyTransaction]')
 
     // ── Step 16: build receipt ────────────────────────────────────────
+    // `reference` is the hash that actually mined (spec §7.6: receipt
+    // reference = the settlement transaction's hash). Equal to the
+    // precomputed txHash except in the replacement case.
     return buildEvmReceipt({
       method: 'evm',
       status: 'success',
       challengeId,
-      reference: txHash,
+      reference: minedHash,
       timestamp: new Date().toISOString(),
       chainId,
       ...(externalId !== undefined && { externalId }),
     })
   } catch (err) {
     // Safety net: unexpected errors leave the slot inflight unless the
-    // step's failure path already mutated it. Release on bubbling-out of
-    // unknown errors so the user can retry; VerificationFailedError paths
-    // already handled the slot.
-    //
-    // The secondary release() call MUST NOT mask `err`. If
-    // the store backend itself is the cause (ReplayStoreUnavailableError
-    // from earlier reserve / markConsumed), release() will throw too —
-    // swallow+log so the user sees the original failure.
+    // step's failure path already mutated it (see handleVerifierFailure).
     //
     // If `terminalPhase` is set, the tx is mined (nonce consumed
     // by gas) and a terminal store-write was in flight. Releasing here
     // would re-admit a credential whose nonce is already burned, and the
     // next reserve+verify cycle would broadcast a NEW tx with the SAME
     // signed RLP and fail "already known" → indefinite retry storm.
-    // Keep the slot inflight; TTL or operator handles cleanup.
-    if (err instanceof Errors.VerificationFailedError) throw err
-    if (terminalPhase) {
-      // eslint-disable-next-line no-console -- terminal-phase operator hint
-      console.warn(
-        '[verifyTransaction] terminal-phase store write failed; slot remains inflight ' +
-          '(TTL cleanup) to avoid double-spend. Original error:',
-        err instanceof Error ? err.message : String(err),
-      )
-      throw err
-    }
-    try {
-      await release(store, key)
-    } catch (cleanupErr) {
-      // eslint-disable-next-line no-console -- intentional one-off operator hint
-      console.warn(
-        '[verifyTransaction] safety-net release failed; original error takes precedence:',
-        cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
-      )
-    }
-    throw err
+    // Keep the slot inflight — reserve() reclaims it after inflightTtlMs
+    // and the retry's broadcast-error fallback finds the mined receipt.
+    return await handleVerifierFailure({
+      err,
+      store,
+      key,
+      terminalPhase,
+      label: '[verifyTransaction]',
+      cleanupNoun: 'release',
+    })
   }
 }

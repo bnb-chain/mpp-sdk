@@ -87,7 +87,9 @@ serve({ fetch: app.fetch, port: config.port }, (info) => {
   // from the actual (chain, token, credentialTypes) the server advertises.
   console.log(`mpp-sdk charge-server listening on http://localhost:${info.port}`)
   console.log(`  chain:           ${deployment.chain} (chainId ${deployment.chainId})`)
-  console.log(`  token:           ${deployment.token} (${deployment.currency}, ${deployment.decimals} dec)`)
+  console.log(
+    `  token:           ${deployment.token} (${deployment.currency}, ${deployment.decimals} dec)`,
+  )
   console.log(`  credentials:     ${deployment.credentialTypes.join(', ')}`)
   console.log(`  recipient:       ${config.recipient}`)
   console.log(`  settlement addr: ${config.settlementAccount.address} (needs tBNB for gas)`)

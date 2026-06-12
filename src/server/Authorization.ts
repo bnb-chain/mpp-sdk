@@ -13,12 +13,10 @@
  *     1. payload.to === request.recipient
  *     2. payload.value === request.amount
  *     3. payload.nonce === eip3009Nonce(challenge.id, challenge.realm)
- *     4. payload.validBefore > now. Spec §8.2 also SHOULDs
- *        validBefore <= challenge.expires (a longer authorization window
- *        than the challenge encourages reuse). We do NOT
- *        currently implement that SHOULD check — neither warn nor reject.
- *        Tracked as future hardening; deployments that need it should
- *        wrap the verifier or land it as a follow-up patch.
+ *     4. payload.validBefore > now, AND (spec §5.3.2 SHOULD) validBefore
+ *        must not exceed challenge.expires by more than a fixed tolerance
+ *        — a longer authorization window than the challenge leaves a
+ *        signed, anyone-can-submit transfer redeemable off-protocol.
  *     5. payload.validAfter <= now
  *     6. Curated EIP-712 domain (tokenName + tokenVersion) MUST be
  *        present — preflight reads `getCuratedEip712Domain` which throws
@@ -38,14 +36,22 @@
  *        payload.nonce)). All 4 key components REQUIRED — see Replay.ts
  *        JSDoc on authKey.
  *    10. ERC20.balanceOf(from) >= value → release on fail.
- *    11. viem.parseSignature(payload.signature) → {v, r, s}.
- *    12. simulateContract(transferWithAuthorization(...)) → release on fail.
- *    13. writeContract → waitForTransactionReceipt. Broadcast fail →
- *        release; timeout → keep inflight (TTL); revert → release
- *        (nonce unconsumed on-chain).
+ *    11. viem.parseSignature(normalizedSignature) → {v, r, s}.
+ *    12. simulateContract(transferWithAuthorization(...)). Failure →
+ *        front-run recovery probe (authorizationState + AuthorizationUsed/
+ *        AuthorizationCanceled logs). Three outcomes: 'recovered' (a third
+ *        party landed the exact authorized transfer at >= ctx.confirmations
+ *        depth → consume + receipt referencing THEIR tx), 'pending'
+ *        (settlement evidence inconclusive → keep slot inflight, throw
+ *        retryable), 'none' (unconsumed or genuinely canceled → release).
+ *    13. writeContract → waitForTransactionReceipt (confirmations +
+ *        optional timeout). Broadcast fail → recovery probe (as in 12);
+ *        timeout → keep inflight (reserve() reclaims after inflightTtlMs);
+ *        revert → recovery probe (as in 12).
  *    14. parseEventLogs(Transfer) matches (currency, from, to, value).
  *        Mismatch → markRejected (token consumed nonce on-chain).
- *    15. Replay.markConsumed.
+ *    15. consumeSlotBestEffort (markConsumed with retry; never fails a
+ *        verify whose settlement is already on-chain-final).
  *    16. buildEvmReceipt with settlement txHash as `reference` + echo externalId.
  */
 
@@ -55,25 +61,22 @@ import {
   type Hex,
   type PublicClient,
   type WalletClient,
-  compactSignatureToSignature,
-  parseCompactSignature,
   parseEventLogs,
   parseSignature,
   recoverTypedDataAddress,
-  serializeSignature,
 } from 'viem'
 
 import { eip3009Domain, eip3009Nonce, eip3009Types } from '../protocol/TypedData.js'
-import { type EvmReceipt, buildEvmReceipt } from './Receipt.js'
 import {
-  authKey,
-  type ChargeStore,
-  getReplaySlot,
-  markConsumed,
-  markRejected,
-  release,
-  reserve,
-} from './Replay.js'
+  TRANSFER_EVENT_ABI,
+  assertDidPkhSourceMatches,
+  consumeSlotBestEffort,
+  handleVerifierFailure,
+  normalizeEvmSignature,
+  throwReserveConflict,
+} from './charge/verifierKit.js'
+import { type EvmReceipt, buildEvmReceipt } from './Receipt.js'
+import { authKey, type ChargeStore, markRejected, release, reserve } from './Replay.js'
 
 /* -------------------------------------------------------------------------- */
 /*  ctx + args                                                                */
@@ -104,6 +107,18 @@ export interface AuthorizationVerifierCtx {
    * probed at verify time (spec §8.2 step 6 forbids BYO probing).
    */
   readonly eip712: { readonly name: string; readonly version: string }
+  /**
+   * Confirmation depth for the settlement receipt wait (deployment policy,
+   * spec §7.5). Same knob the transaction/hash verifiers honor.
+   */
+  readonly confirmations: number
+  /**
+   * Max milliseconds to wait for the settlement receipt. Unset → viem
+   * default (180s). See Permit2VerifierCtx.settlementTimeoutMs.
+   */
+  readonly settlementTimeoutMs?: number
+  /** Stale-inflight reclaim age forwarded to Replay.reserve. */
+  readonly inflightTtlMs?: number
 }
 
 interface AuthorizationPayload {
@@ -132,6 +147,14 @@ export interface AuthorizationVerifierArgs {
 /*  ABIs                                                                      */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Slack allowed between `payload.validBefore` and `challenge.expires`
+ * before the §5.3.2 SHOULD check rejects. Generous enough for clients
+ * that sign a fixed now+10min window against a ~5min challenge expiry;
+ * tight enough to stop multi-hour off-protocol redemption windows.
+ */
+const VALID_BEFORE_TOLERANCE_SEC = 600n
+
 const ERC20_BALANCE_ABI = [
   {
     type: 'function',
@@ -141,6 +164,62 @@ const ERC20_BALANCE_ABI = [
     stateMutability: 'view',
   },
 ] as const
+
+/** EIP-3009 standard getter — true once the (authorizer, nonce) pair is used OR canceled. */
+const EIP3009_AUTHORIZATION_STATE_ABI = [
+  {
+    type: 'function',
+    name: 'authorizationState',
+    inputs: [
+      { name: 'authorizer', type: 'address' },
+      { name: 'nonce', type: 'bytes32' },
+    ],
+    outputs: [{ type: 'bool' }],
+    stateMutability: 'view',
+  },
+] as const
+
+/**
+ * EIP-3009 standard event, emitted on successful use (NOT on cancel —
+ * cancel emits AuthorizationCanceled). Both params indexed → getLogs can
+ * pinpoint the exact tx that consumed the authorization.
+ */
+const AUTHORIZATION_USED_EVENT_ABI = {
+  type: 'event',
+  name: 'AuthorizationUsed',
+  inputs: [
+    { name: 'authorizer', type: 'address', indexed: true },
+    { name: 'nonce', type: 'bytes32', indexed: true },
+  ],
+} as const
+
+/**
+ * EIP-3009 standard event, emitted by cancelAuthorization (the
+ * no-payment way to burn a nonce). The recovery probe queries it in the
+ * same window as AuthorizationUsed to distinguish a genuine cancel
+ * (release + surface the original error) from a settlement that predates
+ * the search window (keep slot inflight — payment may have happened).
+ */
+const AUTHORIZATION_CANCELED_EVENT_ABI = {
+  type: 'event',
+  name: 'AuthorizationCanceled',
+  inputs: [
+    { name: 'authorizer', type: 'address', indexed: true },
+    { name: 'nonce', type: 'bytes32', indexed: true },
+  ],
+} as const
+
+/**
+ * How far back (in blocks) the front-run recovery searches for the
+ * AuthorizationUsed / AuthorizationCanceled events. Must outlast the
+ * inflight-reclaim window (DEFAULT_INFLIGHT_TTL_MS = 10min): a reclaimed
+ * retry re-probes a burned nonce, and if the consuming tx has scrolled
+ * past the window the probe can no longer prove payment. 5000 blocks ≈
+ * ~21min on the fastest curated chain (arbitrum ~0.25s blocks) vs the
+ * 10-min reclaim — the old 1000-block window covered only ~4min there —
+ * while staying within common public-RPC getLogs range caps.
+ */
+const FRONT_RUN_SEARCH_WINDOW_BLOCKS = 5000n
 
 const EIP3009_TRANSFER_WITH_AUTHORIZATION_ABI = [
   {
@@ -162,17 +241,21 @@ const EIP3009_TRANSFER_WITH_AUTHORIZATION_ABI = [
   },
 ] as const
 
-const TRANSFER_EVENT_ABI = [
-  {
-    type: 'event',
-    name: 'Transfer',
-    inputs: [
-      { name: 'from', type: 'address', indexed: true },
-      { name: 'to', type: 'address', indexed: true },
-      { name: 'value', type: 'uint256', indexed: false },
-    ],
-  },
-] as const
+/**
+ * Front-run recovery probe decision (see recoverFrontRunSettlement):
+ *   - 'recovered': the exact authorized transfer settled at sufficient
+ *     confirmation depth — slot consumed, receipt references the
+ *     consuming tx.
+ *   - 'pending':   evidence is inconclusive (settlement too shallow, or
+ *     nonce burned but neither event found in the search window) — the
+ *     caller MUST keep the slot inflight and throw a retryable error.
+ *   - 'none':      nonce unconsumed, or genuinely canceled — the caller
+ *     releases the slot and surfaces the original failure.
+ */
+type FrontRunProbeOutcome =
+  | { readonly kind: 'recovered'; readonly receipt: EvmReceipt }
+  | { readonly kind: 'pending'; readonly reason: string }
+  | { readonly kind: 'none' }
 
 /* -------------------------------------------------------------------------- */
 /*  verifyAuthorization                                                       */
@@ -183,7 +266,16 @@ export async function verifyAuthorization({
   request,
   ctx,
 }: AuthorizationVerifierArgs): Promise<EvmReceipt> {
-  const { publicClient, store, chainId, settlementSigner, eip712 } = ctx
+  const {
+    publicClient,
+    store,
+    chainId,
+    settlementSigner,
+    eip712,
+    confirmations,
+    settlementTimeoutMs,
+    inflightTtlMs,
+  } = ctx
   const payload = credential.payload
   // Wire truth — spec §8.2 + TypedData.ts: domain / authKey / balanceOf /
   // transferWithAuthorization target all bind to challenge.request.currency.
@@ -230,6 +322,29 @@ export async function verifyAuthorization({
     })
   }
 
+  // Spec §5.3.2 SHOULD: "validBefore SHOULD correspond to the challenge
+  // expires timestamp." A validBefore far beyond expires leaves a signed,
+  // anyone-can-submit transfer redeemable on-chain long after the challenge
+  // window closed. Reject when it exceeds expires by more than the
+  // tolerance (which accommodates clients that default to a fixed window
+  // like now+10min against a typical ~5min challenge expiry).
+  const expiresIso = credential.challenge.expires
+  if (expiresIso !== undefined) {
+    const expiresMs = Date.parse(expiresIso)
+    if (Number.isFinite(expiresMs)) {
+      const maxValidBefore = BigInt(Math.floor(expiresMs / 1000)) + VALID_BEFORE_TOLERANCE_SEC
+      if (BigInt(payload.validBefore) > maxValidBefore) {
+        throw new Errors.VerificationFailedError({
+          ...(challengeId && { id: challengeId }),
+          reason:
+            `authorization validBefore ${payload.validBefore} exceeds challenge expires ` +
+            `(${expiresIso}) by more than ${VALID_BEFORE_TOLERANCE_SEC}s — spec §5.3.2: ` +
+            'validBefore SHOULD correspond to the challenge expires timestamp',
+        })
+      }
+    }
+  }
+
   // ── Step 6: EIP-712 domain must already be resolved (caller responsibility) ─
   if (!eip712.name || !eip712.version) {
     throw new Errors.VerificationFailedError({
@@ -245,18 +360,14 @@ export async function verifyAuthorization({
     tokenAddress: currency,
   })
 
-  // ── Normalize signature to standard 65-byte r||s||v ───────────────────
+  // ── Normalize signature to canonical 65-byte r||s||v (legacy v) ───────
   //
-  // The wire schema (src/Methods.ts evmSignature) accepts BOTH 65-byte
-  // standard signatures AND 64-byte EIP-2098 compact signatures. viem's
-  // recoverTypedDataAddress + the EIP-3009 contract ABI both want the
-  // standard form — normalise once here so every downstream call sees
-  // the same shape.
-  const sigHexLen = payload.signature.length - 2 // strip 0x
-  const normalizedSignature: Hex =
-    sigHexLen === 128
-      ? serializeSignature(compactSignatureToSignature(parseCompactSignature(payload.signature)))
-      : payload.signature
+  // The wire schema (src/Methods.ts evmSignature) accepts 65-byte standard
+  // signatures (legacy 27/28 OR yParity 0/1 final byte) AND 64-byte
+  // EIP-2098 compact signatures. viem recovery, parseSignature, and the
+  // EIP-3009 contract's on-chain ecrecover all want the canonical form —
+  // normalize once here so every downstream call sees the same shape.
+  const normalizedSignature = normalizeEvmSignature(payload.signature)
 
   // ── Step 7: recover signer via EIP-712 ────────────────────────────────
   let recoveredSigner: Address
@@ -289,39 +400,29 @@ export async function verifyAuthorization({
       reason: `recovered signer ${recoveredSigner} != payload.from ${payload.from}`,
     })
   }
-  if (credential.source !== undefined) {
-    const sourcePattern = new RegExp(`^did:pkh:eip155:${chainId}:(0x[0-9a-fA-F]{40})$`)
-    const sourceMatch = sourcePattern.exec(credential.source)
-    if (!sourceMatch) {
-      throw new Errors.VerificationFailedError({
-        ...(challengeId && { id: challengeId }),
-        reason: `credential.source must match 'did:pkh:eip155:${chainId}:<address>'; got '${credential.source}'`,
-      })
-    }
-    if (sourceMatch[1]!.toLowerCase() !== recoveredSigner.toLowerCase()) {
-      throw new Errors.VerificationFailedError({
-        ...(challengeId && { id: challengeId }),
-        reason: `credential.source (${sourceMatch[1]}) does not match recovered EIP-3009 signer (${recoveredSigner})`,
-      })
-    }
-  }
+  assertDidPkhSourceMatches({
+    chainId,
+    source: credential.source,
+    required: false,
+    expectedAddress: recoveredSigner,
+    challengeId,
+    expectedLabel: 'recovered EIP-3009 signer',
+  })
 
   // ── Step 9: atomic reserve ────────────────────────────────────────────
   const key = authKey(chainId, currency, recoveredSigner, payload.nonce)
-  const claimed = await reserve(store, key)
+  const claimed = await reserve(store, key, { inflightTtlMs })
   if (!claimed) {
-    // Normalized read so a backend failure surfaces as
-    // ReplayStoreUnavailableError instead of raw Redis/Postgres error.
-    const current = await getReplaySlot(store, key)
-    const reasonText =
-      current?.state === 'consumed'
-        ? `authorization credential already consumed (signer=${recoveredSigner}, nonce=${payload.nonce})`
-        : current?.state === 'rejected'
-          ? `authorization credential previously rejected: ${current.reason ?? 'unknown'}`
-          : `concurrent verify in progress (signer=${recoveredSigner}, nonce=${payload.nonce})`
-    throw new Errors.VerificationFailedError({
-      ...(challengeId && { id: challengeId }),
-      reason: reasonText,
+    await throwReserveConflict({
+      store,
+      key,
+      challengeId,
+      describe: {
+        consumed: `authorization credential already consumed (signer=${recoveredSigner}, nonce=${payload.nonce})`,
+        rejected: (reason) =>
+          `authorization credential previously rejected: ${reason ?? 'unknown'}`,
+        inflight: `concurrent verify in progress (signer=${recoveredSigner}, nonce=${payload.nonce})`,
+      },
     })
   }
 
@@ -350,18 +451,137 @@ export async function verifyAuthorization({
 
     // ── Step 11: split signature into {v, r, s} ─────────────────────────
     //
-    // `normalizedSignature` (computed above the try block) is always the
-    // standard 65-byte r||s||v form — parseSignature returns a defined v.
+    // `normalizedSignature` is canonical 65-byte r||s||v with a legacy
+    // (27/28) final byte, so parseSignature returns a defined v. The
+    // yParity fallback is belt-and-braces for any future normalization
+    // gap — a cryptographically valid signature must never be rejected
+    // over v encoding.
     const parsed = parseSignature(normalizedSignature)
     const r = parsed.r
     const s = parsed.s
-    const v = parsed.v
-    if (v === undefined) {
-      await release(store, key)
-      throw new Errors.VerificationFailedError({
-        ...(challengeId && { id: challengeId }),
-        reason: 'authorization signature has no v after normalization (parseSignature anomaly)',
-      })
+    const v = parsed.v ?? BigInt(27 + parsed.yParity)
+
+    // ── Front-run recovery ──────────────────────────────────────────────
+    // transferWithAuthorization is anyone-can-submit: a mempool observer
+    // — or the payer themselves — can land the identical calldata before
+    // our settlement tx. OUR call then simulate-fails or reverts
+    // ("authorization is used or canceled") even though the payment
+    // SETTLED. Before failing a payer who may have paid, check whether
+    // the authorization was consumed by a tx performing the exact
+    // authorized transfer. See FrontRunProbeOutcome for the decision
+    // matrix the caller must honor.
+    const recoverFrontRunSettlement = async (): Promise<FrontRunProbeOutcome> => {
+      try {
+        const used = (await publicClient.readContract({
+          address: currency,
+          abi: EIP3009_AUTHORIZATION_STATE_ABI,
+          functionName: 'authorizationState',
+          args: [payload.from, payload.nonce],
+        })) as boolean
+        // Unconsumed → genuine failure, no recovery.
+        if (!used) return { kind: 'none' }
+
+        // Used OR canceled — a use emits AuthorizationUsed, a cancel
+        // emits AuthorizationCanceled. Search one shared window for both.
+        const latestBlock = await publicClient.getBlockNumber()
+        const fromBlock =
+          latestBlock > FRONT_RUN_SEARCH_WINDOW_BLOCKS
+            ? latestBlock - FRONT_RUN_SEARCH_WINDOW_BLOCKS
+            : 0n
+        const usedLogs = await publicClient.getLogs({
+          address: currency,
+          event: AUTHORIZATION_USED_EVENT_ABI,
+          args: { authorizer: payload.from, nonce: payload.nonce },
+          fromBlock,
+          toBlock: latestBlock,
+        })
+        const usedLog = usedLogs[0]
+        if (!usedLog?.transactionHash) {
+          const canceledLogs = await publicClient.getLogs({
+            address: currency,
+            event: AUTHORIZATION_CANCELED_EVENT_ABI,
+            args: { authorizer: payload.from, nonce: payload.nonce },
+            fromBlock,
+            toBlock: latestBlock,
+          })
+          // Genuine cancel — no payment happened; original error stands.
+          if (canceledLogs.length > 0) return { kind: 'none' }
+          // The nonce is burned on-chain but NEITHER event is in the
+          // window: the consuming tx most likely settled before fromBlock
+          // (e.g. a reclaimed-inflight retry minutes later on a fast
+          // chain). Releasing would re-open the slot for a payment that
+          // may have settled — keep it inflight, let the operator decide.
+          return {
+            kind: 'pending',
+            reason:
+              'authorization nonce consumed on-chain but the consuming tx was not located ' +
+              `within the last ${FRONT_RUN_SEARCH_WINDOW_BLOCKS} blocks — it may have settled ` +
+              'before the search window; operator may locate it and mark the slot manually',
+          }
+        }
+
+        const frontRunReceipt = await publicClient.getTransactionReceipt({
+          hash: usedLog.transactionHash,
+        })
+        if (frontRunReceipt.status !== 'success') return { kind: 'none' }
+        // Same Transfer match as step 14: the consuming tx must contain
+        // the exact authorized (currency, from, to, value) transfer.
+        const frontRunTransfers = parseEventLogs({
+          abi: TRANSFER_EVENT_ABI,
+          eventName: 'Transfer',
+          logs: frontRunReceipt.logs,
+        })
+        const paid = frontRunTransfers.some(
+          (log) =>
+            log.address.toLowerCase() === currency.toLowerCase() &&
+            log.args.from.toLowerCase() === payload.from.toLowerCase() &&
+            log.args.to.toLowerCase() === payload.to.toLowerCase() &&
+            log.args.value === BigInt(payload.value),
+        )
+        if (!paid) return { kind: 'none' }
+
+        // The transfer settled — but only accept it at the deployment's
+        // confirmation depth (ctx.confirmations, same policy as the
+        // settlement wait and the hash verifier). Consuming on a shallow
+        // receipt risks a reorg dropping the transfer AFTER the slot is
+        // irreversibly consumed.
+        const tip = await publicClient.getBlockNumber()
+        const depth =
+          tip >= frontRunReceipt.blockNumber ? tip - frontRunReceipt.blockNumber + 1n : 0n
+        if (depth < BigInt(confirmations)) {
+          return {
+            kind: 'pending',
+            reason:
+              'front-run settlement found at insufficient confirmation depth ' +
+              `(have ${depth}, need ${confirmations}); retry shortly`,
+          }
+        }
+
+        // The authorized transfer DID settle — terminal from here.
+        terminalPhase = true
+        await consumeSlotBestEffort(store, key, '[verifyAuthorization]')
+        return {
+          kind: 'recovered',
+          receipt: buildEvmReceipt({
+            method: 'evm',
+            status: 'success',
+            challengeId,
+            reference: usedLog.transactionHash,
+            timestamp: new Date().toISOString(),
+            chainId,
+            ...(externalId !== undefined && { externalId }),
+          }),
+        }
+      } catch (recoveryErr) {
+        // Best-effort: an RPC failure during recovery falls back to the
+        // original failure path (slot handling there is unchanged).
+        // eslint-disable-next-line no-console -- operator hint
+        console.warn(
+          '[verifyAuthorization] front-run recovery probe failed; falling back to original error:',
+          recoveryErr instanceof Error ? recoveryErr.message : String(recoveryErr),
+        )
+        return { kind: 'none' }
+      }
     }
 
     // ── Step 12+13: simulate + write + wait ─────────────────────────────
@@ -379,7 +599,9 @@ export async function verifyAuthorization({
 
     let txHash: Hex
     try {
-      await publicClient.simulateContract({
+      // simulate first, then write the EXACT request the simulation
+      // validated (viem's simulate→request idiom).
+      const { request: simRequest } = await publicClient.simulateContract({
         address: currency,
         abi: EIP3009_TRANSFER_WITH_AUTHORIZATION_ABI,
         functionName: 'transferWithAuthorization',
@@ -387,14 +609,21 @@ export async function verifyAuthorization({
         account: settlementSigner.account!,
       })
       txHash = await settlementSigner.writeContract({
-        address: currency,
-        abi: EIP3009_TRANSFER_WITH_AUTHORIZATION_ABI,
-        functionName: 'transferWithAuthorization',
-        args,
-        account: settlementSigner.account!,
+        ...simRequest,
         chain: settlementSigner.chain ?? null,
       })
     } catch (settleErr) {
+      const probe = await recoverFrontRunSettlement()
+      if (probe.kind === 'recovered') return probe.receipt
+      if (probe.kind === 'pending') {
+        // Inconclusive settlement evidence — keep the slot INFLIGHT
+        // (reserve() reclaims after inflightTtlMs); releasing could
+        // re-admit a credential whose transfer actually landed.
+        throw new Errors.VerificationFailedError({
+          ...(challengeId && { id: challengeId }),
+          reason: probe.reason,
+        })
+      }
       await release(store, key)
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
@@ -404,17 +633,35 @@ export async function verifyAuthorization({
 
     let receipt: Awaited<ReturnType<PublicClient['waitForTransactionReceipt']>>
     try {
-      receipt = await publicClient.waitForTransactionReceipt({ hash: txHash })
+      receipt = await publicClient.waitForTransactionReceipt({
+        hash: txHash,
+        confirmations,
+        ...(settlementTimeoutMs !== undefined && { timeout: settlementTimeoutMs }),
+      })
     } catch (waitErr) {
+      // Keep the slot inflight: the tx may still mine and burn the nonce.
+      // reserve() reclaims stale inflight slots after inflightTtlMs.
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
-        reason: `authorization waitForTransactionReceipt failed; slot remains inflight (TTL cleanup): ${
+        reason: `authorization waitForTransactionReceipt failed; slot remains inflight until reclaim: ${
           waitErr instanceof Error ? waitErr.message : String(waitErr)
         }`,
       })
     }
 
     if (receipt.status !== 'success') {
+      // Our tx reverted — but the authorization may have been consumed by
+      // a front-runner whose transfer DID pay the recipient.
+      const probe = await recoverFrontRunSettlement()
+      if (probe.kind === 'recovered') return probe.receipt
+      if (probe.kind === 'pending') {
+        // Same as the simulate/broadcast path: keep the slot INFLIGHT
+        // rather than releasing a credential that may have settled.
+        throw new Errors.VerificationFailedError({
+          ...(challengeId && { id: challengeId }),
+          reason: probe.reason,
+        })
+      }
       await release(store, key)
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
@@ -459,7 +706,11 @@ export async function verifyAuthorization({
     }
 
     // ── Step 15: mark consumed ──────────────────────────────────────────
-    await markConsumed(store, key)
+    // The payment settled and the Transfer log matched — a store failure
+    // here must NOT surface as an error to a paid payer (see
+    // consumeSlotBestEffort: retries transient blips, then warns and
+    // returns; the slot staying inflight still blocks replay).
+    await consumeSlotBestEffort(store, key, '[verifyAuthorization]')
 
     // ── Step 16: build receipt ──────────────────────────────────────────
     return buildEvmReceipt({
@@ -472,11 +723,8 @@ export async function verifyAuthorization({
       ...(externalId !== undefined && { externalId }),
     })
   } catch (err) {
-    // Secondary store.get/release in this safety net MUST
-    // NOT mask the original `err`. If the backend itself is the cause
-    // (ReplayStoreUnavailableError from reserve / markConsumed earlier),
-    // these cleanup calls will throw — swallow+log so the user sees
-    // the original failure.
+    // Safety net for unexpected errors that bypass our explicit
+    // release/markRejected handling (see handleVerifierFailure).
     //
     // If `terminalPhase` is set, the EIP-3009 authorization
     // nonce IS consumed on-chain and a terminal store-write was in
@@ -484,30 +732,16 @@ export async function verifyAuthorization({
     // authorization nonce is burned — next reserve+verify would
     // re-execute transferWithAuthorization, the token contract would
     // revert "FiatTokenV2: authorization is used or canceled", and
-    // the user would see a misleading error. Keep slot inflight; TTL /
-    // operator handles cleanup.
-    if (err instanceof Errors.VerificationFailedError) throw err
-    if (terminalPhase) {
-      // eslint-disable-next-line no-console -- terminal-phase operator hint
-      console.warn(
-        '[verifyAuthorization] terminal-phase store write failed; slot remains inflight ' +
-          '(TTL cleanup) to avoid double-spend. Original error:',
-        err instanceof Error ? err.message : String(err),
-      )
-      throw err
-    }
-    try {
-      const current = await getReplaySlot(store, key)
-      if (current?.state === 'inflight') {
-        await release(store, key)
-      }
-    } catch (cleanupErr) {
-      // eslint-disable-next-line no-console -- intentional one-off operator hint
-      console.warn(
-        '[verifyAuthorization] safety-net cleanup failed; original error takes precedence:',
-        cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
-      )
-    }
-    throw err
+    // the user would see a misleading error. Keep slot inflight —
+    // reserve() reclaims it after inflightTtlMs, and the front-run
+    // recovery probe then resolves the burned-nonce state.
+    return await handleVerifierFailure({
+      err,
+      store,
+      key,
+      terminalPhase,
+      label: '[verifyAuthorization]',
+      cleanupNoun: 'cleanup',
+    })
   }
 }

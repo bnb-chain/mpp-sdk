@@ -4,6 +4,8 @@
  * defaults bag — no RPC, no validation.
  */
 
+import { getAddress } from 'viem'
+
 import type { CredentialType } from '../../Methods.js'
 import type { Split } from './types.js'
 
@@ -50,27 +52,37 @@ export function buildDefaults(ctx: BuildDefaultsCtx) {
     decimals,
     splits,
   } = ctx
+  // Spec §4.1: addresses on the wire SHOULD use EIP-55 mixed-case encoding.
+  // Comparisons stay lowercase-insensitive, so this is wire-cosmetic only —
+  // EXCEPT for challenge binding: mppx-hmac / stored-lookup byte-compare the
+  // serialized request, so changing the emitted casing invalidates challenges
+  // in-flight across an upgrade (transient, bounded by challenge expiry; see
+  // docs/spec-compliance.md "EIP-55 wire encoding").
   return {
     ...(amount !== undefined && { amount }),
-    currency,
-    recipient,
+    currency: getAddress(currency),
+    recipient: getAddress(recipient),
     ...(description !== undefined && { description }),
     ...(externalId !== undefined && { externalId }),
     methodDetails: {
       chainId,
-      permit2Address,
+      permit2Address: getAddress(permit2Address),
       // Settlement signer address — included iff configured. Required
       // for permit2/authorization (Permit2 uses msg.sender as spender,
       // so the user MUST sign with this address; without it client-
       // signed typed data won't match on-chain Permit2 hash → revert
       // InvalidSigner). For hash/transaction-only deployments this is
       // undefined and gets stripped from the wire challenge.
-      ...(permit2Spender !== undefined && { permit2Spender }),
+      ...(permit2Spender !== undefined && {
+        permit2Spender: getAddress(permit2Spender),
+      }),
       // Spread to a mutable copy — the schema's array type is mutable
       // even though our resolved value is readonly internally.
       credentialTypes: [...resolvedCredentialTypes],
       decimals,
-      ...(splits !== undefined && { splits: [...splits] }),
+      ...(splits !== undefined && {
+        splits: splits.map((s) => ({ ...s, recipient: getAddress(s.recipient) })),
+      }),
     },
   }
 }

@@ -32,9 +32,9 @@ with Vite.
 
 ## Per-credential realism
 
-| Tab         | What's real                                                                                                                                                                                                                            |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Hash**    | Fully real — your wallet broadcasts a USDT transfer on BSC Testnet; the credential references the tx hash; the server verifies the on-chain `Transfer` log and returns a receipt.                                                       |
+| Tab         | What's real                                                                                                                                                                                                                                                                  |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Hash**    | Fully real — your wallet broadcasts a USDT transfer on BSC Testnet; the credential references the tx hash; the server verifies the on-chain `Transfer` log and returns a receipt.                                                                                            |
 | **Permit2** | Real EIP-712 signature (MetaMask popup) bound to the server's settlement-signer `spender`; the server then broadcasts `permitWitnessTransferFrom` to settle and returns a receipt. Needs a one-time Permit2 approval (allowance panel) + the server signer funded with tBNB. |
 
 ## Run
