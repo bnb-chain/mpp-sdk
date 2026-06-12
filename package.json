@@ -40,7 +40,7 @@
     "changeset:version": "changeset version && vp fmt .",
     "check": "vp lint --fix && vp fmt --write .",
     "check:ci": "vp lint && vp fmt --check .",
-    "check:examples": "pnpm -r --filter \"./examples/*\" check:types",
+    "check:examples": "pnpm build && pnpm -r --filter \"./examples/*\" check:types",
     "check:types": "tsgo -b && tsgo --noEmit -p tsconfig.test.json && pnpm check:examples",
     "deps": "pnpx taze -r --no-ignore-other-workspaces --ignore-paths node_modules",
     "deps:ci": "pnpx actions-up",
