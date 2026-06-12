@@ -1,7 +1,7 @@
 {
   "name": "@bnb-chain/mpp-example-facilitator-demo",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Facilitator pattern — an mppx/proxy gateway that onboards an unmodified merchant API onto MPP: 402-gates routes, verifies + settles with @bnb-chain/mpp, and forwards paid traffic upstream.",
   "type": "module",
   "scripts": {

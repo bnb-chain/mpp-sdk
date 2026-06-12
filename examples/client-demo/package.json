@@ -1,7 +1,7 @@
 {
   "name": "@bnb-chain/mpp-example-client-demo",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Node CLI payer for MPP 402 endpoints — fetch the challenge, build a credential with @bnb-chain/mpp/client, retry with Authorization, decode the Payment-Receipt.",
   "type": "module",
   "scripts": {

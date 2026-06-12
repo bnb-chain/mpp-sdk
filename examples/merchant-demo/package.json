@@ -1,7 +1,7 @@
 {
   "name": "@bnb-chain/mpp-example-merchant-demo",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Merchant integration walkthrough — a plain API endpoint (server-plain.ts) and the same endpoint charging per request with @bnb-chain/mpp (server.ts).",
   "type": "module",
   "scripts": {
