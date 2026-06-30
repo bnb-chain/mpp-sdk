@@ -9,8 +9,8 @@
  *     (token consumed nonce on-chain).
  *   - Front-run recovery (both entry points): recovered → consume + receipt
  *     referencing the front-runner tx; pending (shallow depth / consuming tx
- *     outside search window) → retryable, slot stays inflight; none
- *     (unconsumed / genuine cancel) → release + original error.
+ *     outside search window / probe RPC failure) → retryable, slot stays
+ *     inflight; none (unconsumed / genuine cancel) → release + original error.
  *   - Happy path → markConsumed + receipt.
  *   - Replay pre-state terminal.
  */
@@ -529,6 +529,11 @@ describe('verifyAuthorization on-chain pre-broadcast failures release the slot',
     const ctx = buildCtx({
       publicClient: stubPublicClient({
         simulateError: new Error('FiatTokenV2: authorization is used'),
+        // The recovery probe DEFINITIVELY finds the nonce unconsumed → 'none' →
+        // release (the safe-to-retry case). Without this the probe's first RPC
+        // throws, which now (correctly) keeps the slot inflight, not released —
+        // see the 'recovery probe RPC failure → INFLIGHT' test.
+        authorizationState: false,
       }),
       settlementSigner: stubWalletClient(),
     })
@@ -1004,6 +1009,41 @@ describe('verifyAuthorization front-run recovery', () => {
     expect((await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE)))?.state).toBe(
       'inflight',
     )
+  })
+
+  test('recovery probe RPC failure → retryable, slot stays INFLIGHT', async () => {
+    // The settle attempt failed before we know whether a third party consumed
+    // the authorization. If the probe also fails, settlement state is unknown:
+    // releasing would allow another broadcast of a nonce that may be burned.
+    const sig = await signEip3009()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        simulateError: new Error('FiatTokenV2: authorization is used or canceled'),
+        // authorizationState intentionally omitted: the probe's first RPC throws.
+      }),
+      settlementSigner: stubWalletClient(),
+    })
+
+    try {
+      await expect(
+        verifyAuthorization({
+          credential: buildCredential(sig),
+          request: baseRequest,
+          ctx,
+        }),
+      ).rejects.toThrow(/front-run recovery probe failed; settlement state unknown/)
+
+      expect((await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE)))?.state).toBe(
+        'inflight',
+      )
+      expect(warn).toHaveBeenCalledWith(
+        '[verifyAuthorization] front-run recovery probe failed; keeping slot inflight:',
+        'unexpected readContract: authorizationState',
+      )
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
 

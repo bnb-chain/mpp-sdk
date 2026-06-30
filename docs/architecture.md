@@ -1,14 +1,21 @@
 # Architecture
 
 `@bnb-chain/mpp` is the EVM Charge (`draft-evm-charge-00`) implementation
-layered on [`mppx`](https://github.com/wevm/mppx). It exposes three entry
+layered on [`mppx`](https://github.com/wevm/mppx). It exposes four entry
 points sharing one wire contract:
 
 - `@bnb-chain/mpp` — top-level barrel (`chargeFromDecimal`, the receipt
   codec, the `chargeMethod` instance)
 - `@bnb-chain/mpp/server` — `preflightCharge` / `charge` / `chargeAsync`
   server factory + the four credential verifiers
-- `@bnb-chain/mpp/client` — the four credential constructors
+- `@bnb-chain/mpp/client` — the four credential constructors plus
+  `pay(url, { wallet, policy })`, the high-level buyer entry that auto-selects
+  a route by capability + policy (Phase 1 of the Payment Offer Layer,
+  [adr/0003](adr/0003-payment-offer-layer.md); mpp-only today)
+- `@bnb-chain/mpp/b402` (+ `/server`, `/mppx`) — the Binance OnchainPay (x402
+  v2) facilitator integration: `b402` (wire) + `b402/server` (RSA-signed client)
+  stay core-free; `b402/mppx` bridges b402 into the charge flow as a
+  `SettleAdapter` ([b402 section](#b402-x402-facilitator) · [b402.md](b402.md))
 
 The **single source of truth for the wire shape** is `src/Methods.ts`
 (`chargeMethod` = a `Method.from({...})` instance). Server and client both
@@ -115,7 +122,42 @@ transitions and the terminal-commit phase that prevents double-spend.
   `Transfer` logs. The EIP-712 `spender` MUST equal the settlement signer
   — see [spec-compliance.md](spec-compliance.md) §`permit2Spender`.
 - **authorization** — recover the EIP-3009 signer against the curated
-  token domain, `transferWithAuthorization`, assert the `Transfer` log
+  token domain, then settle via the configured `SettleAdapter` (see below):
+  the local signer broadcasts `transferWithAuthorization` + asserts the
+  `Transfer` log; a facilitator backend (b402) asserts the echoed
+  `facilitator` proof instead
+
+### Settlement adapters — `src/server/Settle.ts`
+
+The `authorization` verifier's on-chain broadcast is pluggable via
+`ServerParameters.settleBackend` (a `SettleAdapter`). The verifier keeps all
+challenge binding, the replay 3-state machine, front-run recovery, the §7.6
+receipt, **and the trust-critical check that the settled transfer matched the
+signed authorization** — an adapter only delegates the broadcast and returns a
+normalized `SettleReceipt` whose `proof` the verifier judges:
+
+- **`LocalSignerAdapter`** (default — wired from `settlementAccount`) is the
+  original `simulate → write → waitForReceipt`, relocated. Returns a `logs`
+  proof; the verifier matches the authorized ERC-20 `Transfer`. Existing
+  deployments are unchanged.
+- **`B402Adapter`** (`@bnb-chain/mpp/b402/mppx`, the only b402 subpath that
+  depends on core) forwards the EIP-3009 authorization to the Binance b402
+  facilitator — no local signer, b402 pays gas. Returns a `facilitator` proof
+  echoing the settled payer / network / amount; the verifier asserts they equal
+  the authorized from / chainId / value before issuing the receipt.
+  `SettlePendingError` keeps the slot inflight.
+
+`SettleReceipt.proof` is a discriminated union (`logs` | `facilitator`), so the
+two settlement modes can't represent each other's illegal states, and the
+integrity check is applied uniformly in core rather than re-implemented per
+adapter.
+
+The buyer-facing mppx wire is unchanged — settlement is orthogonal to the
+protocol. eip3009 only (permit2 settles locally); see
+[adr/0002-settle-adapter.md](adr/0002-settle-adapter.md). A proposed
+negotiation layer above the wire (one buyer `pay({ policy })`, many rails,
+spec-clean) is sketched in
+[adr/0003-payment-offer-layer.md](adr/0003-payment-offer-layer.md) (Proposed).
 
 ### Client constructors — `src/client/{Hash,Transaction,Permit2,Authorization}.ts`
 
@@ -126,6 +168,25 @@ must be in the challenge's advertised set; default `['transaction','hash']`
 when omitted) → `assertMatchesChallengeRequest` (caller fields must equal
 wire truth) → sign / broadcast → `Credential.serialize` (returns the
 complete `Payment ...` Authorization header value).
+
+### Buyer auto-selector — `src/client/pay.ts`
+
+`pay(url, { wallet, policy })` is the high-level entry layered over those
+constructors. It fetches the 402, reads token facts off the viem clients
+(symbol / decimals / allowance / chainId), then `deriveLogicalPaths`
+turns `methodDetails.credentialTypes` into routes with derived traits and
+`selectRoute` picks one: hard constraints (token / chain / `maxAmount` /
+wallet capability / approval) **filter**, `mode`
+(`auto | prefer-gasless | require-gasless | prefer-direct | manual`)
+**ranks**, and an empty viable set throws `NoAcceptableMethodError` — the
+fail-closed contract. The two pure functions are exported and exhaustively
+unit-tested; `pay` itself is the fetch → derive → select → build → retry
+wiring. Fail-closed in both directions: `policy.maxAmount` with
+unresolvable decimals refuses rather than skips the limit, a wallet on the
+wrong chain refuses unless `allowChainMismatch`, and a non-2xx retry raises
+`PaymentRejectedError` instead of returning a result that looks settled.
+This is Phase 1 of [adr/0003](adr/0003-payment-offer-layer.md) — mpp rails
+only; the cross-rail (x402 / b402) selection is the future phase.
 
 ### Receipt codec — `src/server/Receipt.ts`
 
@@ -152,6 +213,18 @@ embedded challenge is trusted (`src/server/ChallengeBinding.ts`):
   issued challenge (`rememberChallenge`) and the verifier constant-time
   compares the inbound challenge's canonical wire form against the stored
   snapshot (`src/server/ChallengeStore.ts`).
+
+## b402 (x402 facilitator)
+
+`@bnb-chain/mpp/b402` integrates the Binance OnchainPay **b402** gateway — an
+**x402 v2** facilitator. It is a deliberately _parallel_ module: it does not
+touch the charge factory, verify router, replay store, challenge binding, or
+receipt codec. The **only** shared seam is `src/protocol/TypedData.ts` (the
+EIP-3009 `eip3009Types` / `eip3009Domain` primitive) — `src/b402/` imports it,
+and nothing in the core imports `src/b402/`. The server-side `B402Client`
+(RSA-signed `/supported` · `/verify` · `/settle`) is Node-only; the rest of the
+module is browser-safe so a wallet can sign in the browser. Full guide:
+[b402.md](b402.md).
 
 ## Source map
 

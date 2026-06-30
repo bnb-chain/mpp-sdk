@@ -95,6 +95,10 @@ const EIP3009_DOMAINS: Record<string, { name: string; version: string }> = {
   '8453:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': { name: 'USD Coin', version: '2' },
   '56:0xc5f0f7b66764f6ec8c8dff7ba683102295e16409': { name: 'First Digital USD', version: '1' },
   '56:0xce24439f2d9c6a2289f741120fe202248b666666': { name: 'United Stables', version: '1' },
+  // BSC Testnet $U — the b402 testnet settlement token (merchant-demo mode 3).
+  // version '1' assumed (parity with mainnet $U; facilitator-gated, can't read
+  // on-chain) — see src/server/curated.ts.
+  '97:0x180bc1a9843a65d4116e44886fd3558515a56a49': { name: 'United Stables', version: '1' },
 }
 
 /* ── 1. Fetch the 402 challenge ─────────────────────────────────────────── */

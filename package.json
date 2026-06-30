@@ -32,6 +32,21 @@
       "types": "./dist/client/index.d.ts",
       "src": "./src/client/index.ts",
       "default": "./dist/client/index.js"
+    },
+    "./b402": {
+      "types": "./dist/b402/index.d.ts",
+      "src": "./src/b402/index.ts",
+      "default": "./dist/b402/index.js"
+    },
+    "./b402/server": {
+      "types": "./dist/b402/server/index.d.ts",
+      "src": "./src/b402/server/index.ts",
+      "default": "./dist/b402/server/index.js"
+    },
+    "./b402/mppx": {
+      "types": "./dist/b402/mppx/index.d.ts",
+      "src": "./src/b402/mppx/index.ts",
+      "default": "./dist/b402/mppx/index.js"
     }
   },
   "scripts": {

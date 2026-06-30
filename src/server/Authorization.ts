@@ -42,8 +42,9 @@
  *        AuthorizationCanceled logs). Three outcomes: 'recovered' (a third
  *        party landed the exact authorized transfer at >= ctx.confirmations
  *        depth → consume + receipt referencing THEIR tx), 'pending'
- *        (settlement evidence inconclusive → keep slot inflight, throw
- *        retryable), 'none' (unconsumed or genuinely canceled → release).
+ *        (settlement evidence inconclusive or probe errored → keep slot
+ *        inflight, throw retryable), 'none' (unconsumed or genuinely canceled
+ *        → release).
  *    13. writeContract → waitForTransactionReceipt (confirmations +
  *        optional timeout). Broadcast fail → recovery probe (as in 12);
  *        timeout → keep inflight (reserve() reclaims after inflightTtlMs);
@@ -59,10 +60,10 @@ import { type Credential, Errors } from 'mppx'
 import {
   type Address,
   type Hex,
+  type Log,
   type PublicClient,
   type WalletClient,
   parseEventLogs,
-  parseSignature,
   recoverTypedDataAddress,
 } from 'viem'
 
@@ -77,6 +78,12 @@ import {
 } from './charge/verifierKit.js'
 import { type EvmReceipt, buildEvmReceipt } from './Receipt.js'
 import { authKey, type ChargeStore, markRejected, release, reserve } from './Replay.js'
+import {
+  LocalSignerAdapter,
+  SettlePendingError,
+  type SettleAdapter,
+  type SettleReceipt,
+} from './Settle.js'
 
 /* -------------------------------------------------------------------------- */
 /*  ctx + args                                                                */
@@ -100,7 +107,17 @@ export interface AuthorizationVerifierCtx {
   readonly publicClient: PublicClient
   readonly store: ChargeStore
   readonly chainId: number
-  readonly settlementSigner: WalletClient
+  /**
+   * Local settlement signer for the default `LocalSignerAdapter`. OPTIONAL when
+   * a `settleBackend` is supplied (e.g. `B402Adapter` needs no local signer).
+   */
+  readonly settlementSigner?: WalletClient
+  /**
+   * Override the on-chain settle step. Default:
+   * `LocalSignerAdapter(settlementSigner)`. Set a `B402Adapter` to delegate
+   * EIP-3009 settlement to the Binance b402 facilitator (it broadcasts + pays gas).
+   */
+  readonly settleBackend?: SettleAdapter
   /**
    * Curated EIP-712 domain metadata for the resolved token. Must come
    * from `getCuratedEip712Domain(chain, token)` in preflightCharge — never
@@ -221,34 +238,30 @@ const AUTHORIZATION_CANCELED_EVENT_ABI = {
  */
 const FRONT_RUN_SEARCH_WINDOW_BLOCKS = 5000n
 
-const EIP3009_TRANSFER_WITH_AUTHORIZATION_ABI = [
-  {
-    type: 'function',
-    name: 'transferWithAuthorization',
-    inputs: [
-      { name: 'from', type: 'address' },
-      { name: 'to', type: 'address' },
-      { name: 'value', type: 'uint256' },
-      { name: 'validAfter', type: 'uint256' },
-      { name: 'validBefore', type: 'uint256' },
-      { name: 'nonce', type: 'bytes32' },
-      { name: 'v', type: 'uint8' },
-      { name: 'r', type: 'bytes32' },
-      { name: 's', type: 'bytes32' },
-    ],
-    outputs: [],
-    stateMutability: 'nonpayable',
-  },
-] as const
+/**
+ * Parse the numeric chain id out of a CAIP-2 `eip155:<ref>` network string, or
+ * `null` if it isn't an `eip155` network we can read. Tolerant of casing, surrounding
+ * whitespace, and a `0x`-hex or decimal reference — so the `facilitator`-proof check
+ * compares on the parsed id (not the raw echo) and isn't false-rejected over
+ * `EIP155:56` vs `eip155:56`. An unreadable echo returns `null`, which the caller
+ * treats as a mismatch (fail closed — the b402 path has no other integrity check).
+ */
+function caip2ChainId(network: string): number | null {
+  const ref = /^eip155:(0x[0-9a-f]+|\d+)$/i.exec(network.trim())?.[1]?.toLowerCase()
+  if (ref === undefined) return null
+  const n = ref.startsWith('0x') ? Number.parseInt(ref, 16) : Number.parseInt(ref, 10)
+  return Number.isInteger(n) && n > 0 ? n : null
+}
 
 /**
  * Front-run recovery probe decision (see recoverFrontRunSettlement):
  *   - 'recovered': the exact authorized transfer settled at sufficient
  *     confirmation depth — slot consumed, receipt references the
  *     consuming tx.
- *   - 'pending':   evidence is inconclusive (settlement too shallow, or
- *     nonce burned but neither event found in the search window) — the
- *     caller MUST keep the slot inflight and throw a retryable error.
+ *   - 'pending':   evidence is inconclusive (settlement too shallow,
+ *     nonce burned but neither event found in the search window, or the
+ *     probe itself errored) — the caller MUST keep the slot inflight and
+ *     throw a retryable error.
  *   - 'none':      nonce unconsumed, or genuinely canceled — the caller
  *     releases the slot and surfaces the original failure.
  */
@@ -271,6 +284,7 @@ export async function verifyAuthorization({
     store,
     chainId,
     settlementSigner,
+    settleBackend,
     eip712,
     confirmations,
     settlementTimeoutMs,
@@ -449,18 +463,6 @@ export async function verifyAuthorization({
       })
     }
 
-    // ── Step 11: split signature into {v, r, s} ─────────────────────────
-    //
-    // `normalizedSignature` is canonical 65-byte r||s||v with a legacy
-    // (27/28) final byte, so parseSignature returns a defined v. The
-    // yParity fallback is belt-and-braces for any future normalization
-    // gap — a cryptographically valid signature must never be rejected
-    // over v encoding.
-    const parsed = parseSignature(normalizedSignature)
-    const r = parsed.r
-    const s = parsed.s
-    const v = parsed.v ?? BigInt(27 + parsed.yParity)
-
     // ── Front-run recovery ──────────────────────────────────────────────
     // transferWithAuthorization is anyone-can-submit: a mempool observer
     // — or the payer themselves — can land the identical calldata before
@@ -573,52 +575,70 @@ export async function verifyAuthorization({
           }),
         }
       } catch (recoveryErr) {
-        // Best-effort: an RPC failure during recovery falls back to the
-        // original failure path (slot handling there is unchanged).
+        // Probe failure means settlement state is unknown. Releasing here
+        // would re-admit an authorization whose nonce may already be burned.
         // eslint-disable-next-line no-console -- operator hint
         console.warn(
-          '[verifyAuthorization] front-run recovery probe failed; falling back to original error:',
+          '[verifyAuthorization] front-run recovery probe failed; keeping slot inflight:',
           recoveryErr instanceof Error ? recoveryErr.message : String(recoveryErr),
         )
-        return { kind: 'none' }
+        return {
+          kind: 'pending',
+          reason:
+            'front-run recovery probe failed; settlement state unknown, retry after inflight window',
+        }
       }
     }
 
-    // ── Step 12+13: simulate + write + wait ─────────────────────────────
-    const args = [
-      payload.from,
-      payload.to,
-      BigInt(payload.value),
-      BigInt(payload.validAfter),
-      BigInt(payload.validBefore),
-      payload.nonce,
-      Number(v),
-      r,
-      s,
-    ] as const
+    // ── Step 11-13: delegate the broadcast to the settle adapter ────────
+    // Default: LocalSignerAdapter(settlementSigner) — the original
+    // simulate→write→wait. A B402Adapter forwards to the b402 facilitator.
+    const settle =
+      settleBackend ?? (settlementSigner ? new LocalSignerAdapter(settlementSigner) : undefined)
+    if (!settle) {
+      await release(store, key)
+      throw new Errors.VerificationFailedError({
+        ...(challengeId && { id: challengeId }),
+        reason: 'no settlement backend configured (settleBackend or settlementSigner required)',
+      })
+    }
 
-    let txHash: Hex
+    let settleReceipt: SettleReceipt
     try {
-      // simulate first, then write the EXACT request the simulation
-      // validated (viem's simulate→request idiom).
-      const { request: simRequest } = await publicClient.simulateContract({
-        address: currency,
-        abi: EIP3009_TRANSFER_WITH_AUTHORIZATION_ABI,
-        functionName: 'transferWithAuthorization',
-        args,
-        account: settlementSigner.account!,
-      })
-      txHash = await settlementSigner.writeContract({
-        ...simRequest,
-        chain: settlementSigner.chain ?? null,
-      })
+      settleReceipt = await settle.settleAuthorization(
+        {
+          token: currency,
+          chainId,
+          from: payload.from,
+          to: payload.to,
+          value: BigInt(payload.value),
+          validAfter: BigInt(payload.validAfter),
+          validBefore: BigInt(payload.validBefore),
+          nonce: payload.nonce,
+          signature: normalizedSignature,
+          eip712,
+        },
+        {
+          publicClient,
+          confirmations,
+          ...(settlementTimeoutMs !== undefined && { settlementTimeoutMs }),
+        },
+      )
     } catch (settleErr) {
+      // SettlePendingError = tx broadcast but receipt unconfirmed (timeout):
+      // keep the slot INFLIGHT (reclaimed after inflightTtlMs) — the tx may
+      // still mine and burn the nonce.
+      if (settleErr instanceof SettlePendingError) {
+        throw new Errors.VerificationFailedError({
+          ...(challengeId && { id: challengeId }),
+          reason: settleErr.message,
+        })
+      }
+      // Pre-mine failure — the authorization may have been front-run by a tx
+      // performing the exact authorized transfer. See FrontRunProbeOutcome.
       const probe = await recoverFrontRunSettlement()
       if (probe.kind === 'recovered') return probe.receipt
       if (probe.kind === 'pending') {
-        // Inconclusive settlement evidence — keep the slot INFLIGHT
-        // (reserve() reclaims after inflightTtlMs); releasing could
-        // re-admit a credential whose transfer actually landed.
         throw new Errors.VerificationFailedError({
           ...(challengeId && { id: challengeId }),
           reason: probe.reason,
@@ -631,32 +651,11 @@ export async function verifyAuthorization({
       })
     }
 
-    let receipt: Awaited<ReturnType<PublicClient['waitForTransactionReceipt']>>
-    try {
-      receipt = await publicClient.waitForTransactionReceipt({
-        hash: txHash,
-        confirmations,
-        ...(settlementTimeoutMs !== undefined && { timeout: settlementTimeoutMs }),
-      })
-    } catch (waitErr) {
-      // Keep the slot inflight: the tx may still mine and burn the nonce.
-      // reserve() reclaims stale inflight slots after inflightTtlMs.
-      throw new Errors.VerificationFailedError({
-        ...(challengeId && { id: challengeId }),
-        reason: `authorization waitForTransactionReceipt failed; slot remains inflight until reclaim: ${
-          waitErr instanceof Error ? waitErr.message : String(waitErr)
-        }`,
-      })
-    }
-
-    if (receipt.status !== 'success') {
-      // Our tx reverted — but the authorization may have been consumed by
-      // a front-runner whose transfer DID pay the recipient.
+    if (settleReceipt.status !== 'success') {
+      // Our tx reverted — but a front-runner's tx may have paid the recipient.
       const probe = await recoverFrontRunSettlement()
       if (probe.kind === 'recovered') return probe.receipt
       if (probe.kind === 'pending') {
-        // Same as the simulate/broadcast path: keep the slot INFLIGHT
-        // rather than releasing a credential that may have settled.
         throw new Errors.VerificationFailedError({
           ...(challengeId && { id: challengeId }),
           reason: probe.reason,
@@ -665,51 +664,89 @@ export async function verifyAuthorization({
       await release(store, key)
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
-        reason: `authorization settlement reverted on-chain (status=${receipt.status})`,
+        reason: `authorization settlement reverted on-chain (status=${settleReceipt.status})`,
       })
     }
 
-    // receipt.status === 'success' → EIP-3009 authorization
-    // nonce IS now consumed on-chain (token contract burns it on
-    // successful transferWithAuthorization). Enter terminal phase:
-    // safety-net release is locked out to avoid re-admitting a
+    // Settlement succeeded → the EIP-3009 nonce IS consumed on-chain. Enter
+    // terminal phase: safety-net release is locked out to avoid re-admitting a
     // credential whose token-side nonce is already burned.
     terminalPhase = true
 
-    // ── Step 14: Transfer log match (post-success → markRejected on miss) ─
-    const transferLogs = parseEventLogs({
-      abi: TRANSFER_EVENT_ABI,
-      eventName: 'Transfer',
-      logs: receipt.logs,
-    })
-    const expectedValue = BigInt(payload.value)
-    const currencyLower = currency.toLowerCase()
-    const fromLower = payload.from.toLowerCase()
-    const toLower = payload.to.toLowerCase()
-    const match = transferLogs.find(
-      (log) =>
-        log.address.toLowerCase() === currencyLower &&
-        log.args.from.toLowerCase() === fromLower &&
-        log.args.to.toLowerCase() === toLower &&
-        log.args.value === expectedValue,
-    )
-    if (!match) {
-      await markRejected(
-        store,
-        key,
-        `Transfer log mismatch (currency=${currency} from=${payload.from} to=${payload.to} value=${payload.value}); nonce consumed`,
-      )
-      throw new Errors.VerificationFailedError({
-        ...(challengeId && { id: challengeId }),
-        reason: `no matching Transfer event for authorization (currency=${currency} from=${payload.from} to=${payload.to} value=${payload.value})`,
+    // ── Step 14: confirm the settled transfer matched the authorization ──
+    // The verifier — never the adapter — judges this. `logs` proof (the local
+    // signer broadcast it itself): match the authorized ERC-20 Transfer. A
+    // `facilitator` proof (b402 broadcast it and echoed back what it settled):
+    // assert the echoed payer/network/amount equal the authorized
+    // from/chainId/value. Either mismatch means the on-chain nonce was burned on
+    // a transfer we did NOT authorize → markRejected + fail.
+    const proof = settleReceipt.proof
+    if (proof.kind === 'logs') {
+      const transferLogs = parseEventLogs({
+        abi: TRANSFER_EVENT_ABI,
+        eventName: 'Transfer',
+        logs: proof.logs as Log[],
       })
+      const expectedValue = BigInt(payload.value)
+      const currencyLower = currency.toLowerCase()
+      const fromLower = payload.from.toLowerCase()
+      const toLower = payload.to.toLowerCase()
+      const match = transferLogs.find(
+        (log) =>
+          log.address.toLowerCase() === currencyLower &&
+          log.args.from.toLowerCase() === fromLower &&
+          log.args.to.toLowerCase() === toLower &&
+          log.args.value === expectedValue,
+      )
+      if (!match) {
+        await markRejected(
+          store,
+          key,
+          `Transfer log mismatch (currency=${currency} from=${payload.from} to=${payload.to} value=${payload.value}); nonce consumed`,
+        )
+        throw new Errors.VerificationFailedError({
+          ...(challengeId && { id: challengeId }),
+          reason: `no matching Transfer event for authorization (currency=${currency} from=${payload.from} to=${payload.to} value=${payload.value})`,
+        })
+      }
+    } else {
+      // The facilitator path reads NO on-chain logs — this echo IS the only
+      // post-settle integrity check, so it must POSITIVELY confirm the authorized
+      // transfer (fail CLOSED, never assume). An incomplete or unreadable proof is
+      // a mismatch, not a pass.
+      const mismatches: string[] = []
+      if (proof.payer.toLowerCase() !== payload.from.toLowerCase()) {
+        mismatches.push(`payer=${proof.payer} != from=${payload.from}`)
+      }
+      // Compare on the PARSED chain id so only cosmetic CAIP-2 format diffs
+      // (`EIP155:1` / `eip155:0x1`) are tolerated; an unreadable network is a
+      // mismatch (b402 emits canonical `eip155:<n>`, so this never fires for an
+      // honest settlement, and we refuse to credit a network we can't read).
+      const settledChainId = caip2ChainId(proof.network)
+      if (settledChainId !== chainId) {
+        mismatches.push(`network=${proof.network} != eip155:${chainId}`)
+      }
+      // amount MUST be present (b402 echoes it on success) and equal the value.
+      if (proof.amount === undefined || proof.amount !== BigInt(payload.value)) {
+        mismatches.push(`amount=${proof.amount ?? '(missing)'} != value=${payload.value}`)
+      }
+      if (mismatches.length > 0) {
+        await markRejected(
+          store,
+          key,
+          `facilitator settled a different transfer than authorized (${mismatches.join('; ')}); nonce consumed`,
+        )
+        throw new Errors.VerificationFailedError({
+          ...(challengeId && { id: challengeId }),
+          reason: `facilitator settlement does not match authorization (${mismatches.join('; ')})`,
+        })
+      }
     }
 
     // ── Step 15: mark consumed ──────────────────────────────────────────
-    // The payment settled and the Transfer log matched — a store failure
-    // here must NOT surface as an error to a paid payer (see
-    // consumeSlotBestEffort: retries transient blips, then warns and
-    // returns; the slot staying inflight still blocks replay).
+    // A store failure here must NOT surface as an error to a paid payer (see
+    // consumeSlotBestEffort: retries transient blips, then warns and returns;
+    // the slot staying inflight still blocks replay).
     await consumeSlotBestEffort(store, key, '[verifyAuthorization]')
 
     // ── Step 16: build receipt ──────────────────────────────────────────
@@ -717,7 +754,7 @@ export async function verifyAuthorization({
       method: 'evm',
       status: 'success',
       challengeId,
-      reference: txHash,
+      reference: settleReceipt.transactionHash,
       timestamp: new Date().toISOString(),
       chainId,
       ...(externalId !== undefined && { externalId }),

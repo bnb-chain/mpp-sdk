@@ -100,5 +100,18 @@ export {
   type SettlementParams,
 } from './Settlement.js'
 
+// ── Settlement adapters (pluggable `authorization` settle step) ────────────
+// Core defines only the seam + the self-host LocalSignerAdapter. Facilitator
+// backends live outside core: B402Adapter is in `@bnb-chain/mpp/b402/mppx`.
+export {
+  type Eip3009Settlement,
+  LocalSignerAdapter,
+  type SettleAdapter,
+  type SettleContext,
+  SettlePendingError,
+  type SettleProof,
+  type SettleReceipt,
+} from './Settle.js'
+
 // ── Transport (C2 path) ──────────────────────────────────────────────────
 export { evmHttpTransport } from './Transport.js'

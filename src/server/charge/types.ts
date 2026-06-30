@@ -15,6 +15,7 @@ import type { VerifyChallengeBindingFn } from '../ChallengeBinding.js'
 import type { ChallengeBindingConfig } from '../ChallengeBinding.js'
 import type { SupportedChainPreset, SupportedTokenPreset } from '../curated.js'
 import type { ChargeStore } from '../Replay.js'
+import type { SettleAdapter } from '../Settle.js'
 
 /* -------------------------------------------------------------------------- */
 /*  Split type                                                                */
@@ -55,13 +56,26 @@ export interface ServerParameters {
   readonly settlementAccount?: Account
   readonly settlementWalletClient?: WalletClient
 
+  /**
+   * Override the EIP-3009 `authorization` settle step. Default:
+   * `LocalSignerAdapter(settlementSigner)` (this deployment broadcasts). Set a
+   * `B402Adapter` to delegate authorization settlement to the Binance b402
+   * facilitator — then no `settlementAccount` is needed for the authorization
+   * path (b402 broadcasts + pays gas; `recipient` must be your registered b402
+   * payout). `permit2` always settles locally and still needs a signer.
+   */
+  readonly settleBackend?: SettleAdapter
+
   // On-chain behaviour
   /**
    * Confirmation depth required before a credential is accepted / a
-   * settlement receipt is returned (spec §7.5 server policy). Applies to
-   * ALL FOUR credential paths: hash + transaction verification depth AND
-   * the permit2 / authorization settlement receipt wait. Defaults to the
-   * chain's curated value (reorg buffer).
+   * settlement receipt is returned (spec §7.5 server policy). Applies to the
+   * paths where CORE waits on-chain: hash + transaction verification depth,
+   * permit2 settlement, and `authorization` settled by the LOCAL signer
+   * (`LocalSignerAdapter`). It does NOT apply to `authorization` settled by a
+   * facilitator `settleBackend` (e.g. b402) — that path trusts the facilitator's
+   * `success` + tx hash and does not re-fetch the receipt (see docs/b402.md
+   * trust model). Defaults to the chain's curated value (reorg buffer).
    */
   readonly confirmations?: number
   /**
@@ -118,6 +132,8 @@ export interface ResolvedChargeParams extends ServerParameters {
     readonly transportUrl: string | undefined
     readonly viemChain: Chain
     readonly settlementSigner: WalletClient | undefined
+    /** Resolved settle adapter for the authorization path (`params.settleBackend`). */
+    readonly settleBackend: SettleAdapter | undefined
     readonly store: ChargeStore
     readonly verifyChallengeBinding: VerifyChallengeBindingFn
     /**

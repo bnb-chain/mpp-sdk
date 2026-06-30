@@ -20,6 +20,7 @@ import type { VerifyChallengeBindingFn } from '../ChallengeBinding.js'
 import { verifyHash } from '../Hash.js'
 import { verifyPermit2 } from '../Permit2.js'
 import { type ChargeStore } from '../Replay.js'
+import type { SettleAdapter } from '../Settle.js'
 import { verifyTransaction } from '../Transaction.js'
 
 /**
@@ -37,6 +38,8 @@ export interface VerifyRouterCtx {
   readonly inflightTtlMs: number | undefined
   readonly hashFromPolicy: 'strict_from' | 'lax_from' | undefined
   readonly settlementSigner: WalletClient | undefined
+  /** Override the EIP-3009 settle step (default: LocalSignerAdapter(settlementSigner)). */
+  readonly settleBackend: SettleAdapter | undefined
   readonly eip712: { readonly name: string; readonly version: string } | undefined
 }
 
@@ -56,6 +59,7 @@ export function makeVerifyRouter(
     inflightTtlMs,
     hashFromPolicy,
     settlementSigner,
+    settleBackend,
     eip712,
   } = ctx
   // Optional knobs forwarded to every verifier ctx (spread keeps
@@ -162,9 +166,12 @@ export function makeVerifyRouter(
         })
 
       case 'authorization':
-        if (!settlementSigner) {
+        // Settlement comes from `settleBackend` OR the local signer — at least
+        // one MUST be present (preflight enforces this).
+        if (!settlementSigner && !settleBackend) {
           throw new Errors.VerificationFailedError({
-            reason: 'authorization verifier requires settlementSigner (preflight invariant broken)',
+            reason:
+              'authorization verifier requires settlementSigner or settleBackend (preflight invariant broken)',
           })
         }
         if (!eip712) {
@@ -183,9 +190,10 @@ export function makeVerifyRouter(
             publicClient: readCtx.publicClient,
             store: readCtx.store,
             chainId: readCtx.chainId,
-            settlementSigner,
             eip712,
             confirmations: readCtx.confirmations,
+            ...(settlementSigner && { settlementSigner }),
+            ...(settleBackend && { settleBackend }),
             ...optionalKnobs,
           },
         })

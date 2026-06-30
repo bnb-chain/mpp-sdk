@@ -42,6 +42,10 @@ Three entry points:
 | `@bnb-chain/mpp/client` | The four credential constructors (`createHashCredential`, `createPermit2Credential`, …).        |
 | `@bnb-chain/mpp`        | Universal helpers — `chargeFromDecimal` (decimal → base units) and the `Payment-Receipt` codec. |
 
+> Paying an **x402** facilitator instead? `@bnb-chain/mpp/b402` (+ `/server`)
+> integrates Binance OnchainPay (b402) — a separate flow from the charge entry
+> points above. See [`docs/b402.md`](b402.md).
+
 ## Concepts in 30 seconds
 
 ```

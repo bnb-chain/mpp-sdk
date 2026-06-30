@@ -4,11 +4,12 @@ import { http, createConfig } from 'wagmi'
 import { bscTestnet } from 'wagmi/chains'
 
 /**
- * Wagmi config — BSC Testnet only.
+ * Wagmi config — BSC Testnet only (chainId 97). Every demo path is on testnet:
  *
- * BSC Testnet (chainId 97) is the only chain the demo settles on, so it's
- * the only one the wallet needs to switch / add. `hash` broadcasts a real
- * USDT transfer here and `permit2` signs against the same chain.
+ * - `hash` broadcasts a real TEST_USDT transfer; `permit2` signs against it.
+ * - `authorization` signs the EIP-3009 `transferWithAuthorization` for `$U`
+ *   (the b402 web-wallet path). The demo never broadcasts the authorization
+ *   itself — a b402-settling server (examples/merchant-demo mode 3) does.
  *
  * RainbowKit's `injected` connector covers MetaMask and other compatible
  * extensions automatically.

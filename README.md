@@ -19,6 +19,8 @@ All four credential paths are live end-to-end (see `examples/charge-server` + `e
 
 v1 limits: curated token presets only (no arbitrary BYO ERC-20), and the SDK adds one spec extension (`methodDetails.permit2Spender`) that `draft-evm-charge-00` doesn't define but Permit2 settlement requires — see [`docs/spec-compliance.md`](docs/spec-compliance.md).
 
+**Beyond the mppx charge flow**, the SDK also speaks **x402 v2**: `@bnb-chain/mpp/b402` (+ `/server`) integrates the [Binance OnchainPay (b402)](https://developers.binance.com/docs/onchainpay-x402/introduction) facilitator. Use it standalone (a parallel x402 envelope, sharing only the EIP-3009 EIP-712 primitive) **or** as an mppx settlement backend — `B402Adapter` keeps your buyers on the mppx wire and just delegates the EIP-3009 settle to b402. A connect-your-wallet browser demo (`charge-demo`, BSC Testnet `$U`) pairs with `merchant-demo` mode 3 — see [`docs/b402.md`](docs/b402.md).
+
 ## Install
 
 ```bash
@@ -230,7 +232,7 @@ Issuer-native stablecoins curated across the supported chains. These advertise `
 | opbnb                                                                       | 204     | 1                     |              |
 | sepolia / _-sepolia / _-amoy / avalanche-fuji / bsc-testnet / opbnb-testnet | various | 0                     | dev velocity |
 
-The default confirmations depth is overridable via `ServerParameters.confirmations` and applies to **all four credential paths** — the verification depth for `hash` / `transaction` AND the settlement-receipt wait for `permit2` / `authorization`. Two related `ServerParameters` knobs: `settlementTimeoutMs` caps how long the settling verifiers hold the HTTP request open waiting for the settlement receipt (unset → viem's 180 s default; set it below your load balancer's idle timeout), and `inflightTtlMs` sets the age after which a stale `inflight` replay slot becomes reclaimable by a retry (default 10 min; keep it comfortably above `settlementTimeoutMs` — see [`docs/replay-store.md`](docs/replay-store.md)).
+The default confirmations depth is overridable via `ServerParameters.confirmations` and applies to the paths where core waits on-chain — the verification depth for `hash` / `transaction`, the `permit2` settlement, and `authorization` settled by the **local signer**. It does **not** apply to `authorization` settled by a facilitator backend (b402), which trusts the facilitator's `success` + tx hash and does not re-fetch the receipt (see [`docs/b402.md`](docs/b402.md) trust model). Two related `ServerParameters` knobs: `settlementTimeoutMs` caps how long the settling verifiers hold the HTTP request open waiting for the settlement receipt (unset → viem's 180 s default; set it below your load balancer's idle timeout), and `inflightTtlMs` sets the age after which a stale `inflight` replay slot becomes reclaimable by a retry (default 10 min; keep it comfortably above `settlementTimeoutMs` — see [`docs/replay-store.md`](docs/replay-store.md)).
 
 Permit2 deployment is auto-probed at `preflightCharge` time via `eth_getCode` against the resolved address. v1 does not open arbitrary BYO chain — `rpcUrl` and `chainOverride` may only override an existing preset's RPC / viem `Chain` metadata.
 

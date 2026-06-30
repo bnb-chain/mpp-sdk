@@ -333,8 +333,9 @@ const TOKEN_MATRIX: Readonly<
       // ⚠️ The BSC testnet sibling at 0x2Ae938053c112Bd81042043945d142e208b50a66
       // does NOT implement EIP-3009 — probing transferWithAuthorization
       // (selector 0xe3ee160e) falls through to "Contract does not have
-      // fallback nor receive functions". Do not add ('bsc-testnet', 'U')
-      // with eip3009Supported: true.
+      // fallback nor receive functions". The b402 TESTNET deployment is a
+      // DIFFERENT contract (0x180Bc1a9843A65D4116e44886FD3558515a56A49) that DOES
+      // implement it — see ('bsc-testnet', 'U') below.
       address: '0xcE24439F2D9C6a2289F741120FE202248B666666',
       decimals: 18,
       eip3009Supported: true,
@@ -560,6 +561,29 @@ const TOKEN_MATRIX: Readonly<
       address: '0x337610d27c682E347C9cD60BD4b3b107C9d34dDd',
       decimals: 18,
       eip3009Supported: false,
+    },
+    U: {
+      // United Stables ("$U") on BSC TESTNET — the b402 testnet settlement token.
+      // NOTE: this is a DIFFERENT deployment from the non-EIP-3009 testnet sibling
+      // at 0x2Ae9...0a66 flagged under ('bsc', 'U') — that one lacks
+      // transferWithAuthorization; THIS one (0x180B...) implements it.
+      // On-chain probe (2026-06-30 via data-seed-prebsc-2-s3.binance.org):
+      //   name()="United Stables", symbol()="U", decimals()=18, chainId=97.
+      //   transferWithAuthorization exists (reverts with empty data on a dummy
+      //   payload, NOT "no fallback/receive"). It appears facilitator-gated, so
+      //   DOMAIN_SEPARATOR() / version() / eip712Domain() / authorizationState()
+      //   all revert and the EIP-712 version can't be read on-chain.
+      // ⚠️ eip712Version="1" is ASSUMED (parity with mainnet $U). CONFIRM it
+      //   equals b402 /supported `extra.version` for this kind once the b402 RSA
+      //   creds are configured (B402Adapter.#resolveKind throws on a mismatch, and
+      //   a wrong-version buyer signature reverts on-chain — both fail safe, no
+      //   silent bad settle). Only used via the b402 settle path (B402Adapter);
+      //   the SDK never broadcasts it locally.
+      address: '0x180Bc1a9843A65D4116e44886FD3558515a56A49',
+      decimals: 18,
+      eip3009Supported: true,
+      eip712Name: 'United Stables',
+      eip712Version: '1',
     },
   },
   // ── opBNB Testnet (TEST_USDT — NOT yet pinned) ──

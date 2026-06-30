@@ -29,7 +29,9 @@ landing in this repo.
   `tsc`/`eslint`/`prettier` — the stack is deliberately pinned to mppx's.
 - **Packages**: top-level barrel `@bnb-chain/mpp` (`chargeFromDecimal` +
   receipt codec), `@bnb-chain/mpp/server` (factory + verifiers),
-  `@bnb-chain/mpp/client` (credential constructors).
+  `@bnb-chain/mpp/client` (credential constructors), `@bnb-chain/mpp/b402`
+  (+ `/server`) — the Binance OnchainPay (x402 v2) facilitator integration,
+  parallel to the mppx charge flow (see [`docs/b402.md`](docs/b402.md)).
 
 ## Current implementation status
 
@@ -107,23 +109,35 @@ src/
 │   ├── Transport.ts            evmHttpTransport (C2 path, §13.4.1)
 │   ├── curated.ts              SupportedChainPreset / SupportedTokenPreset + TOKEN_MATRIX
 │   └── index.ts                `@bnb-chain/mpp/server` barrel
-└── client/
-    ├── Authorization.ts        createAuthorizationCredential (EIP-3009 signer)
-    ├── Hash.ts                 createHashCredential (tx-hash reference; no signing)
-    ├── Permit2.ts              createPermit2Credential (single + batch with splits)
-    ├── Transaction.ts          createTransactionCredential (EIP-1559 signer)
-    ├── internal/
-    │   └── AssertChallenge.ts  parseEvmChargeChallenge + accepted-types / drift / splits guards
-    └── index.ts                `@bnb-chain/mpp/client` barrel.
-                                §11 unified charge() factory deferred to v1.1
-                                (see src/client/index.ts JSDoc for rationale).
+├── client/
+│   ├── Authorization.ts        createAuthorizationCredential (EIP-3009 signer)
+│   ├── Hash.ts                 createHashCredential (tx-hash reference; no signing)
+│   ├── Permit2.ts              createPermit2Credential (single + batch with splits)
+│   ├── Transaction.ts          createTransactionCredential (EIP-1559 signer)
+│   ├── internal/
+│   │   └── AssertChallenge.ts  parseEvmChargeChallenge + accepted-types / drift / splits guards
+│   └── index.ts                `@bnb-chain/mpp/client` barrel.
+│                               §11 unified charge() factory deferred to v1.1
+│                               (see src/client/index.ts JSDoc for rationale).
+└── b402/                       x402 v2 facilitator integration (parallel to charge;
+    │                           only shared seam = protocol/TypedData.ts)
+    ├── Types.ts                x402 v2 wire types (browser-safe)
+    ├── Payload.ts              buildEip3009Payment / X-PAYMENT(-RESPONSE) codecs /
+    │                           recoverEip3009Payer / nonce (browser-safe)
+    ├── Client.ts               B402Client — RSA "Tesla" signed /supported·/verify·/settle (Node)
+    ├── index.ts                `@bnb-chain/mpp/b402` barrel (browser-safe, core-free)
+    ├── server/index.ts         `@bnb-chain/mpp/b402/server` barrel (+ B402Client, core-free)
+    └── mppx/index.ts           `@bnb-chain/mpp/b402/mppx` — B402Adapter (the ONLY b402
+                                subpath that imports core's SettleAdapter seam)
 test/                           vitest config + setup; live/ = testnet e2e scaffolds
 ├── helpers/server/             test seams kept OUT of the published src tarball
 │                               (preflightChargeForTest, terminalFailureStore)
 └── interop/                    viem cross-check vectors
-examples/                       per-audience demos (merchant-demo / client-demo /
-                                facilitator-demo) + full charge-server (Hono) +
-                                charge-demo (React) — see docs/examples.md
+examples/                       merchant-demo + client-demo (CLI buyer) + full
+                                charge-server (Hono) + charge-demo (React wallet).
+                                b402 settle is folded into these: merchant-demo
+                                mode 3 (B402Adapter) + charge-demo's BSC Testnet
+                                /$U authorization path — see docs/examples.md
 docs/                           public docs (architecture, spec-compliance, replay-store, examples, adr/)
 ```
 

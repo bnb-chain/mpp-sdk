@@ -1,26 +1,34 @@
 # charge-demo — interactive browser playground
 
-A React app that drives `@bnb-chain/mpp` **end-to-end** on **BSC Testnet
-(chainId 97)** with **USDT**, against a local `charge-server`: fetch a real
-`402` challenge, build a credential (real on-chain broadcast / real MetaMask
-EIP-712 signature), re-verify it, submit it back, and the server settles
-on-chain and returns a `Payment-Receipt`.
+A React app that drives `@bnb-chain/mpp` **end-to-end** against a local
+server: fetch a real `402` challenge, build a credential (real on-chain
+broadcast / real MetaMask EIP-712 signature), re-verify it, submit it back,
+and the server settles and returns a `Payment-Receipt`. Runs in end-to-end
+mode with the on/off toggle **hidden** (always on).
 
-This build demos the **`hash`** and **`permit2`** methods only, and runs in
-end-to-end mode with the on/off toggle **hidden** (always on). The
-`transaction` / `authorization` methods still exist in the code but are
-hidden from the UI.
+The chain selector drives which credential tabs appear:
+
+- **BSC Testnet (chainId 97) / USDT** (default) — the **`hash`** and
+  **`permit2`** methods, settled on-chain against a local `charge-server`.
+- **BSC Testnet (chainId 97) / $U** — the **`authorization`** (EIP-3009)
+  method: the wallet signs `transferWithAuthorization` (no gas, no buyer-side
+  broadcast); settlement is delegated to [b402](../../docs/b402.md). Point the
+  server endpoint at a b402-settling deployment (`merchant-demo` mode 3) for a
+  full round-trip. The `transaction` method still exists in code but is never
+  surfaced in the tab bar.
 
 Stack: **React 18 + Tailwind + shadcn/ui + wagmi v2 + RainbowKit**, built
 with Vite.
 
 ## What it exercises
 
-- **2 credential types** — hash (the payer broadcasts the USDT transfer) +
-  permit2 (real wallet-signed EIP-712; the server settles via
-  `permitWitnessTransferFrom`; single + batch with splits)
-- **End-to-end settlement** — both methods produce a real on-chain
-  settlement and a server-issued `Payment-Receipt`
+- **3 credential types, all on BSC Testnet** — hash (the payer broadcasts the
+  USDT transfer) + permit2 (real wallet-signed EIP-712; the server settles via
+  `permitWitnessTransferFrom`; single + batch with splits) on TEST_USDT, plus
+  authorization (real wallet-signed EIP-3009 for `$U`; settled via b402)
+- **End-to-end settlement** — hash + permit2 produce a real on-chain
+  settlement and a server-issued `Payment-Receipt`; authorization signs the
+  EIP-3009 credential and submits it for b402 settlement
 - **Permit2 allowance panel** — reads `ERC20.allowance(wallet, Permit2)`
   live and offers a one-click `approve(Permit2, max)` when needed
 - **Server config panel** — reads `/api/config` to show what the deployment
@@ -32,10 +40,11 @@ with Vite.
 
 ## Per-credential realism
 
-| Tab         | What's real                                                                                                                                                                                                                                                                  |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Hash**    | Fully real — your wallet broadcasts a USDT transfer on BSC Testnet; the credential references the tx hash; the server verifies the on-chain `Transfer` log and returns a receipt.                                                                                            |
-| **Permit2** | Real EIP-712 signature (MetaMask popup) bound to the server's settlement-signer `spender`; the server then broadcasts `permitWitnessTransferFrom` to settle and returns a receipt. Needs a one-time Permit2 approval (allowance panel) + the server signer funded with tBNB. |
+| Tab               | What's real                                                                                                                                                                                                                                                                    |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Hash**          | Fully real — your wallet broadcasts a USDT transfer on BSC Testnet; the credential references the tx hash; the server verifies the on-chain `Transfer` log and returns a receipt.                                                                                              |
+| **Permit2**       | Real EIP-712 signature (MetaMask popup) bound to the server's settlement-signer `spender`; the server then broadcasts `permitWitnessTransferFrom` to settle and returns a receipt. Needs a one-time Permit2 approval (allowance panel) + the server signer funded with tBNB.   |
+| **Authorization** | Real EIP-3009 `transferWithAuthorization` signature (MetaMask popup) for `$U` on BSC Testnet — no gas, no buyer-side broadcast. Submit forwards it to the server; a b402-settling deployment (`merchant-demo` mode 3) broadcasts it and pays gas. Testnet `$U`, no real funds. |
 
 ## Run
 
@@ -68,7 +77,8 @@ subset — so the hook uses `-C ../..` to jump to the repo root.) Both
 
 1. **Connect wallet** — RainbowKit Connect button in the header; switch
    to BSC Testnet (chainId 97) when prompted.
-2. **Pick a credential type** — the `Hash` / `Permit2` tab bar. The
+2. **Pick a credential type** — the tab bar (the chain selector drives it:
+   `Hash` / `Permit2` on BSC Testnet USDT, `Authorization` on BSC Testnet $U). The
    realism callout under the tabs says what settles on-chain for each.
 3. **Config** — chain / token / recipient / amount mirror the server's
    `402` (read-only); the binding mode is `mppx-managed`.
@@ -118,7 +128,7 @@ src/
 │   ├── ui/*.tsx             shadcn primitives (Button, Card, Tabs, Select, ...)
 │   ├── Header / StatusBar   wallet header + BSC Testnet status bar
 │   ├── ConfigPanel          chain / binding / amount / recipient / realm
-│   ├── CredentialTabsBar    the visible credential-type tabs (hash + permit2)
+│   ├── CredentialTabsBar    the visible credential-type tabs (per chain preset)
 │   ├── RealismCallout       per-tab "what's real" note
 │   ├── SplitsEditor         Permit2 batch splits editor
 │   ├── Permit2AllowancePanel  live allowance read + one-click approve

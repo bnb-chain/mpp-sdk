@@ -2,16 +2,15 @@
 
 Runnable examples under `examples/`, in two tiers.
 
-## Start here — one demo per audience
+## Start here — minimal merchant + buyer
 
-Three minimal demos, one per integration role. They compose: the client
-demo pays both servers.
+Two minimal demos that compose: the client demo pays the merchant demo
+(and the full `charge-server` below).
 
-| Audience                   | Example                                            | What it shows                                                                                                                                                                                             |
-| -------------------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Merchants**              | [`merchant-demo`](../examples/merchant-demo)       | A plain API endpoint (`server-plain.ts`) and the same endpoint charging 1 TEST_USDT via MPP (`server.ts`) — the entire integration diff is ~10 lines. Payer-funded by default (no server-side key).       |
-| **API consumers / agents** | [`client-demo`](../examples/client-demo)           | Node CLI payer: fetch the 402, build a credential (`@bnb-chain/mpp/client`, all four types), retry with `Authorization`, decode the `Payment-Receipt`.                                                    |
-| **Facilitators**           | [`facilitator-demo`](../examples/facilitator-demo) | An `mppx/proxy` gateway that onboards an **unmodified** merchant API onto MPP: 402-gates routes, verifies + settles, forwards paid traffic upstream, auto-serves `/openapi.json` + `/llms.txt` discovery. |
+| Audience                   | Example                                      | What it shows                                                                                                                                                                                       |
+| -------------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Merchants**              | [`merchant-demo`](../examples/merchant-demo) | A plain API endpoint (`server-plain.ts`) and the same endpoint charging 1 TEST_USDT via MPP (`server.ts`) — the entire integration diff is ~10 lines. Payer-funded by default (no server-side key). |
+| **API consumers / agents** | [`client-demo`](../examples/client-demo)     | Node CLI payer: fetch the 402, build a credential (`@bnb-chain/mpp/client`, all four types), retry with `Authorization`, decode the `Payment-Receipt`.                                              |
 
 ```bash
 # terminal 1 — merchant (after `cp .env.example .env` in the example dir)
@@ -21,17 +20,62 @@ pnpm --filter @bnb-chain/mpp-example-merchant-demo start
 pnpm --filter @bnb-chain/mpp-example-client-demo start
 ```
 
+### Buyer: `pay(url, { policy })` — one method, no rail in sight
+
+The buyer expresses a payment INTENT, not a credential type; the SDK picks the
+route (hard constraints filter, `mode` ranks). This is Phase 1 of the multi-rail
+layer ([adr/0003](adr/0003-payment-offer-layer.md)) — mpp-only today.
+
+```ts
+import { pay } from '@bnb-chain/mpp/client'
+
+const result = await pay('https://api.example/report', {
+  wallet: { account, publicClient, walletClient }, // viem
+  policy: {
+    mode: 'prefer-gasless', // auto | prefer-gasless | require-gasless | prefer-direct | manual
+    maxAmount: '1.00',
+    allowedTokens: ['U'],
+    allowApproval: true,
+    allowPayerGas: false,
+  },
+  eip712Domains: { '97:0x180b…6a49': { name: 'United Stables', version: '1' } }, // for `authorization`
+})
+const data = await result.response.json() // result.route shows which method settled
+```
+
+No acceptable route → `NoAcceptableMethodError` (with per-route reasons), never a
+stranded payment.
+
+## b402 — Binance OnchainPay (x402)
+
+Settle the EIP-3009 `authorization` credential through the **b402** x402 v2
+facilitator (verify + settle hosted by Binance) instead of a local signer. The
+buyer is unaffected — same mppx wire — only the merchant's settle step changes,
+via `B402Adapter`. See [`docs/b402.md`](b402.md) for the full guide. No separate
+example: the two existing demos carry it.
+
+| Example                                      | What it shows for b402                                                                                                                                                                     |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`merchant-demo`](../examples/merchant-demo) | **Mode 3** — set the `B402_*` env to settle `authorization` on `bsc-testnet`/`$U` via `B402Adapter` (b402 broadcasts + pays gas). `RECIPIENT_ADDRESS` must be your registered b402 payout. |
+| [`charge-demo`](../examples/charge-demo)     | The b402 buyer: select **BSC Testnet ($U)** to switch to the EIP-3009 `authorization` path — connect MetaMask, sign `transferWithAuthorization` (no gas), submit.                          |
+
+```bash
+# server (fill examples/merchant-demo/.env with RECIPIENT_ADDRESS + MPP_SECRET_KEY
+# + B402_BASE_URL / B402_CLIENT_ID / B402_ACCESS_TOKEN / B402_PRIVATE_KEY):
+pnpm --filter @bnb-chain/mpp-example-merchant-demo start
+# web wallet — point its endpoint at the merchant, then sign + submit:
+pnpm --filter @bnb-chain/mpp-example-charge-demo dev
+```
+
 ## Full examples
 
 The production-shaped pair below runs **together** — the browser demo
-drives real end-to-end flows against the local server; `bnb-wire-demo`
-is a standalone CLI inspector that needs no server.
+drives real end-to-end flows against the local server.
 
 | Example                                      | What it is                                                                                                                                                                                                                  |
 | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`charge-server`](../examples/charge-server) | Minimal Hono HTTP server using `@bnb-chain/mpp/server`. Six protected routes (article / download / tip / split / hash-only / stored-lookup) + a public `/api/config`, BSC Testnet USDT, `permit2` / `transaction` / `hash`. |
 | [`charge-demo`](../examples/charge-demo)     | React + shadcn/ui + wagmi browser app driving the full client flow against the server.                                                                                                                                      |
-| [`bnb-wire-demo`](../examples/bnb-wire-demo) | Standalone CLI wire-shape inspector for BNB Chain stablecoins — resolves each `(chain, token)` via the SDK and prints the challenge / credentialTypes / EIP-712 domain / receipt shape. No on-chain broadcast.              |
 
 ## Running both together
 
@@ -79,28 +123,23 @@ pool. End-to-end mode (default) does the real server roundtrip; toggle it
 off for local-only wire-shape inspection. Includes a Permit2 allowance
 panel that handles the one-time `approve(Permit2, max)`.
 
+The chain selector drives which credential tabs appear: **BSC Testnet
+(USDT)** surfaces `hash` + `permit2` (on-chain settle), while **BSC Testnet
+($U)** surfaces the EIP-3009 `authorization` path — the wallet signs
+`transferWithAuthorization` (no gas, no buyer-side broadcast) for settlement
+through [b402](b402.md) (pair it with `merchant-demo` mode 3).
+
 Per-credential realism (what's on-chain vs in-page), faucet links, and
 the source layout:
 [`examples/charge-demo/README.md`](../examples/charge-demo/README.md).
 
-## bnb-wire-demo
-
-A standalone CLI that resolves a matrix of BNB Chain stablecoins
-`(chain, token)` through the SDK and prints, for each, the wire shapes a
-real deployment would emit — resolved currency / decimals / chainId /
-`permit2Address`, the advertised `credentialTypes`, the EIP-712 domain,
-and the receipt shape. It does **no** on-chain broadcast and needs no
-server or signer, so it's the fastest way to inspect how the curated
-matrix resolves a given token before wiring up a charge-server.
-
-```bash
-pnpm --filter @bnb-chain/mpp-example-bnb-wire-demo start
-```
-
 ## What you need on-chain (BSC Testnet)
 
-All bundled examples run on `bsc-testnet` / `TEST_USDT` (a plain BEP-20,
-no EIP-3009 — so no `authorization` path):
+The default flows run on `bsc-testnet` / `TEST_USDT` (a plain BEP-20, no
+EIP-3009). The b402 path (merchant-demo mode 3 + charge-demo's `$U` tab)
+adds the `authorization` credential on `bsc-testnet` / `$U`, where b402
+sponsors gas — the buyer only signs, so it needs no payer funding. Funding
+for the TEST_USDT paths:
 
 - **hash** — the payer wallet broadcasts the transfer: needs tBNB (gas)
   \+ test USDT.

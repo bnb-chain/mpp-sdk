@@ -19,9 +19,10 @@ import { type Address } from 'viem'
 import { bscTestnet } from 'viem/chains'
 
 /**
- * Chains the demo wallet integration knows about for switch / add prompts.
- * Used by `canSettleOnChain` to gate on-chain broadcast. The demo is
- * single-chain: BSC Testnet (chainId 97) is the only chain we settle on.
+ * Chains the demo can BROADCAST on via the connected wallet (the `hash` path).
+ * Used by `canSettleOnChain`. The testnet `$U` preset is EIP-3009
+ * authorization-only (the buyer signs; a b402-settling server broadcasts), so
+ * the demo never broadcasts it locally — both presets sit on chainId 97.
  */
 const KNOWN_CHAIN_IDS: ReadonlySet<number> = new Set<number>([bscTestnet.id])
 
@@ -74,6 +75,29 @@ export const CHAIN_PRESETS: readonly ChainPreset[] = [
     // BNB Chain testnet faucet — dispenses tBNB for gas (required to
     // broadcast the hash-path USDT transfer).
     faucetUrl: 'https://testnet.bnbchain.org/faucet-smart',
+  },
+  {
+    key: 'bsc-testnet-u',
+    label: 'BSC Testnet ($U) — EIP-3009 / b402',
+    chainId: bscTestnet.id, // 97
+    // United Stables ("$U") on BSC TESTNET — MIRRORS ('bsc-testnet', 'U') in
+    // src/server/curated.ts (the b402 testnet settlement token). On-chain probe
+    // (2026-06-30 via data-seed-prebsc-2-s3): name="United Stables", symbol="U",
+    // decimals=18, chainId=97. The EIP-712 `name` is the on-chain name()
+    // ("United Stables"), NOT the "U" ticker — see docs/b402.md gotchas.
+    // ⚠️ version="1" assumed (parity with mainnet $U; the contract is
+    // facilitator-gated so it can't be read on-chain) — confirm vs b402
+    // /supported once creds are set; mismatches fail safe.
+    currency: '0x180Bc1a9843A65D4116e44886FD3558515a56A49',
+    decimals: 18,
+    token: 'U',
+    eip712: { name: 'United Stables', version: '1' },
+    // The demo only SIGNS the EIP-3009 transferWithAuthorization; a b402-settling
+    // server (examples/merchant-demo mode 3) broadcasts + pays gas. So `canSettle`
+    // is false — `hash`/`permit2` local-broadcast paths are not offered for this
+    // preset (only `authorization` is — see `visibleCredentialTypes`).
+    canSettle: false,
+    explorerUrl: 'https://testnet.bscscan.com',
   },
 ]
 
@@ -144,25 +168,33 @@ export const CREDENTIAL_META: Readonly<Record<CredentialType, CredentialMeta>> =
   authorization: {
     title: 'Authorization',
     icon: '🪪',
-    blurb: 'EIP-3009 transferWithAuthorization. Circle USDC etc.',
+    blurb: 'EIP-3009 transferWithAuthorization ($U via b402).',
     realism:
-      'REAL signature: MetaMask signs the EIP-3009 typed data. Like Permit2, server-side settlement (transferWithAuthorization broadcast) is out of demo scope — the credential is valid + ready for a real charge-server.',
+      'REAL signature: MetaMask signs the EIP-3009 typed data for $U on BSC Testnet (no gas, no broadcast here). Submit forwards the credential to the server; a b402-settling deployment (examples/merchant-demo mode 3) broadcasts transferWithAuthorization and pays gas. Point the endpoint at that server for a full round-trip.',
     needsWallet: true,
     settlesOnChain: false,
   },
 }
 
 /**
- * Credential methods surfaced in the demo's tab bar. The demo intentionally
- * showcases only `hash` (real on-chain settlement) and `permit2` (real
- * wallet-signed EIP-712) on BSC Testnet USDT. `transaction` and
- * `authorization` stay in the `CredentialType` union + action code (so the
- * step pipeline keeps a complete switch), but are hidden from the UI —
- * BSC Testnet USDT is a plain BEP-20 with no EIP-3009, so `authorization`
- * wouldn't apply, and `transaction` is the in-page-key wire-shape path we're
- * not demoing here.
+ * Credential methods surfaced in the demo's tab bar, PER selected chain preset.
+ * The tabs follow what the token actually supports:
+ *
+ *   - EIP-3009 tokens (`bsc`/U) → `authorization` only. The buyer wallet signs
+ *     `transferWithAuthorization`; a b402-settling server (examples/merchant-demo
+ *     mode 3) broadcasts. This IS the b402 web-wallet path.
+ *   - plain BEP-20s (`bsc-testnet`/USDT) → `hash` (real on-chain settlement) +
+ *     `permit2` (real wallet-signed EIP-712).
+ *
+ * `transaction` stays in the `CredentialType` union + action code (so the step
+ * pipeline keeps a complete switch) but is never surfaced — it's the
+ * in-page-key wire-shape path we're not demoing in the tab bar.
  */
-export const VISIBLE_CREDENTIAL_TYPES: readonly CredentialType[] = ['hash', 'permit2']
+export function visibleCredentialTypes(
+  preset: ChainPreset,
+): readonly [CredentialType, ...CredentialType[]] {
+  return preset.eip712 ? ['authorization'] : ['hash', 'permit2']
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Explorer link helpers                                                      */

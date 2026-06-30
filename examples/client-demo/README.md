@@ -67,5 +67,4 @@ FDUSD/$U) in `EIP3009_DOMAINS`.
 The CLI hard-codes nothing about the server: chain, token, amount,
 recipient, Permit2 address, and accepted types all come off the
 challenge. Anything that speaks `draft-evm-charge-00` works — the
-[merchant-demo](../merchant-demo), the [facilitator-demo](../facilitator-demo)
-gateway, or the full [charge-server](../charge-server).
+[merchant-demo](../merchant-demo) or the full [charge-server](../charge-server).

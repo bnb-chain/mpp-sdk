@@ -21,9 +21,9 @@ import {
   CHAIN_PRESETS,
   STORAGE_KEYS,
   type CredentialType,
-  VISIBLE_CREDENTIAL_TYPES,
   getPresetByKey,
   savePersisted,
+  visibleCredentialTypes,
 } from '@/protocol/presets.js'
 import {
   type DemoState,
@@ -176,14 +176,21 @@ export function App(): JSX.Element {
     [resetPool],
   )
 
-  // Only `hash` + `permit2` are surfaced in the tab bar. If a prior session
-  // persisted a now-hidden type (`transaction` / `authorization`), coerce it
-  // back to `hash` so the active tab always has a visible trigger.
+  // Which credential tabs the ACTIVE chain preset surfaces (eip3009 tokens →
+  // `authorization`; plain BEP-20s → `hash` + `permit2`). Recomputed when the
+  // chain changes — e.g. a server 402 for `bsc`/U syncs the selector to the
+  // `bsc` preset, flipping the tab bar to the authorization-only path.
+  const visibleTypes = useMemo(() => visibleCredentialTypes(getPresetByKey(chainKey)), [chainKey])
+
+  // Keep the active tab valid for the selected chain. If the persisted /
+  // current type isn't surfaced by this preset (e.g. `hash` while on `bsc`/U,
+  // or a stale `transaction`), coerce to the preset's first visible tab so the
+  // active tab always has a trigger.
   useEffect(() => {
-    if (!VISIBLE_CREDENTIAL_TYPES.includes(credentialType)) {
-      setCredentialType(DEFAULT_CREDENTIAL_TYPE)
+    if (!visibleTypes.includes(credentialType)) {
+      setCredentialType(visibleTypes[0])
     }
-  }, [credentialType, setCredentialType])
+  }, [visibleTypes, credentialType, setCredentialType])
 
   // Force binding mode to mppx-managed in server mode (always on here) — the
   // charge-server's routes use mppx-managed, so the local form must match.
@@ -608,7 +615,7 @@ export function App(): JSX.Element {
       <Header />
       <StatusBar />
       <main className="mx-auto max-w-6xl space-y-6 px-6 py-8">
-        <CredentialTabsBar value={credentialType} onChange={handleTabChange} />
+        <CredentialTabsBar value={credentialType} types={visibleTypes} onChange={handleTabChange} />
         <RealismCallout type={credentialType} />
         <ConfigPanel
           chainKey={chainKey}
@@ -684,10 +691,13 @@ export function App(): JSX.Element {
           <div>
             On-chain settlement happens when the wallet is on{' '}
             <span className="font-mono">BSC Testnet</span> (chainId 97) holding test{' '}
-            <span className="font-mono">USDT</span> + tBNB for gas. This build demos the{' '}
+            <span className="font-mono">USDT</span> + tBNB for gas — the{' '}
             <span className="font-mono">hash</span> and <span className="font-mono">permit2</span>{' '}
-            methods locally; testnet e2e scaffolds live in{' '}
-            <span className="font-mono">test/live/*</span>.
+            paths. Selecting <span className="font-mono">BSC Testnet ($U)</span> switches to the{' '}
+            <span className="font-mono">authorization</span> (EIP-3009) path: the wallet only{' '}
+            <em>signs</em>; a b402-settling server (
+            <span className="font-mono">examples/merchant-demo</span> mode 3) broadcasts. Testnet
+            e2e scaffolds live in <span className="font-mono">test/live/*</span>.
           </div>
         </footer>
       </main>
