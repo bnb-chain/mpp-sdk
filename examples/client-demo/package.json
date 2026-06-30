@@ -7,6 +7,7 @@
   "scripts": {
     "prestart": "pnpm -C ../.. build",
     "start": "node --env-file-if-exists=.env --import tsx --no-warnings src/pay.ts",
+    "start:pay": "pnpm -C ../.. build && node --env-file-if-exists=.env --import tsx --no-warnings src/pay-policy.ts",
     "check:types": "tsgo --noEmit"
   },
   "dependencies": {

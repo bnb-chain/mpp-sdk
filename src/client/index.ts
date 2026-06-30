@@ -97,10 +97,12 @@ export {
 export {
   type LogicalPath,
   NoAcceptableMethodError,
+  PaymentRejectedError,
   type PayMode,
   type PayOptions,
   type PayPolicy,
   type PayResult,
+  type RouteRejection,
   type RouteSelection,
   type SelectionContext,
   type WalletCapabilities,

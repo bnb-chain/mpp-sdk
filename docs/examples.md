@@ -43,8 +43,17 @@ const result = await pay('https://api.example/report', {
 const data = await result.response.json() // result.route shows which method settled
 ```
 
-No acceptable route → `NoAcceptableMethodError` (with per-route reasons), never a
-stranded payment.
+It fails closed in both directions: no acceptable route →
+`NoAcceptableMethodError` (with per-route reasons, nothing signed or sent); a
+server that rejects the retry → `PaymentRejectedError` (you may already have
+signed/broadcast — reconcile before retrying). The viem wallet must already be
+on the challenge's chain, or `pay()` refuses (pass `allowChainMismatch` to
+override).
+
+Runnable: [`client-demo/src/pay-policy.ts`](../examples/client-demo/src/pay-policy.ts)
+is the same Node payer as `pay.ts` but driven entirely by `pay()` —
+`pnpm --filter @bnb-chain/mpp-example-client-demo start:pay [url]`
+(`PAY_MODE` / `CHAIN_ID` env tune the policy + wallet chain).
 
 ## b402 — Binance OnchainPay (x402)
 

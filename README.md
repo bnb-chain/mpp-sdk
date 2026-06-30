@@ -6,20 +6,21 @@ Brings the BNB Chain ecosystem (BSC, opBNB) plus the wider EVM landscape (Ethere
 
 ## Capabilities
 
-| Area                  | Supported                                                                                                                      |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| **Credential types**  | `authorization` (EIP-3009), `permit2` (single + batch with splits), `transaction` (EIP-1559), `hash`                           |
-| **Challenge binding** | `mppx-managed` (under `Mppx.create`), `mppx-hmac` (bare verify), `stored-lookup` (draft §6 zero-deviation)                     |
-| **Settlement**        | Server-side broadcast for `permit2` / `authorization` (settlement signer pays gas); payer-broadcast for `hash` / `transaction` |
-| **Tokens / chains**   | Curated `(chain, token)` matrix — see [Tokens](#tokens) / [Chains](#chains)                                                    |
-| **Receipt**           | `draft §7.6` `Payment-Receipt` via a browser-safe codec (`buildEvmReceipt` / `serializeEvmReceipt`)                            |
-| **Replay protection** | 3-state atomic store (inflight / consumed / rejected); durable backend required in production                                  |
+| Area                  | Supported                                                                                                                                                                                                                           |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Credential types**  | `authorization` (EIP-3009), `permit2` (single + batch with splits), `transaction` (EIP-1559), `hash`                                                                                                                                |
+| **Buyer client**      | Four low-level credential constructors **plus high-level `pay(url, { wallet, policy })`** — express an intent (gasless / token / cap) and the SDK auto-selects the route ([ADR-0003](docs/adr/0003-payment-offer-layer.md) Phase 1) |
+| **Challenge binding** | `mppx-managed` (under `Mppx.create`), `mppx-hmac` (bare verify), `stored-lookup` (draft §6 zero-deviation)                                                                                                                          |
+| **Settlement**        | Server-side broadcast for `permit2` / `authorization` (settlement signer pays gas); payer-broadcast for `hash` / `transaction`                                                                                                      |
+| **Tokens / chains**   | Curated `(chain, token)` matrix — see [Tokens](#tokens) / [Chains](#chains)                                                                                                                                                         |
+| **Receipt**           | `draft §7.6` `Payment-Receipt` via a browser-safe codec (`buildEvmReceipt` / `serializeEvmReceipt`)                                                                                                                                 |
+| **Replay protection** | 3-state atomic store (inflight / consumed / rejected); durable backend required in production                                                                                                                                       |
 
 All four credential paths are live end-to-end (see `examples/charge-server` + `examples/charge-demo`). For the full picture see [`docs/`](docs/) — architecture, spec compliance / extensions, replay store, and example walkthroughs. Release notes are managed with [Changesets](https://github.com/changesets/changesets) (`.changeset/`); `CHANGELOG.md` is generated at publish time — see [`docs/releasing.md`](docs/releasing.md) for the release pipeline.
 
 v1 limits: curated token presets only (no arbitrary BYO ERC-20), and the SDK adds one spec extension (`methodDetails.permit2Spender`) that `draft-evm-charge-00` doesn't define but Permit2 settlement requires — see [`docs/spec-compliance.md`](docs/spec-compliance.md).
 
-**Beyond the mppx charge flow**, the SDK also speaks **x402 v2**: `@bnb-chain/mpp/b402` (+ `/server`) integrates the [Binance OnchainPay (b402)](https://developers.binance.com/docs/onchainpay-x402/introduction) facilitator. Use it standalone (a parallel x402 envelope, sharing only the EIP-3009 EIP-712 primitive) **or** as an mppx settlement backend — `B402Adapter` keeps your buyers on the mppx wire and just delegates the EIP-3009 settle to b402. A connect-your-wallet browser demo (`charge-demo`, BSC Testnet `$U`) pairs with `merchant-demo` mode 3 — see [`docs/b402.md`](docs/b402.md).
+**Beyond the mppx charge flow**, the SDK also speaks **x402 v2**: `@bnb-chain/mpp/b402` (+ `/server`) integrates the [Binance OnchainPay (b402)](https://developers.binance.com/docs/onchainpay-x402/introduction) facilitator. Use it standalone (a parallel x402 envelope, sharing only the EIP-3009 EIP-712 primitive) **or** as an mppx settlement backend — `B402Adapter` keeps your buyers on the mppx wire and just delegates the EIP-3009 settle to b402. The Node `client-demo` (`start:pay`) pays a `merchant-demo` mode-3 server end-to-end over b402; the `charge-demo` browser app's BSC Testnet `$U` tab demonstrates the buyer-side EIP-3009 signing — see [`docs/b402.md`](docs/b402.md).
 
 ## Install
 

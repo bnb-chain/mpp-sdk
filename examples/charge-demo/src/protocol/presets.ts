@@ -170,7 +170,7 @@ export const CREDENTIAL_META: Readonly<Record<CredentialType, CredentialMeta>> =
     icon: '🪪',
     blurb: 'EIP-3009 transferWithAuthorization ($U via b402).',
     realism:
-      'REAL signature: MetaMask signs the EIP-3009 typed data for $U on BSC Testnet (no gas, no broadcast here). Submit forwards the credential to the server; a b402-settling deployment (examples/merchant-demo mode 3) broadcasts transferWithAuthorization and pays gas. Point the endpoint at that server for a full round-trip.',
+      'REAL signature: MetaMask signs the EIP-3009 typed data for $U on BSC Testnet (no gas, no broadcast here). Submit forwards the credential to the server; b402 settles it server-side (broadcasts transferWithAuthorization + pays gas). The default charge-server does not run b402, so this tab demonstrates the signing + submit — for a real b402 round-trip use the Node client-demo start:pay against merchant-demo mode 3.',
     needsWallet: true,
     settlesOnChain: false,
   },

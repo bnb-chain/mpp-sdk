@@ -1,7 +1,8 @@
 # ADR 0003 — Payment Offer Layer (multi-rail negotiation)
 
 - **Status:** Proposed — design COMPLETE; **Phase 1 implemented** (`src/client/pay.ts` — the
-  `pay({ policy })` buyer surface over the mpp credentials, single-wire, 16 tests). Phases 2-4
+  `pay({ policy })` buyer surface over the mpp credentials, single-wire, covered by
+  `src/client/pay.test.ts`). Phases 2-4
   (the standalone x402 offer, the gateway + `PaymentIntentStore`, Permit2-over-b402) remain
   design-only. Extends [0002](0002-settle-adapter.md). The `PaymentIntentStore` was adversarially
   hardened and its six opens resolved (see "`PaymentIntentStore` — resolved decisions").

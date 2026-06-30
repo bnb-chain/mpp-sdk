@@ -29,6 +29,31 @@ pnpm --filter @bnb-chain/mpp-example-client-demo start http://localhost:3001/api
 The payer account needs **tBNB** (gas) and **test USDT** on BSC Testnet —
 faucet links in [.env.example](.env.example).
 
+## Two surfaces: pick a type, or express an intent
+
+This demo ships the buyer loop **twice**, against the same endpoints:
+
+- **`start` → [`src/pay.ts`](src/pay.ts)** — the low-level loop. You read
+  the challenge and call one `@bnb-chain/mpp/client` constructor yourself.
+  Best for seeing the raw protocol and for full control.
+- **`start:pay` → [`src/pay-policy.ts`](src/pay-policy.ts)** — the
+  high-level `pay(url, { wallet, policy })` (ADR-0003 Phase 1). You hand it
+  a viem wallet + a `policy` and it derives the routes, filters by your
+  hard constraints, ranks by `mode`, then builds + submits the winner.
+
+```bash
+# express an intent — let the SDK route (default mode: prefer-gasless)
+pnpm --filter @bnb-chain/mpp-example-client-demo start:pay
+PAY_MODE=require-gasless pnpm --filter @bnb-chain/mpp-example-client-demo start:pay
+```
+
+`pay()` fails closed: no route satisfies the policy →
+`NoAcceptableMethodError` (nothing signed/sent); the server rejects the
+retry → `PaymentRejectedError`. Unlike `pay.ts` (which reads the chain
+**from** the challenge), `pay()` expects the wallet to already be on the
+challenge's chain — set `CHAIN_ID` (default `97`) and it refuses a
+mismatch unless told otherwise.
+
 ## Credential types, from the payer's seat
 
 The server's challenge advertises `credentialTypes` in preference order;

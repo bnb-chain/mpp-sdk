@@ -6,9 +6,12 @@ stablecoins. This demo is the smallest honest version of that journey:
 - [`src/server-plain.ts`](src/server-plain.ts) — your API **before**: one
   ordinary JSON endpoint, no payments.
 - [`src/server.ts`](src/server.ts) — the same endpoint **after**: charges
-  **1 TEST_USDT** (BSC Testnet) per request via the
+  per request via the
   [`draft-evm-charge-00`](https://paymentauth.org/draft-evm-charge-00.html)
-  `402 Payment Required` flow.
+  `402 Payment Required` flow. It has **three settlement modes** selected by
+  env (buyers are unaffected — they always speak the same mppx wire):
+  payer-funded **1 TEST_USDT** (default), local Permit2 settle, and b402
+  settle (`$U` via the Binance facilitator) — see the sections below.
 
 Funds settle on-chain **directly to your address** — no intermediary
 custody. By default the server is _payer-funded_: it holds **no private
@@ -85,6 +88,41 @@ signer account pays gas, so fund it with tBNB. This is the better payer
 UX at the cost of operating a hot signer (see the hardening patterns in
 [`examples/charge-server`](../charge-server) before doing this in
 production).
+
+## Settling through b402 (Binance OnchainPay) — mode 3
+
+Set the `B402_*` vars in `.env` and the server switches to **mode 3**: it
+charges on `bsc-testnet` / **`$U`** and accepts the EIP-3009
+**`authorization`** credential, settling it through the Binance **b402**
+facilitator via a `settleBackend` adapter. b402 broadcasts
+`transferWithAuthorization` and pays gas, so the server holds **no signer**
+and the buyer pays **no gas** — they only sign.
+
+```bash
+# .env additions for mode 3 (alongside RECIPIENT_ADDRESS + MPP_SECRET_KEY):
+B402_BASE_URL=https://...    # b402 facilitator base URL
+B402_CLIENT_ID=...
+B402_ACCESS_TOKEN=...
+B402_PRIVATE_KEY=0x...       # the signing key b402 issued you
+
+pnpm --filter @bnb-chain/mpp-example-merchant-demo start
+# [merchant] settlement: b402 settle (authorization, bsc-testnet/$U — facilitator pays gas)
+```
+
+`RECIPIENT_ADDRESS` **MUST** be your **registered b402 payout** address —
+b402 settles to it. Pay it from the buyer side with the high-level `pay()`
+CLI, which picks the gasless `authorization` route automatically (its
+default URL is this server's `/api/premium`):
+
+```bash
+pnpm --filter @bnb-chain/mpp-example-client-demo start:pay
+```
+
+(The browser-wallet equivalent is `examples/charge-demo`'s **BSC Testnet $U**
+tab — see its README.) Testnet `$U` (eip155:97) carries no real funds. The
+only line that differs from modes 1/2 is `settleBackend` — see
+[`docs/adr/0002`](../../docs/adr/0002-settle-adapter.md); full trust model +
+wire details in [`docs/b402.md`](../../docs/b402.md).
 
 ## Going to production
 

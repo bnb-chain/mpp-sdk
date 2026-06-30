@@ -34,17 +34,19 @@ pnpm add @bnb-chain/mpp mppx viem
 
 Peers: `mppx ^0.6.28`, `viem ^2.51.0`. **Node ≥ 22.**
 
-Three entry points:
+Four entry points:
 
-| Import                  | Use it for                                                                                      |
-| ----------------------- | ----------------------------------------------------------------------------------------------- |
-| `@bnb-chain/mpp/server` | The server factory (`chargeAsync` / `preflightCharge`), composed with `Mppx.create()`.          |
-| `@bnb-chain/mpp/client` | The four credential constructors (`createHashCredential`, `createPermit2Credential`, …).        |
-| `@bnb-chain/mpp`        | Universal helpers — `chargeFromDecimal` (decimal → base units) and the `Payment-Receipt` codec. |
+| Import                                       | Use it for                                                                                                                                                                                         |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@bnb-chain/mpp/server`                      | The server factory (`chargeAsync` / `preflightCharge`), composed with `Mppx.create()`.                                                                                                             |
+| `@bnb-chain/mpp/client`                      | The four credential constructors (`createHashCredential`, `createPermit2Credential`, …) **plus `pay(url, { wallet, policy })`** — the high-level buyer that auto-selects a route from your policy. |
+| `@bnb-chain/mpp`                             | Universal helpers — `chargeFromDecimal` (decimal → base units) and the `Payment-Receipt` codec.                                                                                                    |
+| `@bnb-chain/mpp/b402` (+ `/server`, `/mppx`) | x402 v2 (Binance OnchainPay) — the facilitator client, or `B402Adapter` to settle mppx `authorization` through b402. See [`docs/b402.md`](b402.md).                                                |
 
-> Paying an **x402** facilitator instead? `@bnb-chain/mpp/b402` (+ `/server`)
-> integrates Binance OnchainPay (b402) — a separate flow from the charge entry
-> points above. See [`docs/b402.md`](b402.md).
+> The `b402` entry points are a **separate flow** (x402 v2), not part of the
+> charge request/credential loop in this guide. `B402Adapter` lets you settle
+> mppx `authorization` credentials through b402 without changing your buyers —
+> see [`docs/b402.md`](b402.md).
 
 ## Concepts in 30 seconds
 

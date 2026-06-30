@@ -12,10 +12,13 @@ The chain selector drives which credential tabs appear:
   **`permit2`** methods, settled on-chain against a local `charge-server`.
 - **BSC Testnet (chainId 97) / $U** — the **`authorization`** (EIP-3009)
   method: the wallet signs `transferWithAuthorization` (no gas, no buyer-side
-  broadcast); settlement is delegated to [b402](../../docs/b402.md). Point the
-  server endpoint at a b402-settling deployment (`merchant-demo` mode 3) for a
-  full round-trip. The `transaction` method still exists in code but is never
-  surfaced in the tab bar.
+  broadcast) and submits the credential. Settlement is delegated to
+  [b402](../../docs/b402.md) **server-side**, so this tab demonstrates the
+  buyer's signing + submit; the default `charge-server` (TEST_USDT, no
+  EIP-3009) does not run b402 and won't settle it. For a real end-to-end b402
+  round-trip use the Node [`client-demo start:pay`](../client-demo) against
+  [`merchant-demo` mode 3](../merchant-demo) — see [Run](#run). The
+  `transaction` method still exists in code but is never surfaced in the tab bar.
 
 Stack: **React 18 + Tailwind + shadcn/ui + wagmi v2 + RainbowKit**, built
 with Vite.
@@ -40,11 +43,11 @@ with Vite.
 
 ## Per-credential realism
 
-| Tab               | What's real                                                                                                                                                                                                                                                                    |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Hash**          | Fully real — your wallet broadcasts a USDT transfer on BSC Testnet; the credential references the tx hash; the server verifies the on-chain `Transfer` log and returns a receipt.                                                                                              |
-| **Permit2**       | Real EIP-712 signature (MetaMask popup) bound to the server's settlement-signer `spender`; the server then broadcasts `permitWitnessTransferFrom` to settle and returns a receipt. Needs a one-time Permit2 approval (allowance panel) + the server signer funded with tBNB.   |
-| **Authorization** | Real EIP-3009 `transferWithAuthorization` signature (MetaMask popup) for `$U` on BSC Testnet — no gas, no buyer-side broadcast. Submit forwards it to the server; a b402-settling deployment (`merchant-demo` mode 3) broadcasts it and pays gas. Testnet `$U`, no real funds. |
+| Tab               | What's real                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Hash**          | Fully real — your wallet broadcasts a USDT transfer on BSC Testnet; the credential references the tx hash; the server verifies the on-chain `Transfer` log and returns a receipt.                                                                                                                                                                                                                                                      |
+| **Permit2**       | Real EIP-712 signature (MetaMask popup) bound to the server's settlement-signer `spender`; the server then broadcasts `permitWitnessTransferFrom` to settle and returns a receipt. Needs a one-time Permit2 approval (allowance panel) + the server signer funded with tBNB.                                                                                                                                                           |
+| **Authorization** | Real EIP-3009 `transferWithAuthorization` signature (MetaMask popup) for `$U` on BSC Testnet — no gas, no buyer-side broadcast. Submit forwards the credential to the server; b402 settles it server-side (broadcasts + pays gas). The default `charge-server` doesn't run b402, so a full round-trip settles only against a b402 server — use the Node `client-demo start:pay` + `merchant-demo` mode 3. Testnet `$U`, no real funds. |
 
 ## Run
 
@@ -72,6 +75,27 @@ clone needs this once; it's a ~1s no-op on incremental rebuilds.
 this workspace — pnpm resolves names against the cwd's visible workspace
 subset — so the hook uses `-C ../..` to jump to the repo root.) Both
 `predev` and the server's `prestart` need **Node ≥22**.
+
+### The `$U` / b402 path uses a different buyer
+
+The Run above wires this demo to `charge-server`, which settles `hash` /
+`permit2` on TEST_USDT — it does **not** run b402. The **$U** tab's
+`authorization` credential settles through b402 **server-side**, and the
+demo's endpoint is `/api/article` on `charge-server`, so the $U tab here
+exercises only the buyer's EIP-3009 signing + submit. For a real b402
+settlement round-trip, use the Node buyer against `merchant-demo` mode 3
+(its `/api/premium` matches `client-demo`'s default URL):
+
+```bash
+# Terminal 1 — merchant-demo with B402_* set → mode 3 (bsc-testnet/$U) on :3001
+pnpm --filter @bnb-chain/mpp-example-merchant-demo start
+
+# Terminal 2 — the Node buyer; pay() picks the gasless authorization route
+pnpm --filter @bnb-chain/mpp-example-client-demo start:pay
+```
+
+See [`merchant-demo`](../merchant-demo) (mode 3) and
+[`docs/b402.md`](../../docs/b402.md).
 
 ## Flow
 
