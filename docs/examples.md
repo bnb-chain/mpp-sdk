@@ -34,7 +34,8 @@ const result = await pay('https://api.example/report', {
   policy: {
     mode: 'prefer-gasless', // auto | prefer-gasless | require-gasless | prefer-direct | manual
     maxAmount: '1.00',
-    allowedTokens: ['U'],
+    allowedAssets: [{ chainId: 97, address: '0x180b…6a49' }], // (chainId, address) — the wire identity, not symbol
+    allowedChains: [97], // numeric chainId
     allowApproval: true,
     allowPayerGas: false,
   },
@@ -42,6 +43,11 @@ const result = await pay('https://api.example/report', {
 })
 const data = await result.response.json() // result.route shows which method settled
 ```
+
+Paying a non-GET resource (an API with a body / token / `Accept`)? Pass
+`request` — it's reused on the probe and the paid retry, with `Authorization`
+merged on top: `pay(url, { wallet, policy, request: { method: 'POST', headers, body } })`.
+The body must be replayable (it is sent twice) — a `ReadableStream` is rejected.
 
 It fails closed in both directions: no acceptable route →
 `NoAcceptableMethodError` (with per-route reasons, nothing signed or sent); a

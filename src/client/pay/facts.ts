@@ -1,0 +1,98 @@
+/**
+ * Fact resolution — the impure inputs `selectRoute` + `buildCredential` need:
+ * the chain-consistency guard, on-chain reads (decimals / Permit2 allowance),
+ * the `maxAmount` ceiling, the EIP-712 domain lookup, and the wallet capability
+ * matrix. Kept out of `routes.ts` so the selection core stays pure.
+ */
+
+import { type Address, erc20Abi, parseUnits } from 'viem'
+
+import type { Eip712DomainMap, WalletCapabilities, WalletContext } from './routes.js'
+
+/**
+ * The wallet AND the public client must BOTH be on the challenge's chain —
+ * otherwise we'd read allowance / approve / transfer on the wrong chain. Check
+ * each INDEPENDENTLY: a wallet on the right chain does not excuse a public
+ * client (the reader) pointed at another. Fail closed on any present-and-
+ * divergent id unless the caller opts out.
+ */
+export function assertChainConsistency(
+  wallet: WalletContext,
+  chainId: number,
+  allowMismatch: boolean,
+): void {
+  if (allowMismatch) return
+  for (const [label, id] of [
+    ['wallet', wallet.walletClient.chain?.id],
+    ['public', wallet.publicClient.chain?.id],
+  ] as const) {
+    if (id !== undefined && id !== chainId) {
+      throw new Error(
+        `challenge is for chain ${chainId} but the ${label} client is on chain ${id} ` +
+          `— point it at chain ${chainId} or pass allowChainMismatch:true to override`,
+      )
+    }
+  }
+}
+
+export interface ResolvedFacts {
+  readonly capabilities: WalletCapabilities
+  readonly maxAmountBase?: bigint
+  readonly eip712?: { readonly name: string; readonly version: string }
+}
+
+/**
+ * Resolve everything selection + build depend on. `maxAmount` FAILS CLOSED: if a
+ * ceiling is set but decimals cannot be read, we refuse rather than pay past an
+ * unenforced limit. Token identity is NOT read here — it is the wire `currency`.
+ */
+export async function resolveFacts(args: {
+  readonly wallet: WalletContext
+  readonly chainId: number
+  readonly currency: Address
+  readonly permit2Address: Address
+  readonly amountBase: bigint
+  readonly maxAmount?: string
+  readonly eip712Domains?: Eip712DomainMap
+}): Promise<ResolvedFacts> {
+  const { wallet, chainId, currency, permit2Address, amountBase } = args
+  const { account, publicClient, walletClient } = wallet
+
+  const decimals = await publicClient
+    .readContract({ address: currency, abi: erc20Abi, functionName: 'decimals' })
+    .catch(() => undefined)
+  const allowance = await publicClient
+    .readContract({
+      address: currency,
+      abi: erc20Abi,
+      functionName: 'allowance',
+      args: [account.address, permit2Address],
+    })
+    .catch(() => 0n)
+  const eip712 = args.eip712Domains?.[`${chainId}:${currency.toLowerCase()}`]
+
+  let maxAmountBase: bigint | undefined
+  if (args.maxAmount !== undefined) {
+    if (decimals === undefined) {
+      throw new Error(
+        `policy.maxAmount is set but token decimals could not be resolved for ${currency} on ` +
+          `chain ${chainId} — refusing to pay without enforcing the limit`,
+      )
+    }
+    maxAmountBase = parseUnits(args.maxAmount, decimals)
+  }
+
+  const capabilities: WalletCapabilities = {
+    canSignTypedData: typeof account.signTypedData === 'function',
+    canSignTransaction: typeof account.signTransaction === 'function',
+    canBroadcast: typeof walletClient.writeContract === 'function',
+    hasPermit2Allowance: allowance >= amountBase,
+    knownEip712Domain: eip712 !== undefined,
+  }
+
+  return {
+    capabilities,
+    ...(maxAmountBase !== undefined && { maxAmountBase }),
+    ...(eip712 && { eip712 }),
+  }
+}

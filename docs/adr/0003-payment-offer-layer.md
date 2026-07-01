@@ -1,6 +1,6 @@
 # ADR 0003 — Payment Offer Layer (multi-rail negotiation)
 
-- **Status:** Proposed — design COMPLETE; **Phase 1 implemented** (`src/client/pay.ts` — the
+- **Status:** Proposed — design COMPLETE; **Phase 1 implemented** (`src/client/pay/` — the
   `pay({ policy })` buyer surface over the mpp credentials, single-wire, covered by
   `src/client/pay.test.ts`). Phases 2-4
   (the standalone x402 offer, the gateway + `PaymentIntentStore`, Permit2-over-b402) remain
@@ -58,8 +58,8 @@ await pay('/api/premium/report', {
   policy: {
     mode: 'prefer-gasless', // ranking preset
     maxAmount: '1.00', // hard filter
-    allowedTokens: ['U', 'USDC'], // hard filter
-    allowedChains: ['bsc-testnet'], // hard filter
+    allowedAssets: [{ chainId: 97, address: '0x180b…6a49' }], // hard filter — (chainId, address), the wire identity (NOT symbol)
+    allowedChains: [97], // hard filter — numeric chainId
     allowFacilitator: true, // hard filter (trust)
     allowApproval: true, // hard filter (one-time Permit2 approve)
     allowPayerGas: false, // hard filter
@@ -424,7 +424,7 @@ nonce}`). DECISION: do NOT pursue an x402 wire extension. The `Payment-Intent` h
 ## Phasing
 
 1. **DONE** — the **developer-surface unification** over what exists TODAY: `pay(url, { wallet,
-policy })` in [`src/client/pay.ts`](../../src/client/pay.ts) selects across the mpp credentials
+policy })` in [`src/client/pay/`](../../src/client/pay) selects across the mpp credentials
    ONLY (`authorization`/`permit2`/`transaction`/`hash`), single-wire (`Authorization: Payment`), so
    the cross-rail idempotency problem does not yet arise. The pure `deriveLogicalPaths` + `selectRoute`
    (hard-filter → mode-rank → fail-closed) are the design's core, exhaustively unit-tested. There is

@@ -169,24 +169,30 @@ when omitted) → `assertMatchesChallengeRequest` (caller fields must equal
 wire truth) → sign / broadcast → `Credential.serialize` (returns the
 complete `Payment ...` Authorization header value).
 
-### Buyer auto-selector — `src/client/pay.ts`
+### Buyer auto-selector — `src/client/pay/`
 
 `pay(url, { wallet, policy })` is the high-level entry layered over those
-constructors. It fetches the 402, reads token facts off the viem clients
-(symbol / decimals / allowance / chainId), then `deriveLogicalPaths`
+constructors, split into small single-purpose modules: `routes.ts`
+(`deriveLogicalPaths` / `selectRoute` + the public types), `facts.ts` (the
+chain guard + on-chain reads: decimals / allowance / EIP-712 domain), `build.ts`
+(credential construction per method), `request.ts` (probe + retry HTTP), and a
+thin `index.ts` orchestrator. It fetches the 402, then `deriveLogicalPaths`
 turns `methodDetails.credentialTypes` into routes with derived traits and
-`selectRoute` picks one: hard constraints (token / chain / `maxAmount` /
+`selectRoute` picks one: hard constraints (asset / chain / `maxAmount` /
 wallet capability / approval) **filter**, `mode`
 (`auto | prefer-gasless | require-gasless | prefer-direct | manual`)
 **ranks**, and an empty viable set throws `NoAcceptableMethodError` — the
 fail-closed contract. The two pure functions are exported and exhaustively
-unit-tested; `pay` itself is the fetch → derive → select → build → retry
-wiring. Fail-closed in both directions: `policy.maxAmount` with
-unresolvable decimals refuses rather than skips the limit, a wallet on the
-wrong chain refuses unless `allowChainMismatch`, and a non-2xx retry raises
-`PaymentRejectedError` instead of returning a result that looks settled.
-This is Phase 1 of [adr/0003](adr/0003-payment-offer-layer.md) — mpp rails
-only; the cross-rail (x402 / b402) selection is the future phase.
+unit-tested; `pay` itself is orchestration only. Identity comes off the wire,
+not a forgeable symbol: `allowedAssets` filters by `(chainId, address)` and
+`allowedChains` by numeric `chainId`. Fail-closed in every direction —
+`policy.maxAmount` with unresolvable decimals refuses rather than skips the
+limit, a wallet on the wrong chain refuses unless `allowChainMismatch`, and a
+non-2xx retry raises `PaymentRejectedError` instead of returning a result that
+looks settled. The caller's own `request` (method / headers / body) is reused
+on both the probe and the paid retry. This is Phase 1 of
+[adr/0003](adr/0003-payment-offer-layer.md) — mpp rails only; the cross-rail
+(x402 / b402) selection is the future phase.
 
 ### Receipt codec — `src/server/Receipt.ts`
 

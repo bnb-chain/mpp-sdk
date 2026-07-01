@@ -95,12 +95,15 @@ export {
 // Phase-1 unified buyer surface (ADR-0003): pay(url, { wallet, policy }) over the
 // mpp credentials. The pure deriveLogicalPaths/selectRoute are exported for reuse + tests.
 export {
+  type AssetId,
+  type Eip712DomainMap,
   type LogicalPath,
   NoAcceptableMethodError,
   PaymentRejectedError,
   type PayMode,
   type PayOptions,
   type PayPolicy,
+  type PayRequestInit,
   type PayResult,
   type RouteRejection,
   type RouteSelection,
@@ -110,4 +113,4 @@ export {
   deriveLogicalPaths,
   pay,
   selectRoute,
-} from './pay.js'
+} from './pay/index.js'

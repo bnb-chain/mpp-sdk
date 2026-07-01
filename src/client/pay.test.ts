@@ -21,7 +21,7 @@ import {
   deriveLogicalPaths,
   pay,
   selectRoute,
-} from './pay.js'
+} from './pay/index.js'
 
 /* ── Fixtures ─────────────────────────────────────────────────────────────── */
 
@@ -63,7 +63,7 @@ const ALL_CAPS: WalletCapabilities = {
 function ctx(over: Partial<SelectionContext> = {}): SelectionContext {
   return {
     chainId: CHAIN_ID,
-    tokenSymbol: 'U',
+    tokenAddress: CURRENCY,
     amountBase: BigInt(AMOUNT),
     capabilities: ALL_CAPS,
     ...over,
@@ -162,33 +162,34 @@ describe('selectRoute · hard filters', () => {
     expect(have.ok && ids(have.ranked)).toContain('mpp:permit2')
   })
 
-  test('allowedTokens filters the whole challenge (one token for all routes)', () => {
-    expect(selectRoute(all(), { allowedTokens: ['USDC'] }, ctx({ tokenSymbol: 'U' })).ok).toBe(
-      false,
-    )
-    expect(selectRoute(all(), { allowedTokens: ['U'] }, ctx({ tokenSymbol: 'U' })).ok).toBe(true)
+  test('allowedAssets filters by (chainId, address) — the wire identity, not symbol', () => {
+    const OTHER = '0x1111111111111111111111111111111111111111' as const
+    // Same address, wrong chain → excluded.
+    expect(
+      selectRoute(all(), { allowedAssets: [{ chainId: 56, address: CURRENCY }] }, ctx()).ok,
+    ).toBe(false)
+    // Right chain, different address → excluded.
+    expect(
+      selectRoute(all(), { allowedAssets: [{ chainId: CHAIN_ID, address: OTHER }] }, ctx()).ok,
+    ).toBe(false)
+    // Right chain + address → allowed.
+    expect(
+      selectRoute(all(), { allowedAssets: [{ chainId: CHAIN_ID, address: CURRENCY }] }, ctx()).ok,
+    ).toBe(true)
   })
 
-  test('allowedTokens with an unresolved symbol fails closed (cannot confirm)', () => {
-    // tokenSymbol intentionally ABSENT (not undefined) — symbol() read failed.
-    const r = selectRoute(
-      all(),
-      { allowedTokens: ['U'] },
-      {
-        chainId: CHAIN_ID,
-        amountBase: BigInt(AMOUNT),
-        capabilities: ALL_CAPS,
-      },
-    )
-    expect(r.ok).toBe(false)
+  test('allowedAssets address compare is case-insensitive (checksummed vs lowercase)', () => {
+    const CHECKSUMMED = '0x180Bc1a9843A65D4116e44886FD3558515a56A49' as const
+    expect(
+      selectRoute(all(), { allowedAssets: [{ chainId: CHAIN_ID, address: CHECKSUMMED }] }, ctx())
+        .ok,
+    ).toBe(true)
   })
 
-  test('allowedChains matches numeric chainId or a chainKey', () => {
+  test('allowedChains matches the numeric chainId only', () => {
     expect(selectRoute(all(), { allowedChains: [56] }, ctx()).ok).toBe(false)
     expect(selectRoute(all(), { allowedChains: [97] }, ctx()).ok).toBe(true)
-    expect(
-      selectRoute(all(), { allowedChains: ['bsc-testnet'] }, ctx({ chainKey: 'bsc-testnet' })).ok,
-    ).toBe(true)
+    expect(selectRoute(all(), { allowedChains: [56, 97] }, ctx()).ok).toBe(true)
   })
 
   test('maxAmount ceiling filters by base units', () => {
@@ -248,7 +249,6 @@ describe('pay', () => {
     )
     const publicClient = {
       async readContract({ functionName }: { functionName: string }) {
-        if (functionName === 'symbol') return 'U'
         if (functionName === 'decimals') return 18
         if (functionName === 'allowance') return 0n
         throw new Error(`unexpected readContract: ${functionName}`)
@@ -259,8 +259,11 @@ describe('pay', () => {
     await expect(
       pay('https://api.example/report', {
         wallet: { account, publicClient, walletClient },
-        // U token, but the buyer only allows USDC → every route filtered out.
-        policy: { allowedTokens: ['USDC'] } satisfies PayPolicy,
+        // The challenge is for CURRENCY, but the buyer only allows a different
+        // asset → every route filtered out.
+        policy: {
+          allowedAssets: [{ chainId: CHAIN_ID, address: RECIPIENT }],
+        } satisfies PayPolicy,
         fetch: stubFetch,
       }),
     ).rejects.toBeInstanceOf(NoAcceptableMethodError)
@@ -478,5 +481,90 @@ describe('pay · build + retry', () => {
 
     expect(result.route.id).toBe('mpp:permit2')
     expect(writeCalls).toEqual(['approve']) // one-time Permit2 approval, no transfer (merchant settles)
+  })
+})
+
+/* ── pay — HTTP request shape (probe + retry reuse the caller's request) ──── */
+
+/** Capturing fetch: records every init; probe (no Authorization) → 402, retry → 200. */
+function capturingFetch(wwwAuth: string) {
+  const inits: RequestInit[] = []
+  const fn = (async (_input: string, init?: RequestInit) => {
+    inits.push(init ?? {})
+    const hasAuth = init?.headers ? new Headers(init.headers).has('Authorization') : false
+    if (!hasAuth) {
+      return new Response(null, { status: 402, headers: { 'WWW-Authenticate': wwwAuth } })
+    }
+    return new Response('{"ok":true}', { status: 200, headers: { 'Payment-Receipt': 'r' } })
+  }) as unknown as typeof fetch
+  return { fetch: fn, inits }
+}
+
+describe('pay · request shape', () => {
+  test('carries method/headers/body on BOTH probe and retry; retry adds Authorization', async () => {
+    const wwwAuth = Challenge.serialize(challengeWith(['hash']))
+    const { publicClient, walletClient } = payClients()
+    const { fetch, inits } = capturingFetch(wwwAuth)
+    const body = JSON.stringify({ q: 'hi' })
+
+    const result = await pay('https://api.example/report', {
+      wallet: { account: payAccount(), publicClient, walletClient },
+      request: {
+        method: 'POST',
+        headers: { 'X-Api-Key': 'secret', Accept: 'application/json' },
+        body,
+      },
+      fetch,
+    })
+
+    expect(result.route.id).toBe('mpp:hash')
+    expect(inits).toHaveLength(2)
+    const [probe, retry] = inits as [RequestInit, RequestInit]
+
+    // probe — the caller's request verbatim, NO Authorization
+    expect(probe.method).toBe('POST')
+    expect(probe.body).toBe(body)
+    expect(new Headers(probe.headers).get('X-Api-Key')).toBe('secret')
+    expect(new Headers(probe.headers).get('Accept')).toBe('application/json')
+    expect(new Headers(probe.headers).has('Authorization')).toBe(false)
+
+    // retry — same method/body/headers PLUS the credential
+    expect(retry.method).toBe('POST')
+    expect(retry.body).toBe(body)
+    expect(new Headers(retry.headers).get('X-Api-Key')).toBe('secret')
+    expect(new Headers(retry.headers).get('Authorization')).toMatch(/^Payment /)
+  })
+
+  test('a ReadableStream body is rejected up front (not replayable)', async () => {
+    const wwwAuth = Challenge.serialize(challengeWith(['hash']))
+    const { publicClient, walletClient, writeCalls } = payClients()
+    const { fetch, inits } = capturingFetch(wwwAuth)
+
+    await expect(
+      pay('https://api.example/report', {
+        wallet: { account: payAccount(), publicClient, walletClient },
+        request: { method: 'POST', body: new ReadableStream() },
+        fetch,
+      }),
+    ).rejects.toThrow(/replayable|ReadableStream/)
+
+    expect(inits).toEqual([]) // rejected before the probe
+    expect(writeCalls).toEqual([])
+  })
+
+  test('a body without an explicit non-GET/HEAD method is rejected', async () => {
+    const wwwAuth = Challenge.serialize(challengeWith(['hash']))
+    const { publicClient, walletClient } = payClients()
+    const { fetch, inits } = capturingFetch(wwwAuth)
+
+    await expect(
+      pay('https://api.example/report', {
+        wallet: { account: payAccount(), publicClient, walletClient },
+        request: { body: 'oops' }, // no method → GET → cannot carry a body
+        fetch,
+      }),
+    ).rejects.toThrow(/non-GET\/HEAD method/)
+
+    expect(inits).toEqual([])
   })
 })
