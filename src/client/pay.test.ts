@@ -567,4 +567,63 @@ describe('pay · request shape', () => {
 
     expect(inits).toEqual([])
   })
+
+  test('a caller-set Authorization header is rejected (reserved for the credential)', async () => {
+    const wwwAuth = Challenge.serialize(challengeWith(['hash']))
+    const { publicClient, walletClient, writeCalls } = payClients()
+    const { fetch, inits } = capturingFetch(wwwAuth)
+
+    await expect(
+      pay('https://api.example/report', {
+        wallet: { account: payAccount(), publicClient, walletClient },
+        request: { headers: { Authorization: 'Bearer app-token' } },
+        fetch,
+      }),
+    ).rejects.toThrow(/must not set Authorization/)
+
+    expect(inits).toEqual([]) // rejected before the probe — nothing signed/broadcast
+    expect(writeCalls).toEqual([])
+  })
+})
+
+/* ── pay — allowApproval is a BUILD-time hard constraint (TOCTOU) ─────────── */
+
+describe('pay · allowApproval enforcement', () => {
+  test('allowApproval:false fails closed at build even if selection passed', async () => {
+    const wwwAuth = Challenge.serialize(permit2Challenge())
+    // allowance: sufficient at SELECT (facts read #1 → permit2 viable under
+    // allowApproval:false) then short at BUILD (read #2 → must refuse, not approve).
+    const allowances = [BigInt(AMOUNT), 0n]
+    let i = 0
+    const publicClient = {
+      chain: { id: CHAIN_ID, name: 'bsc-testnet' },
+      async readContract({ functionName }: { functionName: string }) {
+        if (functionName === 'decimals') return 18
+        if (functionName === 'allowance') return allowances[Math.min(i++, allowances.length - 1)]
+        throw new Error(`unexpected readContract: ${functionName}`)
+      },
+      async waitForTransactionReceipt() {
+        return { status: 'success' }
+      },
+    } as never
+    const writeCalls: string[] = []
+    const walletClient = {
+      chain: { id: CHAIN_ID, name: 'bsc-testnet' },
+      async writeContract({ functionName }: { functionName: string }) {
+        writeCalls.push(functionName)
+        return VALID_TXHASH
+      },
+    } as never
+    const { fetch } = payFetch(wwwAuth, { status: 200, receipt: 'r' })
+
+    await expect(
+      pay('https://api.example/report', {
+        wallet: { account: payAccount(), publicClient, walletClient },
+        policy: { mode: 'auto', allowApproval: false },
+        fetch,
+      }),
+    ).rejects.toThrow(/allowApproval is false|refusing to send an approve/)
+
+    expect(writeCalls).toEqual([]) // never approved
+  })
 })

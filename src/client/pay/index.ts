@@ -11,8 +11,9 @@
  * (`authorization` / `permit2` / `transaction` / `hash`), single-wire, so there
  * is no cross-rail idempotency problem yet. The x402/b402 standalone offer and
  * the `PaymentIntentStore` are later phases (see docs/adr/0003-payment-offer-layer.md).
- * `allowFacilitator` is accepted but is a no-op here (no facilitator-trust route
- * exists on the mpp wire — a b402 SETTLE backend is invisible to the buyer).
+ * A b402 SETTLE backend is invisible to the buyer (a merchant-side choice), so
+ * Phase 1 exposes no facilitator-trust route and no `allowFacilitator` filter —
+ * those arrive with the standalone x402/b402 rail in a later phase.
  *
  * This module is deliberately thin — orchestration only. The pieces live in
  * sibling modules: `routes` (derive/select + types), `facts` (chain guard +
@@ -24,7 +25,7 @@ import { assertChainConsistency, resolveFacts } from './facts.js'
 import {
   type PayRequestInit,
   type PayResult,
-  assertReplayableBody,
+  assertRequest,
   probeChallenge,
   submitPayment,
 } from './request.js'
@@ -66,7 +67,7 @@ export async function pay(url: string, options: PayOptions): Promise<PayResult> 
   const { wallet } = options
 
   // 1. Fetch the 402 (reusing the caller's request) + parse the mpp challenge.
-  assertReplayableBody(options.request)
+  assertRequest(options.request)
   const challenge = await probeChallenge(doFetch, url, options.request)
   const request = challenge.request as unknown as ChargeRequest
   const { chainId, permit2Address } = request.methodDetails
@@ -109,6 +110,7 @@ export async function pay(url: string, options: PayOptions): Promise<PayResult> 
     recipient: request.recipient,
     amount: request.amount,
     permit2Address,
+    allowApproval: options.policy?.allowApproval ?? true,
     ...(facts.eip712 && { eip712: facts.eip712 }),
   })
 

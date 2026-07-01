@@ -60,9 +60,9 @@ await pay('/api/premium/report', {
     maxAmount: '1.00', // hard filter
     allowedAssets: [{ chainId: 97, address: '0x180b…6a49' }], // hard filter — (chainId, address), the wire identity (NOT symbol)
     allowedChains: [97], // hard filter — numeric chainId
-    allowFacilitator: true, // hard filter (trust)
     allowApproval: true, // hard filter (one-time Permit2 approve)
     allowPayerGas: false, // hard filter
+    // allowFacilitator: true,  // hard filter (trust) — Phase 2+ only; NOT in the Phase-1 policy (no facilitator route exists yet)
   },
 })
 ```
@@ -429,7 +429,8 @@ policy })` in [`src/client/pay/`](../../src/client/pay) selects across the mpp c
    the cross-rail idempotency problem does not yet arise. The pure `deriveLogicalPaths` + `selectRoute`
    (hard-filter → mode-rank → fail-closed) are the design's core, exhaustively unit-tested. There is
    NO standalone `b402:eip3009` / `X-PAYMENT` route yet, and this phase did not add one;
-   `allowFacilitator` is accepted but a no-op (no facilitator-trust route on the mpp wire).
+   `allowFacilitator` is therefore NOT part of the Phase-1 `PayPolicy` (it would be a dead switch —
+   no facilitator-trust route exists on the mpp wire) and lands with the standalone rail in Phase 2.
 2. Add the **gateway + cross-rail idempotency store** (Blocker 1) and the **two-standard-wires 402**,
    introducing the FIRST standalone `b402:eip3009` x402 offer alongside the mpp challenge — this is
    the phase that first makes two rails co-present, so it is gated on the idempotency design.

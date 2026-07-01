@@ -116,9 +116,11 @@ src/
 │   ├── Transaction.ts          createTransactionCredential (EIP-1559 signer)
 │   ├── internal/
 │   │   └── AssertChallenge.ts  parseEvmChargeChallenge + accepted-types / drift / splits guards
-│   └── index.ts                `@bnb-chain/mpp/client` barrel.
-│                               §11 unified charge() factory deferred to v1.1
-│                               (see src/client/index.ts JSDoc for rationale).
+│   ├── pay/                    pay(url, { wallet, policy }) high-level buyer surface —
+│   │                           index (orchestrator) + routes/facts/build/request
+│   │                           (ADR-0003 Phase 1; hard-filter → mode-rank → fail-closed)
+│   └── index.ts                `@bnb-chain/mpp/client` barrel — the four credential
+│                               constructors + the high-level pay().
 └── b402/                       x402 v2 facilitator integration (parallel to charge;
     │                           only shared seam = protocol/TypedData.ts)
     ├── Types.ts                x402 v2 wire types (browser-safe)

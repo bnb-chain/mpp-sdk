@@ -55,6 +55,8 @@ import {
   sepolia,
 } from 'viem/chains'
 
+import { EIP3009_DOMAINS } from './eip3009-domains.js'
+
 /* ── CLI / env ──────────────────────────────────────────────────────────── */
 
 const URL_ARG = process.argv[2] ?? 'http://localhost:3001/api/premium'
@@ -87,16 +89,6 @@ if (!chain) throw new Error(`CHAIN_ID ${CHAIN_ID} is not in this demo's chain ma
 const transport = http(process.env.RPC_URL)
 const publicClient = createPublicClient({ chain, transport })
 const walletClient = createWalletClient({ account: payer, chain, transport })
-
-/**
- * EIP-712 domains for EIP-3009 (`authorization`) tokens — a property of the
- * token CONTRACT, not the wire. Needed only when the gasless `authorization`
- * route is chosen (e.g. BSC Testnet `$U` via merchant-demo mode 3).
- */
-const EIP3009_DOMAINS: Record<string, { name: string; version: string }> = {
-  '97:0x180bc1a9843a65d4116e44886fd3558515a56a49': { name: 'United Stables', version: '1' },
-  '56:0xce24439f2d9c6a2289f741120fe202248b666666': { name: 'United Stables', version: '1' },
-}
 
 /* ── Policy: the INTENT, not a credential type ──────────────────────────── */
 

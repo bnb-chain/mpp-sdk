@@ -32,6 +32,12 @@ export interface BuildContext {
   amount: string
   permit2Address: Address
   eip712?: { name: string; version: string }
+  /**
+   * Whether a one-time Permit2 `approve` may be sent. Re-checked HERE (not only
+   * at selection) because the allowance can change between select and build; a
+   * `false` with an insufficient allowance FAILS CLOSED rather than approving.
+   */
+  allowApproval: boolean
 }
 
 export async function buildCredential(method: CredentialType, c: BuildContext): Promise<string> {
@@ -56,6 +62,14 @@ export async function buildCredential(method: CredentialType, c: BuildContext): 
         args: [c.account.address, c.permit2Address],
       })
       if (allowance < BigInt(c.amount)) {
+        // Honor the policy even if the allowance dropped since route selection.
+        if (!c.allowApproval) {
+          throw new Error(
+            `permit2 selected but the Permit2 allowance (${allowance}) is below the amount ` +
+              `(${c.amount}) and policy.allowApproval is false — refusing to send an approve ` +
+              `(the allowance may have changed since route selection).`,
+          )
+        }
         const approveTx = await c.walletClient.writeContract({
           account: c.account,
           chain: c.walletClient.chain ?? null,

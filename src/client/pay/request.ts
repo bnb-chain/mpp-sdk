@@ -14,7 +14,11 @@ import type { LogicalPath } from './routes.js'
 export interface PayRequestInit {
   /** Defaults to `GET`. A `body` requires an explicit non-GET/HEAD method. */
   readonly method?: string
-  /** Sent on BOTH probe and retry (e.g. an API token, `Accept`). `Authorization` is set by the retry. */
+  /**
+   * Sent on BOTH probe and retry (e.g. app auth via `X-Api-Key` / `Cookie`, or
+   * `Accept`). MUST NOT include `Authorization` — that header is reserved for the
+   * payment credential the retry sets; a caller-supplied one is rejected up front.
+   */
   readonly headers?: HeadersInit
   /** Sent on BOTH probe and retry — must be replayable (string / Uint8Array / Blob / URLSearchParams / FormData). */
   readonly body?: BodyInit | null
@@ -51,8 +55,24 @@ function isBodyless(method: string): boolean {
   return /^(GET|HEAD)$/i.test(method)
 }
 
-/** Validate the body can be sent twice (probe + retry). Call once, before the probe. */
-export function assertReplayableBody(req?: PayRequestInit): void {
+/**
+ * Validate the caller's request BEFORE any signing/broadcast (fail-closed):
+ *
+ *  - `Authorization` is reserved for the payment credential (set on the retry).
+ *    A caller who put an app bearer there would lose it when the retry
+ *    overwrites it — and for `hash` / `transaction` the transfer is already
+ *    broadcast by then, so the money is gone but the request 401s. Reject it
+ *    up front and steer app auth to a different header.
+ *  - the body must be replayable — it is sent on BOTH the probe and the retry.
+ */
+export function assertRequest(req?: PayRequestInit): void {
+  if (req?.headers && new Headers(req.headers).has('Authorization')) {
+    throw new Error(
+      'pay(): request.headers must not set Authorization — that header carries the payment ' +
+        'credential on the retry, and losing it after a hash/transaction broadcast would strand ' +
+        'the payment. Put application auth in a different header (X-Api-Key / Cookie / custom).',
+    )
+  }
   const body = req?.body
   if (body == null) return
   if (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream) {

@@ -44,8 +44,6 @@ export interface PayPolicy {
   readonly allowedAssets?: readonly AssetId[]
   /** Allowed numeric chainIds. Omit to allow any. (No display-name / chainKey — chainId is the stable identity.) */
   readonly allowedChains?: readonly number[]
-  /** Allow a facilitator-trust route. No-op on the mpp wire (Phase 1). Default `true`. */
-  readonly allowFacilitator?: boolean
   /** Allow a one-time Permit2 `approve` (gas). Default `true`. */
   readonly allowApproval?: boolean
   /** Allow a route where the buyer pays gas (`transaction` / `hash`). Default `true`. */
@@ -211,7 +209,6 @@ export function selectRoute(
   ctx: SelectionContext,
 ): RouteSelection {
   const mode = policy.mode ?? 'auto'
-  const allowFacilitator = policy.allowFacilitator ?? true
   const allowApproval = policy.allowApproval ?? true
   const allowPayerGas = policy.allowPayerGas ?? true
   const { capabilities: cap } = ctx
@@ -246,8 +243,6 @@ export function selectRoute(
       !cap.hasPermit2Allowance
     )
       return reject('allowApproval=false and a one-time Permit2 approve is required')
-    if (!allowFacilitator && (p.trust as string) === 'facilitator')
-      return reject('allowFacilitator=false')
     // require-gasless: a hard filter, not just a ranking
     if (mode === 'require-gasless' && !p.gasless)
       return reject('require-gasless and this route is buyer-funded')
