@@ -238,9 +238,11 @@ export const STORAGE_KEYS = {
   realm: 'mpp-demo:realm',
   bindingMode: 'mpp-demo:bindingMode',
   amount: 'mpp-demo:amount',
-  // End-to-end (charge-server) mode is hidden in this build — the demo runs
-  // local-only. These keys are retained so the server-mode code paths still
-  // compile; `serverMode` is forced false in App.tsx (the toggle is gone).
+  // End-to-end (charge-server) mode is ALWAYS ON in this build and the on/off
+  // toggle is hidden: `serverMode` is forced `true` in App.tsx (not persisted,
+  // so a stale localStorage value can't flip it). `serverEndpoint` is likewise
+  // fixed to the default (`/api/article`) — no setter is wired. These keys are
+  // retained so the (now dormant) local-only code paths still compile.
   serverMode: 'mpp-demo:serverMode',
   serverEndpoint: 'mpp-demo:serverEndpoint',
 } as const

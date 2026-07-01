@@ -213,11 +213,14 @@ export function isEip3009PaymentPayload(value: unknown): value is PaymentPayload
   if (!isMatch(accepted['amount'], DECIMAL)) return false
   if (!isMatch(accepted['asset'], HEX_ADDRESS)) return false
   if (!isMatch(accepted['payTo'], HEX_ADDRESS)) return false
+  const timeout = accepted['maxTimeoutSeconds']
+  if (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout <= 0) return false
   const extra = accepted['extra']
   if (!isRecord(extra)) return false
   if (extra['assetTransferMethod'] !== 'eip3009') return false
   if (typeof extra['name'] !== 'string' || typeof extra['version'] !== 'string') return false
-  if (typeof extra['signerAddress'] !== 'string') return false
+  // signerAddress is the facilitator's on-chain signer — an address, not free text.
+  if (!isMatch(extra['signerAddress'], HEX_ADDRESS)) return false
 
   // `payload` — the signed ExactEvmPayload.
   const payload = value['payload']

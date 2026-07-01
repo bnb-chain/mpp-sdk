@@ -264,7 +264,7 @@ describe('pay', () => {
         throw new Error(`unexpected readContract: ${functionName}`)
       },
     } as never
-    const walletClient = { chain: { name: 'bsc-testnet' } } as never
+    const walletClient = { chain: { id: CHAIN_ID, name: 'bsc-testnet' } } as never
 
     await expect(
       pay('https://api.example/report', {
@@ -493,6 +493,46 @@ describe('pay · build + retry', () => {
 
     expect(writeCalls).toEqual([]) // never read allowance / broadcast on the wrong chain
     expect(calls).toEqual(['probe']) // never retried
+  })
+
+  test('a fully chain-less client pair fails closed (cannot confirm the chain)', async () => {
+    const wwwAuth = Challenge.serialize(challengeWith(['hash']))
+    const writeCalls: string[] = []
+    // NEITHER client declares a chain id → pay() cannot confirm the chain.
+    const publicClient = {
+      async readContract({ functionName }: { functionName: string }) {
+        if (functionName === 'decimals') return 18
+        if (functionName === 'allowance') return 0n
+        throw new Error(`unexpected readContract: ${functionName}`)
+      },
+      async waitForTransactionReceipt() {
+        return { status: 'success' }
+      },
+    } as never
+    const walletClient = {
+      async writeContract({ functionName }: { functionName: string }) {
+        writeCalls.push(functionName)
+        return VALID_TXHASH
+      },
+    } as never
+    const { fetch } = payFetch(wwwAuth, { status: 200, receipt: 'r' })
+
+    await expect(
+      pay('https://api.example/report', {
+        wallet: { account: payAccount(), publicClient, walletClient },
+        fetch,
+      }),
+    ).rejects.toThrow(/neither the wallet nor the public client declares a chain id/)
+    expect(writeCalls).toEqual([]) // never broadcast on an unconfirmed chain
+
+    // allowChainMismatch:true takes responsibility → proceeds + settles.
+    const f2 = payFetch(wwwAuth, { status: 200, receipt: 'r' })
+    const result = await pay('https://api.example/report', {
+      wallet: { account: payAccount(), publicClient, walletClient },
+      allowChainMismatch: true,
+      fetch: f2.fetch,
+    })
+    expect(result.route.id).toBe('mpp:hash')
   })
 
   test('permit2 route: approves when allowance is short, then builds', async () => {

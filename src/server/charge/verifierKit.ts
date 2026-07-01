@@ -144,13 +144,16 @@ export async function handleVerifierFailure(args: {
   err: unknown
   store: ChargeStore
   key: ReplayKey
+  /** The fencing token from this verifier's `reserve()` — so the safety-net
+   *  release only deletes ITS OWN inflight slot, not a successor's. */
+  token: string
   terminalPhase: boolean
   /** Warn-label prefix, e.g. '[verifyPermit2]'. */
   label: string
   /** Word the verifier's cleanup-failure warn historically used. */
   cleanupNoun: 'cleanup' | 'release'
 }): Promise<never> {
-  const { err, store, key, terminalPhase, label, cleanupNoun } = args
+  const { err, store, key, token, terminalPhase, label, cleanupNoun } = args
   if (err instanceof Errors.VerificationFailedError) throw err
   if (terminalPhase) {
     // eslint-disable-next-line no-console -- terminal-phase operator hint
@@ -162,7 +165,7 @@ export async function handleVerifierFailure(args: {
     throw err
   }
   try {
-    await release(store, key)
+    await release(store, key, token)
   } catch (cleanupErr) {
     // eslint-disable-next-line no-console -- intentional one-off operator hint
     console.warn(

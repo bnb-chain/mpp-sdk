@@ -271,7 +271,7 @@ export async function verifyTransaction({
   const key = txHashKey(chainId, txHash)
   const claimed = await reserve(store, key, { inflightTtlMs })
   if (!claimed) {
-    await throwReserveConflict({
+    return await throwReserveConflict({
       store,
       key,
       challengeId,
@@ -336,7 +336,7 @@ export async function verifyTransaction({
         try {
           const mempoolTx = await publicClient.getTransaction({ hash: txHash })
           if (!mempoolTx) {
-            await release(store, key)
+            await release(store, key, claimed)
             throw new Errors.VerificationFailedError({
               ...(challengeId && { id: challengeId }),
               reason: `sendRawTransaction rejected and tx not found on-chain or in mempool: ${
@@ -387,7 +387,7 @@ export async function verifyTransaction({
             }
             // Confirmed not mined, not in mempool, AND nonce unconsumed →
             // the send error was a genuine rejection; release.
-            await release(store, key)
+            await release(store, key, claimed)
             throw new Errors.VerificationFailedError({
               ...(challengeId && { id: challengeId }),
               reason: `sendRawTransaction rejected and txHash ${txHash} not found on-chain or in mempool: ${
@@ -443,9 +443,9 @@ export async function verifyTransaction({
     // the actually-mined hash stays free and can settle a second charge
     // as a hash credential.
     const minedHash = receipt.transactionHash
-    let minedKey: ReturnType<typeof txHashKey> | null = null
+    let mined: { key: ReturnType<typeof txHashKey>; token: string } | null = null
     if (minedHash.toLowerCase() !== txHash.toLowerCase()) {
-      minedKey = txHashKey(chainId, minedHash)
+      const minedKey = txHashKey(chainId, minedHash)
       const minedClaimed = await reserve(store, minedKey, { inflightTtlMs })
       if (!minedClaimed) {
         const minedSlot = await getReplaySlot(store, minedKey)
@@ -474,15 +474,16 @@ export async function verifyTransaction({
           reason: `transaction was replaced by ${minedHash}, which has a concurrent verify in progress; this credential's slot remains inflight — retry after the inflight window expires`,
         })
       }
+      mined = { key: minedKey, token: minedClaimed }
     }
 
     // ── Step 13: receipt.status ───────────────────────────────────────
     if (receipt.status !== 'success') {
       await markRejected(store, key, `tx reverted on-chain (status=${receipt.status})`)
-      if (minedKey) {
+      if (mined) {
         // The mined replacement reverted — on-chain-final evidence, mark
         // its hash rejected too so a hash credential doesn't re-verify it.
-        await markRejected(store, minedKey, `tx reverted on-chain (status=${receipt.status})`)
+        await markRejected(store, mined.key, `tx reverted on-chain (status=${receipt.status})`)
       }
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
@@ -513,11 +514,11 @@ export async function verifyTransaction({
         key,
         `no matching Transfer(${currency}, from=${recoveredSender}, ${recipient}, ${amount}) in tx logs`,
       )
-      if (minedKey) {
+      if (mined) {
         // The mined replacement succeeded but didn't pay THIS charge. It
         // may legitimately match a different challenge — release its slot
         // instead of poisoning a future hash-credential verify of it.
-        await release(store, minedKey)
+        await release(store, mined.key, mined.token)
       }
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
@@ -537,7 +538,7 @@ export async function verifyTransaction({
     // here must NOT surface as an error to a paid payer (the helper
     // warns instead of throwing). The slot staying inflight already
     // blocks replay; the receipt is their proof.
-    if (minedKey) await consumeSlotBestEffort(store, minedKey, '[verifyTransaction]')
+    if (mined) await consumeSlotBestEffort(store, mined.key, '[verifyTransaction]')
     await consumeSlotBestEffort(store, key, '[verifyTransaction]')
 
     // ── Step 16: build receipt ────────────────────────────────────────
@@ -568,6 +569,7 @@ export async function verifyTransaction({
       err,
       store,
       key,
+      token: claimed,
       terminalPhase,
       label: '[verifyTransaction]',
       cleanupNoun: 'release',

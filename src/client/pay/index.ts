@@ -55,9 +55,11 @@ export interface PayOptions {
   /** Token EIP-712 domains keyed `${chainId}:${currency.toLowerCase()}` — needed for `authorization`. */
   readonly eip712Domains?: Eip712DomainMap
   /**
-   * Permit the wallet/public client to be on a DIFFERENT chain than the
-   * challenge's `chainId`. Default `false` — a mismatch throws, because reading
-   * allowance / approving / transferring on the wrong chain is a footgun.
+   * Skip the chain-consistency guard entirely. Default `false` — `pay()` refuses
+   * both a client that DECLARES a different chain than the challenge's `chainId`
+   * AND a fully chain-less client pair it cannot confirm, because reading
+   * allowance / approving / transferring on the wrong chain is a footgun. Set
+   * `true` to take responsibility for pointing the clients at the right chain.
    */
   readonly allowChainMismatch?: boolean
   /** Injectable fetch (testing). Defaults to the global `fetch`. */

@@ -35,7 +35,9 @@
  *     9. Replay.reserve(authKey(chainId, currency, recoveredSigner,
  *        payload.nonce)). All 4 key components REQUIRED — see Replay.ts
  *        JSDoc on authKey.
- *    10. ERC20.balanceOf(from) >= value → release on fail.
+ *    10. ERC20.balanceOf(from) >= value. On a shortfall, run the front-run
+ *        recovery probe first (an already-settled front-run drains the
+ *        balance) — release only when the nonce is genuinely unconsumed.
  *    11. viem.parseSignature(normalizedSignature) → {v, r, s}.
  *    12. simulateContract(transferWithAuthorization(...)). Failure →
  *        front-run recovery probe (authorizationState + AuthorizationUsed/
@@ -427,7 +429,7 @@ export async function verifyAuthorization({
   const key = authKey(chainId, currency, recoveredSigner, payload.nonce)
   const claimed = await reserve(store, key, { inflightTtlMs })
   if (!claimed) {
-    await throwReserveConflict({
+    return await throwReserveConflict({
       store,
       key,
       challengeId,
@@ -448,21 +450,6 @@ export async function verifyAuthorization({
   // are both terminal. Safety-net release is locked out from that point.
   let terminalPhase = false
   try {
-    // ── Step 10: balanceOf(from) >= value ───────────────────────────────
-    const balance = (await publicClient.readContract({
-      address: currency,
-      abi: ERC20_BALANCE_ABI,
-      functionName: 'balanceOf',
-      args: [payload.from],
-    })) as bigint
-    if (balance < BigInt(payload.value)) {
-      await release(store, key)
-      throw new Errors.VerificationFailedError({
-        ...(challengeId && { id: challengeId }),
-        reason: `signer balance ${balance} < value ${payload.value}`,
-      })
-    }
-
     // ── Front-run recovery ──────────────────────────────────────────────
     // transferWithAuthorization is anyone-can-submit: a mempool observer
     // — or the payer themselves — can land the identical calldata before
@@ -590,6 +577,35 @@ export async function verifyAuthorization({
       }
     }
 
+    // ── Step 10: balanceOf(from) >= value ───────────────────────────────
+    // A shortfall can mean the EXACT authorized transfer was already
+    // front-run-settled (recipient paid V, the nonce burned, the balance
+    // drained below V), so probe recovery BEFORE failing a payer who may have
+    // paid — an unconditional release here would strand a completed payment
+    // with no receipt (and every retry re-fails the same balance check).
+    const balance = (await publicClient.readContract({
+      address: currency,
+      abi: ERC20_BALANCE_ABI,
+      functionName: 'balanceOf',
+      args: [payload.from],
+    })) as bigint
+    if (balance < BigInt(payload.value)) {
+      const probe = await recoverFrontRunSettlement()
+      if (probe.kind === 'recovered') return probe.receipt
+      if (probe.kind === 'pending') {
+        throw new Errors.VerificationFailedError({
+          ...(challengeId && { id: challengeId }),
+          reason: probe.reason,
+        })
+      }
+      // Genuinely unconsumed nonce + insufficient balance → a real shortfall.
+      await release(store, key, claimed)
+      throw new Errors.VerificationFailedError({
+        ...(challengeId && { id: challengeId }),
+        reason: `signer balance ${balance} < value ${payload.value}`,
+      })
+    }
+
     // ── Step 11-13: delegate the broadcast to the settle adapter ────────
     // Default: LocalSignerAdapter(settlementSigner) — the original
     // simulate→write→wait. A B402Adapter forwards to the b402 facilitator.
@@ -602,7 +618,7 @@ export async function verifyAuthorization({
     const settle =
       authBackend ?? (settlementSigner ? new LocalSignerAdapter(settlementSigner) : undefined)
     if (!settle) {
-      await release(store, key)
+      await release(store, key, claimed)
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
         reason: 'no settlement backend configured (settleBackend or settlementSigner required)',
@@ -650,7 +666,7 @@ export async function verifyAuthorization({
           reason: probe.reason,
         })
       }
-      await release(store, key)
+      await release(store, key, claimed)
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
         reason: `authorization simulate/broadcast failed: ${settleErr instanceof Error ? settleErr.message : String(settleErr)}`,
@@ -667,7 +683,7 @@ export async function verifyAuthorization({
           reason: probe.reason,
         })
       }
-      await release(store, key)
+      await release(store, key, claimed)
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
         reason: `authorization settlement reverted on-chain (status=${settleReceipt.status})`,
@@ -782,6 +798,7 @@ export async function verifyAuthorization({
       err,
       store,
       key,
+      token: claimed,
       terminalPhase,
       label: '[verifyAuthorization]',
       cleanupNoun: 'cleanup',

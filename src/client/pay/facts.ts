@@ -13,8 +13,13 @@ import type { Eip712DomainMap, WalletCapabilities, WalletContext } from './route
  * The wallet AND the public client must BOTH be on the challenge's chain —
  * otherwise we'd read allowance / approve / transfer on the wrong chain. Check
  * each INDEPENDENTLY: a wallet on the right chain does not excuse a public
- * client (the reader) pointed at another. Fail closed on any present-and-
- * divergent id unless the caller opts out.
+ * client (the reader) pointed at another. Two fail-closed rules (unless the
+ * caller opts out with `allowChainMismatch`):
+ *
+ *  1. any client that DECLARES a chain id must match the challenge's, and
+ *  2. at least one client must declare a chain id — a fully chain-less pair
+ *     cannot be CONFIRMED to be on the right chain, and a mis-pointed RPC would
+ *     silently approve/transfer on the wrong one. Refuse rather than guess.
  */
 export function assertChainConsistency(
   wallet: WalletContext,
@@ -22,16 +27,25 @@ export function assertChainConsistency(
   allowMismatch: boolean,
 ): void {
   if (allowMismatch) return
-  for (const [label, id] of [
+  const declared = [
     ['wallet', wallet.walletClient.chain?.id],
     ['public', wallet.publicClient.chain?.id],
-  ] as const) {
+  ] as const
+  for (const [label, id] of declared) {
     if (id !== undefined && id !== chainId) {
       throw new Error(
         `challenge is for chain ${chainId} but the ${label} client is on chain ${id} ` +
           `— point it at chain ${chainId} or pass allowChainMismatch:true to override`,
       )
     }
+  }
+  if (declared.every(([, id]) => id === undefined)) {
+    throw new Error(
+      `neither the wallet nor the public client declares a chain id, so pay() cannot confirm ` +
+        `they are on the challenge's chain ${chainId} — approving/transferring on a mis-pointed ` +
+        `RPC would settle on the wrong chain. Construct the viem clients with an explicit ` +
+        `\`chain\`, or pass allowChainMismatch:true to take responsibility.`,
+    )
   }
 }
 

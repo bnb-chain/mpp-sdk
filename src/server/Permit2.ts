@@ -522,7 +522,7 @@ export async function verifyPermit2({
   const key = permit2Key(chainId, permit2Address, recoveredSigner, permit.nonce)
   const claimed = await reserve(store, key, { inflightTtlMs })
   if (!claimed) {
-    await throwReserveConflict({
+    return await throwReserveConflict({
       store,
       key,
       challengeId,
@@ -558,14 +558,14 @@ export async function verifyPermit2({
       }),
     ])) as [bigint, bigint]
     if (balance < totalAmount) {
-      await release(store, key)
+      await release(store, key, claimed)
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
         reason: `signer balance ${balance} < totalAmount ${totalAmount}`,
       })
     }
     if (allowance < totalAmount) {
-      await release(store, key)
+      await release(store, key, claimed)
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
         reason: `ERC20.allowance(signer, permit2) ${allowance} < totalAmount ${totalAmount}`,
@@ -688,7 +688,7 @@ export async function verifyPermit2({
       }
       // Nonce unconsumed (or probe failed): no on-chain state change to
       // protect; release so the client can retry.
-      await release(store, key)
+      await release(store, key, claimed)
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
         reason: `permit2 simulate/broadcast failed: ${settleErr instanceof Error ? settleErr.message : String(settleErr)}`,
@@ -718,7 +718,7 @@ export async function verifyPermit2({
 
     if (receipt.status !== 'success') {
       // Revert: nonce unconsumed on-chain → release per spec §8.1 step 16.
-      await release(store, key)
+      await release(store, key, claimed)
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
         reason: `permit2 settlement reverted on-chain (status=${receipt.status})`,
@@ -807,6 +807,7 @@ export async function verifyPermit2({
       err,
       store,
       key,
+      token: claimed,
       terminalPhase,
       label: '[verifyPermit2]',
       cleanupNoun: 'cleanup',

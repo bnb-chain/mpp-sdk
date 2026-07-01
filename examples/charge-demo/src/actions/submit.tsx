@@ -27,9 +27,14 @@ export async function submitCredentialToServer(state: DemoState): Promise<Action
   })
   if (resp.status !== 200) {
     const body = await resp.text().catch(() => '<no body>')
+    // hash/transaction may already have an on-chain side effect — surface the
+    // EXACT credential so it can be reconciled / resubmitted rather than rebuilt
+    // (rebuilding re-signs / re-broadcasts). Mirrors the SDK PaymentSideEffectError.
     throw new Error(
       `Server rejected the credential: HTTP ${resp.status} ${resp.statusText}. ` +
-        `Body: ${body.slice(0, 500)}`,
+        `Body: ${body.slice(0, 500)}. ` +
+        `The credential is already built (hash/transaction transfers are already broadcast) — ` +
+        `reconcile / resubmit this exact value, do not rebuild:\n${credential}`,
     )
   }
   const receiptHeader = resp.headers.get('Payment-Receipt')

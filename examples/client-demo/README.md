@@ -49,10 +49,14 @@ PAY_MODE=require-gasless pnpm --filter @bnb-chain/mpp-example-client-demo start:
 
 `pay()` fails closed: no route satisfies the policy →
 `NoAcceptableMethodError` (nothing signed/sent); the server rejects the
-retry → `PaymentRejectedError`. Unlike `pay.ts` (which reads the chain
-**from** the challenge), `pay()` expects the wallet to already be on the
-challenge's chain — set `CHAIN_ID` (default `97`) and it refuses a
-mismatch unless told otherwise.
+retry → `PaymentRejectedError`; a failure **after** an irreversible step
+(a broadcast, or a retry that threw/timed out) → `PaymentSideEffectError`,
+carrying `credential` / `txHash` / `approveTxHash` so you reconcile the
+in-flight artifact instead of re-`pay()`-ing (which would re-sign /
+re-broadcast). Unlike `pay.ts` (which reads the chain **from** the
+challenge), `pay()` expects the wallet to already be on the challenge's
+chain — set `CHAIN_ID` (default `97`) and it refuses a mismatch (or a
+chain-less client it can't confirm) unless told otherwise.
 
 ## Credential types, from the payer's seat
 

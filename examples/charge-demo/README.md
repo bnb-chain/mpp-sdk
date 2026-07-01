@@ -6,19 +6,22 @@ broadcast / real MetaMask EIP-712 signature), re-verify it, submit it back,
 and the server settles and returns a `Payment-Receipt`. Runs in end-to-end
 mode with the on/off toggle **hidden** (always on).
 
-The chain selector drives which credential tabs appear:
+This build runs **end-to-end against `charge-server` only** (server mode is
+forced on; the chain / token / endpoint come from the server's `402` and the
+config fields — including the **chain selector — are read-only**). `charge-server`
+serves **BSC Testnet / TEST_USDT**, so the reachable in-browser tabs are:
 
-- **BSC Testnet (chainId 97) / USDT** (default) — the **`hash`** and
-  **`permit2`** methods, settled on-chain against a local `charge-server`.
-- **BSC Testnet (chainId 97) / $U** — the **`authorization`** (EIP-3009)
-  method: the wallet signs `transferWithAuthorization` (no gas, no buyer-side
-  broadcast) and submits the credential. Settlement is delegated to
-  [b402](../../docs/b402.md) **server-side**, so this tab demonstrates the
-  buyer's signing + submit; the default `charge-server` (TEST_USDT, no
-  EIP-3009) does not run b402 and won't settle it. For a real end-to-end b402
-  round-trip use the Node [`client-demo start:pay`](../client-demo) against
-  [`merchant-demo` mode 3](../merchant-demo) — see [Run](#run). The
-  `transaction` method still exists in code but is never surfaced in the tab bar.
+- **`hash`** and **`permit2`**, settled on-chain against `charge-server`.
+
+The chain-preset list includes a **BSC Testnet / $U** entry that would surface
+the **`authorization`** (EIP-3009) tab, but since the selector is locked to the
+server's chain it is **not reachable in this build**, and neither provided
+server settles `authorization` in-browser (`charge-server` is TEST_USDT-only;
+`merchant-demo` mode 3 speaks b402 but serves a different endpoint). For a real
+end-to-end **b402 `$U` / authorization** flow, use the Node
+[`client-demo start:pay`](../client-demo) against
+[`merchant-demo` mode 3](../merchant-demo) — see [Run](#run). The `transaction`
+method also exists in code but is never surfaced in the tab bar.
 
 Stack: **React 18 + Tailwind + shadcn/ui + wagmi v2 + RainbowKit**, built
 with Vite.
@@ -101,9 +104,11 @@ See [`merchant-demo`](../merchant-demo) (mode 3) and
 
 1. **Connect wallet** — RainbowKit Connect button in the header; switch
    to BSC Testnet (chainId 97) when prompted.
-2. **Pick a credential type** — the tab bar (the chain selector drives it:
-   `Hash` / `Permit2` on BSC Testnet USDT, `Authorization` on BSC Testnet $U). The
-   realism callout under the tabs says what settles on-chain for each.
+2. **Pick a credential type** — the tab bar. Against `charge-server` (BSC
+   Testnet / TEST_USDT) that's `Hash` / `Permit2`; the `Authorization` ($U) tab
+   only appears for the $U chain preset, which this locked-to-server build does
+   not surface (see the note at the top). The realism callout under the tabs
+   says what settles on-chain for each.
 3. **Config** — chain / token / recipient / amount mirror the server's
    `402` (read-only); the binding mode is `mppx-managed`.
 4. **Run** — step buttons in order, or **⚡ Run All**:
@@ -148,27 +153,35 @@ src/
 ├── main.tsx                 WagmiProvider + QueryClient + RainbowKit wrap
 ├── App.tsx                  top-level state + step orchestration + per-type pools
 ├── index.css                Tailwind base + shadcn CSS vars (BNB yellow accent)
+├── actions/                 the step actions (one file each)
+│   ├── fetchChallenge / issueChallenge   step 1 (server 402 / local challenge)
+│   ├── buildCredential      step 2 (createXxxCredential + hash broadcast)
+│   ├── localVerify          step 3 (typed-data recovery / Transfer-log decode)
+│   ├── submit               step 4 (re-GET with Authorization → receipt)
+│   ├── receipt / shared     receipt decode + shared action helpers
+│   └── index.ts             action barrel
 ├── components/
 │   ├── ui/*.tsx             shadcn primitives (Button, Card, Tabs, Select, ...)
 │   ├── Header / StatusBar   wallet header + BSC Testnet status bar
-│   ├── ConfigPanel          chain / binding / amount / recipient / realm
+│   ├── ConfigPanel          chain / binding / amount / recipient / realm (read-only in server mode)
 │   ├── CredentialTabsBar    the visible credential-type tabs (per chain preset)
+│   ├── ServerConfigPanel    reads /api/config (deployment descriptor)
 │   ├── RealismCallout       per-tab "what's real" note
 │   ├── SplitsEditor         Permit2 batch splits editor
 │   ├── Permit2AllowancePanel  live allowance read + one-click approve
 │   ├── InPageKeyPanel       transaction-credential in-page key
 │   ├── StepBar / StepButtons  step pills + Run All / Clear + per-step buttons
-│   ├── OutputPanel          collapsible output cards
+│   ├── OutputPanel / FailureCases  output cards + failure-case gallery
 │   └── JsonBlock / VerifyList  JSON pretty-printer + verify-line list
 ├── hooks/usePersistedState.ts   localStorage-backed useState
+├── protocol/presets.ts      chain / token presets + STORAGE_KEYS (mirrors curated.ts)
+├── state/types.ts           ExecState (per-type) + DemoState (flat snapshot)
 └── lib/
     ├── wagmi.ts             BSC-Testnet-only wagmi config (MetaMask via RainbowKit)
-    ├── types.ts             ExecState (per-type) + DemoState (flat snapshot)
-    ├── actions.tsx          the 7 step actions (fetch / build / verify / submit / receipt)
     └── utils.ts             cn() class-merge helper
 ```
 
-`src/presets.ts` mirrors the chain / token metadata from
+`src/protocol/presets.ts` mirrors the chain / token metadata from
 `src/server/curated.ts` (the demo doesn't run `preflightCharge`, so it
 duplicates the values it needs to build wire requests). The Tailwind
 theme lives in `tailwind.config.js` + `src/index.css`.

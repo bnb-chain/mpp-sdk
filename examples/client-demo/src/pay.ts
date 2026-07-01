@@ -149,6 +149,15 @@ type Builder = () => Promise<string>
 const builders: Record<string, Builder> = {
   /** Sign Permit2 typed data; the server settles. Auto-approves Permit2 once. */
   async permit2() {
+    // Fail BEFORE spending gas on a max approve: createPermit2Credential below
+    // requires methodDetails.permit2Spender, which old servers / bad challenges
+    // omit — approving first would waste a tx on a credential the server rejects.
+    if (!request.methodDetails.permit2Spender) {
+      throw new Error(
+        'permit2: challenge.request.methodDetails.permit2Spender is missing — refusing to send ' +
+          'a Permit2 approve for a credential the server cannot accept (upgrade the server SDK).',
+      )
+    }
     const allowance = await publicClient.readContract({
       address: currency,
       abi: erc20Abi,
@@ -163,7 +172,12 @@ const builders: Record<string, Builder> = {
         functionName: 'approve',
         args: [permit2Address, maxUint256],
       })
-      await publicClient.waitForTransactionReceipt({ hash: approveTx })
+      const receipt = await publicClient.waitForTransactionReceipt({ hash: approveTx })
+      if (receipt.status !== 'success') {
+        throw new Error(
+          `      permit2: approve ${approveTx} reverted on-chain (status=${receipt.status})`,
+        )
+      }
       console.log(`      approve mined: ${approveTx}`)
     }
     // Permit2 nonces are unordered + single-use: a random 256-bit value is
@@ -215,7 +229,13 @@ const builders: Record<string, Builder> = {
       functionName: 'transfer',
       args: [recipient, BigInt(amount)],
     })
-    await publicClient.waitForTransactionReceipt({ hash: txHash })
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash })
+    if (receipt.status !== 'success') {
+      throw new Error(
+        `      hash: transfer ${txHash} reverted on-chain (status=${receipt.status}) — ` +
+          `reconcile this tx, do not blindly re-run`,
+      )
+    }
     console.log(`      transfer mined: ${txHash}`)
     return createHashCredential({ challenge, hash: txHash })
   },
@@ -259,6 +279,12 @@ const paid = await fetch(URL_ARG, { headers: { Authorization: credential } })
 if (!paid.ok) {
   console.error(`      payment rejected (HTTP ${paid.status}):`)
   console.error(await paid.text())
+  // The credential is already built — and for hash/transaction the transfer is
+  // already broadcast. Reconcile / resubmit THIS credential; do NOT rebuild
+  // (that re-signs / re-broadcasts). Mirrors the SDK's PaymentSideEffectError.
+  console.error(
+    `\n      credential (resubmit this exact value, do not rebuild):\n      ${credential}`,
+  )
   process.exit(1)
 }
 

@@ -583,10 +583,12 @@ describe('verifyAuthorization local validation', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('verifyAuthorization on-chain pre-broadcast failures release the slot', () => {
-  test('insufficient balance → release', async () => {
+  test('insufficient balance (nonce unconsumed) → release', async () => {
     const sig = await signEip3009()
+    // authorizationState:false → the balance-shortfall recovery probe returns
+    // 'none' (genuine shortfall, not a front-run), so it rejects + releases.
     const ctx = buildCtx({
-      publicClient: stubPublicClient({ balance: 1n }),
+      publicClient: stubPublicClient({ balance: 1n, authorizationState: false }),
       settlementSigner: stubWalletClient(),
     })
 
@@ -949,6 +951,63 @@ describe('verifyAuthorization front-run recovery', () => {
     expect((await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE)))?.state).toBe(
       'consumed',
     )
+  })
+
+  test('BALANCE-SHORTFALL entry: front-run drained the balance → recovery, not a false rejection', async () => {
+    // The exact authorized transfer was already front-run-settled: the recipient
+    // was paid V, the nonce is burned, and the payer's balance is now below V.
+    // The balance gate must PROBE recovery (not release + reject) — else the
+    // buyer paid but gets no receipt.
+    const sig = await signEip3009()
+    const frontRunReceipt = buildReceipt([
+      transferLog({ from: SIGNER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY }),
+    ])
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        balance: BigInt(AMOUNT) - 1n, // drained below the authorized value
+        authorizationState: true,
+        usedLogs: [{ transactionHash: FRONT_RUN_TX }],
+        frontRunReceipt,
+        latestBlock: 10_000n,
+      }),
+      settlementSigner: stubWalletClient(),
+      confirmations: 12,
+    })
+
+    const out = await verifyAuthorization({
+      credential: buildCredential(sig),
+      request: baseRequest,
+      ctx,
+    })
+
+    expect(out.status).toBe('success')
+    expect(out.reference).toBe(FRONT_RUN_TX) // receipt references the front-runner's tx
+    expect((await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE)))?.state).toBe(
+      'consumed',
+    )
+  })
+
+  test('BALANCE-SHORTFALL entry: nonce genuinely unconsumed → real shortfall, slot released', async () => {
+    // Low balance AND the nonce is NOT consumed → a genuine insufficient-funds
+    // failure; the probe returns 'none', so it still rejects and releases.
+    const sig = await signEip3009()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        balance: BigInt(AMOUNT) - 1n,
+        authorizationState: false,
+      }),
+      settlementSigner: stubWalletClient(),
+    })
+
+    await expect(
+      verifyAuthorization({
+        credential: buildCredential(sig),
+        request: baseRequest,
+        ctx,
+      }),
+    ).rejects.toThrow(/signer balance .* < value/)
+
+    expect(await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE))).toBeNull() // released
   })
 
   test('authorizationState false → original simulate error surfaces, slot released', async () => {

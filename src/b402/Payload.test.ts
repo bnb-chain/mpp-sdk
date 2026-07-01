@@ -157,7 +157,10 @@ describe('isEip3009PaymentPayload', () => {
     expect(isEip3009PaymentPayload(withAccepted({ network: 'solana:mainnet' }))).toBe(false)
     expect(isEip3009PaymentPayload(withAccepted({ asset: '0xnothex' }))).toBe(false)
     expect(isEip3009PaymentPayload(withAccepted({ amount: '1.5' }))).toBe(false)
+    expect(isEip3009PaymentPayload(withAccepted({ maxTimeoutSeconds: '300' }))).toBe(false) // string
+    expect(isEip3009PaymentPayload(withAccepted({ maxTimeoutSeconds: 0 }))).toBe(false) // non-positive
     expect(isEip3009PaymentPayload(withExtra({ name: 123 }))).toBe(false)
+    expect(isEip3009PaymentPayload(withExtra({ signerAddress: 'not-an-address' }))).toBe(false)
 
     // authorization / signature shape
     expect(

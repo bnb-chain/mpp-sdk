@@ -94,7 +94,15 @@ export async function buildCredential(
         data,
         value: 0n,
       })
-      await ctx.publicClient.waitForTransactionReceipt({ hash: txHash })
+      const receipt = await ctx.publicClient.waitForTransactionReceipt({ hash: txHash })
+      if (receipt.status !== 'success') {
+        // A reverted transfer did NOT pay — refuse to build a hash credential
+        // that would look settled. Reference this tx to reconcile.
+        throw new Error(
+          `Transfer ${txHash} reverted on-chain (status=${receipt.status}) — it did NOT pay; ` +
+            `reconcile this tx rather than treating it as settled.`,
+        )
+      }
 
       const signer = getSignerAddress(state, { address: ctx.walletAddress })
       const credential = await createHashCredential({
