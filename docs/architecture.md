@@ -188,8 +188,12 @@ not a forgeable symbol: `allowedAssets` filters by `(chainId, address)` and
 `allowedChains` by numeric `chainId`. Fail-closed in every direction —
 `policy.maxAmount` with unresolvable decimals refuses rather than skips the
 limit, a wallet on the wrong chain refuses unless `allowChainMismatch`, and a
-non-2xx retry raises `PaymentRejectedError` instead of returning a result that
-looks settled. The caller's own `request` (method / headers / body) is reused
+non-2xx retry raises `PaymentRejectedError` (carrying `credential` — the exact
+built value, already broadcast for `hash`/`transaction` — so the caller can
+reconcile or resubmit it instead of risking a second signature/broadcast via a
+fresh `pay()` call) instead of returning a result that looks settled. The
+caller's own `request` (method / headers / body) is reused on both round-trips
+— `Authorization` there is reserved for the credential and rejected up front.
 on both the probe and the paid retry. This is Phase 1 of
 [adr/0003](adr/0003-payment-offer-layer.md) — mpp rails only; the cross-rail
 (x402 / b402) selection is the future phase.

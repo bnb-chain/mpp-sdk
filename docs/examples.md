@@ -44,17 +44,23 @@ const result = await pay('https://api.example/report', {
 const data = await result.response.json() // result.route shows which method settled
 ```
 
-Paying a non-GET resource (an API with a body / token / `Accept`)? Pass
-`request` — it's reused on the probe and the paid retry, with `Authorization`
-merged on top: `pay(url, { wallet, policy, request: { method: 'POST', headers, body } })`.
-The body must be replayable (it is sent twice) — a `ReadableStream` is rejected.
+Paying a non-GET resource (an API with a body / an app token / `Accept`)?
+Pass `request` — it's reused on the probe and the paid retry, with
+`Authorization` merged on top by `pay()`:
+`pay(url, { wallet, policy, request: { method: 'POST', headers, body } })`.
+The body must be replayable (it is sent twice) — a `ReadableStream` is
+rejected. `request.headers` MUST NOT set `Authorization` — that header is
+reserved for the payment credential; put app auth in `X-Api-Key` / `Cookie` /
+a custom header instead (`pay()` rejects an `Authorization` header up front,
+before any signing/broadcast).
 
 It fails closed in both directions: no acceptable route →
 `NoAcceptableMethodError` (with per-route reasons, nothing signed or sent); a
-server that rejects the retry → `PaymentRejectedError` (you may already have
-signed/broadcast — reconcile before retrying). The viem wallet must already be
-on the challenge's chain, or `pay()` refuses (pass `allowChainMismatch` to
-override).
+server that rejects the retry → `PaymentRejectedError` — carries `credential`
+(the exact built value, already broadcast for `hash`/`transaction`) so you can
+reconcile or resubmit the SAME credential instead of calling `pay()` again and
+risking a second signature/broadcast. The viem wallet must already be on the
+challenge's chain, or `pay()` refuses (pass `allowChainMismatch` to override).
 
 Runnable: [`client-demo/src/pay-policy.ts`](../examples/client-demo/src/pay-policy.ts)
 is the same Node payer as `pay.ts` but driven entirely by `pay()` —

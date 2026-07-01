@@ -103,7 +103,8 @@ and the buyer pays **no gas** — they only sign.
 B402_BASE_URL=https://...    # b402 facilitator base URL
 B402_CLIENT_ID=...
 B402_ACCESS_TOKEN=...
-B402_PRIVATE_KEY=0x...       # the signing key b402 issued you
+B402_PRIVATE_KEY=...         # the RSA signing key b402 issued you — Base64 PKCS#8 DER,
+                              # a Base64-wrapped PEM, or a raw PEM (NOT a 0x EVM private key)
 
 pnpm --filter @bnb-chain/mpp-example-merchant-demo start
 # [merchant] settlement: b402 settle (authorization, bsc-testnet/$U — facilitator pays gas)

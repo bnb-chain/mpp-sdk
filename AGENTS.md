@@ -47,9 +47,10 @@ end-to-end:
   — see [`docs/spec-compliance.md`](docs/spec-compliance.md) +
   [`docs/adr/0001-permit2-spender.md`](docs/adr/0001-permit2-spender.md).
 - **Curated matrix**: `src/server/curated.ts`. Note `TEST_USDT` on
-  `bsc-testnet` carries a sentinel zero address (rejected by
-  `preflightCharge`) pending a real verified testnet contract before any
-  live-test broadcast.
+  `opbnb-testnet` (NOT `bsc-testnet`, which is pinned to a real verified
+  contract) carries a sentinel zero address (rejected by `preflightCharge`)
+  pending a real verified opBNB testnet contract before any live-test
+  broadcast.
 
 ## When touching wire contracts
 

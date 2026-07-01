@@ -137,8 +137,9 @@ try {
   if (err instanceof PaymentRejectedError) {
     console.error(`\n✗ the server rejected the ${err.route.id} payment (HTTP ${err.status}).`)
     console.error(
-      `  a credential may already have been signed/broadcast — reconcile before retrying.`,
+      `  a credential may already have been signed/broadcast — reconcile before retrying:`,
     )
+    console.error(`  credential: ${err.credential}`)
     if (err.body) console.error(`  body: ${err.body}`)
     process.exit(3)
   }

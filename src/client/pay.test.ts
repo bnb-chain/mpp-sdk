@@ -376,20 +376,32 @@ describe('pay · build + retry', () => {
     expect(calls).toEqual(['probe', 'retry'])
   })
 
-  test('non-2xx retry → PaymentRejectedError (buyer broadcast, but NOT marked paid)', async () => {
+  test('non-2xx retry → PaymentRejectedError carries the built credential (buyer broadcast, but NOT marked paid)', async () => {
     const wwwAuth = Challenge.serialize(challengeWith(['hash']))
     const { publicClient, walletClient, writeCalls } = payClients()
-    const { fetch } = payFetch(wwwAuth, { status: 402 })
+    let sentAuth: string | null = null
+    const fetchStub = (async (_url: string, init?: RequestInit) => {
+      if (!init?.headers) {
+        return new Response(null, { status: 402, headers: { 'WWW-Authenticate': wwwAuth } })
+      }
+      sentAuth = new Headers(init.headers).get('Authorization')
+      return new Response('rejected', { status: 402 })
+    }) as unknown as typeof fetch
 
     const err = await pay('https://api.example/report', {
       wallet: { account: payAccount(), publicClient, walletClient },
-      fetch,
+      fetch: fetchStub,
     }).catch((e: unknown) => e)
 
     expect(err).toBeInstanceOf(PaymentRejectedError)
-    expect((err as PaymentRejectedError).status).toBe(402)
-    expect((err as PaymentRejectedError).route.id).toBe('mpp:hash')
+    const rejected = err as PaymentRejectedError
+    expect(rejected.status).toBe(402)
+    expect(rejected.route.id).toBe('mpp:hash')
     expect(writeCalls).toEqual(['transfer']) // it DID broadcast — that's exactly why silent success would be a footgun
+    // The caller can reconcile / resubmit the SAME credential instead of a
+    // fresh pay() call (which would re-sign / re-broadcast).
+    expect(rejected.credential).toMatch(/^Payment /)
+    expect(rejected.credential).toBe(sentAuth)
   })
 
   test('2xx retry without Payment-Receipt → receiptHeader null, still succeeds', async () => {

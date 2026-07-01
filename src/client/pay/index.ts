@@ -44,8 +44,10 @@ export interface PayOptions {
   readonly policy?: PayPolicy
   /**
    * The caller's own HTTP request reused for the probe + paid retry — method,
-   * headers (API token, `Accept`, idempotency key), and a replayable body. Omit
-   * for a plain `GET`. The retry merges `Authorization` on top.
+   * headers, and a replayable body. Omit for a plain `GET`. Put application
+   * auth in a header OTHER than `Authorization` (`X-Api-Key`, `Cookie`,
+   * `Accept`, an idempotency key, ...) — `Authorization` is reserved for the
+   * payment credential the retry sets and is rejected here up front.
    */
   readonly request?: PayRequestInit
   /** Rail-tag order for `mode: 'manual'`, e.g. `['mpp:authorization','mpp:permit2']`. */

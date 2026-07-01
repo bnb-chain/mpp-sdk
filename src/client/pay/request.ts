@@ -37,17 +37,26 @@ export interface PayResult {
  * Thrown when the post-payment retry did NOT succeed (non-2xx) — the buyer may
  * have signed/broadcast, but the server did not accept it, so the caller must
  * NOT treat the result as paid.
+ *
+ * `credential` is the exact built (and, for `hash`/`transaction`, already
+ * broadcast) `Authorization` header value — carried here so the caller can
+ * inspect what was actually sent / reconcile the on-chain state (decode the
+ * `hash`/`transaction` reference, or resubmit the SAME credential once the
+ * server-side issue is fixed) instead of calling `pay()` again and risking a
+ * second signature / broadcast for the same payment.
  */
 export class PaymentRejectedError extends Error {
   readonly status: number
   readonly route: LogicalPath
   readonly body: string
-  constructor(status: number, route: LogicalPath, body: string) {
+  readonly credential: string
+  constructor(status: number, route: LogicalPath, body: string, credential: string) {
     super(`payment via ${route.id} rejected by the server (HTTP ${status})`)
     this.name = 'PaymentRejectedError'
     this.status = status
     this.route = route
     this.body = body
+    this.credential = credential
   }
 }
 
@@ -132,7 +141,7 @@ export async function submitPayment(
   const response = await doFetch(url, { ...baseInit(req), headers })
   if (!response.ok) {
     const body = await response.text().catch(() => '')
-    throw new PaymentRejectedError(response.status, route, body)
+    throw new PaymentRejectedError(response.status, route, body, credential)
   }
   return { response, route, receiptHeader: response.headers.get('Payment-Receipt') }
 }

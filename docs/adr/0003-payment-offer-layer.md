@@ -79,16 +79,20 @@ merchant-offered rails (per adapter × token × credentialType)
   ▼  pick first  →  empty? → "no acceptable method" (fail-closed)
 ```
 
-`mode` is a named ranking preset (a bundle of ranking + default hard constraints that explicit
-booleans override):
+`mode` is a named ranking preset. Most modes only RANK; the constraint columns below are
+implied hard constraints that an explicit `policy.allowPayerGas` boolean overrides — EXCEPT
+`require-gasless`, whose name IS the guarantee: it is an unconditional filter, not overridable
+by `allowPayerGas: true` (an override would silently defeat the one thing the mode promises).
+Want gasless-first with a buyer-funded fallback instead of a hard guarantee? Use
+`prefer-gasless`.
 
-| mode              | ranking                                        | implied hard constraint |
-| ----------------- | ---------------------------------------------- | ----------------------- |
-| `auto` (default)  | merchant's declared `primary`/`fallback` order | —                       |
-| `prefer-gasless`  | buyer-gasless first                            | —                       |
-| `require-gasless` | buyer-gasless first                            | `allowPayerGas: false`  |
-| `prefer-direct`   | non-facilitator first                          | —                       |
-| `manual`          | the `routePreference` order                    | —                       |
+| mode              | ranking                                        | buyer-funded routes                               |
+| ----------------- | ---------------------------------------------- | ------------------------------------------------- |
+| `auto` (default)  | merchant's declared `primary`/`fallback` order | included (overridable via `allowPayerGas: false`) |
+| `prefer-gasless`  | buyer-gasless first                            | included, ranked last (overridable)               |
+| `require-gasless` | buyer-gasless first                            | **always excluded** — NOT overridable             |
+| `prefer-direct`   | non-facilitator first                          | included (overridable)                            |
+| `manual`          | the `routePreference` order                    | included iff listed (overridable)                 |
 
 `routePreference` (explicit rail-tag list) is an **advanced escape hatch**, only consulted under
 `mode: 'manual'`. Normal buyers never see `b402` / `permit2` / `facilitator`.

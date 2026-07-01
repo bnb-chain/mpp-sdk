@@ -593,8 +593,14 @@ export async function verifyAuthorization({
     // ── Step 11-13: delegate the broadcast to the settle adapter ────────
     // Default: LocalSignerAdapter(settlementSigner) — the original
     // simulate→write→wait. A B402Adapter forwards to the b402 facilitator.
+    // Only route to `settleBackend` when it DECLARES `authorization` in
+    // `settles` (see Settle.ts SettleAdapter JSDoc — that's the machine-checkable
+    // contract). A backend configured for some other purpose must not silently
+    // receive an authorization it never claimed to handle; fall back to the
+    // local signer instead (preflight already required one in that case).
+    const authBackend = settleBackend?.settles.includes('authorization') ? settleBackend : undefined
     const settle =
-      settleBackend ?? (settlementSigner ? new LocalSignerAdapter(settlementSigner) : undefined)
+      authBackend ?? (settlementSigner ? new LocalSignerAdapter(settlementSigner) : undefined)
     if (!settle) {
       await release(store, key)
       throw new Errors.VerificationFailedError({

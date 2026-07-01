@@ -42,6 +42,7 @@ import {
   verifyAuthorization,
 } from './Authorization.js'
 import { authKey, type ChargeStore } from './Replay.js'
+import type { SettleAdapter, SettleReceipt } from './Settle.js'
 
 /* -------------------------------------------------------------------------- */
 /*  Fixtures                                                                  */
@@ -397,6 +398,82 @@ describe('verifyAuthorization happy path', () => {
         ctx,
       }),
     ).resolves.toBeDefined()
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  settleBackend routing respects `settles` (the machine-checkable contract) */
+/* -------------------------------------------------------------------------- */
+
+describe('verifyAuthorization settleBackend routing', () => {
+  test('a settleBackend that does NOT declare authorization is never invoked — falls back to settlementSigner', async () => {
+    const sig = await signEip3009()
+    const receipt = buildReceipt([
+      transferLog({ from: SIGNER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY }),
+    ])
+    // A backend configured for some OTHER purpose (settles: [] — declares nothing).
+    // If dispatch ignored `settles`, this would be called instead of the local
+    // signer; make it throw so any such call fails the test loudly.
+    const misconfiguredBackend: SettleAdapter = {
+      settles: [],
+      settleAuthorization: vi.fn(async () => {
+        throw new Error(
+          'settleAuthorization must not be called — settles does not include authorization',
+        )
+      }),
+    }
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({ receipt }),
+      settlementSigner: stubWalletClient(),
+      settleBackend: misconfiguredBackend,
+    })
+
+    const out = await verifyAuthorization({
+      credential: buildCredential(sig),
+      request: baseRequest,
+      ctx,
+    })
+
+    expect(out.status).toBe('success') // settled via the local signer, not the backend
+    expect(misconfiguredBackend.settleAuthorization).not.toHaveBeenCalled()
+    expect((await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE)))?.state).toBe(
+      'consumed',
+    )
+  })
+
+  test('a settleBackend that DOES declare authorization is used over settlementSigner', async () => {
+    const sig = await signEip3009()
+    const backendReceipt: SettleReceipt = {
+      status: 'success',
+      transactionHash: `0x${'f'.repeat(64)}`,
+      // facilitator proof — echoes payer/network/amount matching the authorization (step 14).
+      proof: {
+        kind: 'facilitator',
+        payer: SIGNER,
+        network: `eip155:${CHAIN_ID}`,
+        amount: BigInt(AMOUNT),
+      },
+    }
+    const backend: SettleAdapter = {
+      settles: ['authorization'],
+      settleAuthorization: vi.fn(async () => backendReceipt),
+    }
+    const localSigner = stubWalletClient()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient(),
+      settlementSigner: localSigner,
+      settleBackend: backend,
+    })
+
+    const out = await verifyAuthorization({
+      credential: buildCredential(sig),
+      request: baseRequest,
+      ctx,
+    })
+
+    expect(out.status).toBe('success')
+    expect(out.reference).toBe(backendReceipt.transactionHash)
+    expect(backend.settleAuthorization).toHaveBeenCalledOnce()
   })
 })
 
