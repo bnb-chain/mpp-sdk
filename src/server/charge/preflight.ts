@@ -38,7 +38,7 @@ import type { PreflightInternalHooks, ResolvedChargeParams, ServerParameters } f
 
 /**
  * Sentinel value used by curated matrix entries whose real contract
- * address has not yet been pinned (e.g. `bsc-testnet` `TEST_USDT`).
+ * address has not yet been pinned (e.g. `opbnb-testnet` `TEST_USDT`).
  * preflightCharge rejects this value unless an internal hook explicitly
  * allows it (see `PreflightInternalHooks.allowSentinelTokenAddress`).
  */
@@ -105,7 +105,7 @@ export async function preflightChargeInternal(
   // —— Reject sentinel zero-address tokens (placeholder curated entries) ——
   //
   // Curated entries whose real verified contract address has not been
-  // pinned (e.g. `bsc-testnet` `TEST_USDT`) carry the sentinel
+  // pinned (e.g. `opbnb-testnet` `TEST_USDT`) carry the sentinel
   // 0x000...000 — `resolveCuratedTokenAddress` returns it as-is. Without
   // this guard a deployment could happily emit zero-address `currency` on
   // the wire and pretend nothing's wrong. The test seam

@@ -52,6 +52,14 @@ export async function buildEip3009Payment(
   options: BuildEip3009PaymentOptions,
 ): Promise<PaymentPayload> {
   const { account, requirements } = options
+  // This SDK models ONLY the x402 `exact` scheme with the `eip3009` transfer
+  // method (see Types.ts). Reject anything else rather than sign an `exact`
+  // payload for a requirement we did not actually model (e.g. `upto`).
+  if (requirements.scheme !== 'exact') {
+    throw new Error(
+      `buildEip3009Payment: requirements use scheme '${requirements.scheme}', only 'exact' is supported`,
+    )
+  }
   if (requirements.extra.assetTransferMethod !== 'eip3009') {
     throw new Error(
       `buildEip3009Payment: requirements use '${requirements.extra.assetTransferMethod}', not 'eip3009'`,
@@ -164,26 +172,66 @@ export function decodeXPaymentResponse(header: string | null): SettleResult | un
   }
 }
 
+const HEX_ADDRESS = /^0x[0-9a-fA-F]{40}$/
+const HEX_BYTES32 = /^0x[0-9a-fA-F]{64}$/
+/** 64-byte (EIP-2098 compact) or 65-byte EIP-712 signature. */
+const HEX_SIGNATURE = /^0x[0-9a-fA-F]{128}([0-9a-fA-F]{2})?$/
+const DECIMAL = /^\d+$/
+const CAIP2_EIP155 = /^eip155:\d+$/
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null
+}
+function isMatch(v: unknown, re: RegExp): boolean {
+  return typeof v === 'string' && re.test(v)
+}
+
 /**
- * Narrow an untrusted decoded value to a well-formed eip3009 `PaymentPayload`.
- * `decodeXPayment` only JSON-parses + casts — code handling an attacker-
- * controlled `X-PAYMENT` MUST gate on this before touching nested fields.
+ * Narrow an untrusted decoded value to a well-formed `exact` / `eip3009` /
+ * x402-v2 `PaymentPayload`. `decodeXPayment` only JSON-parses + casts, so code
+ * handling an attacker-controlled `X-PAYMENT` MUST gate on this before touching
+ * nested fields (e.g. {@link recoverEip3009Payer}, which reads `accepted.extra`
+ * / `accepted.network` / `accepted.asset` and the `authorization` values).
+ *
+ * It validates the SHAPE and wire FORMAT of every field those readers depend on
+ * — the protocol envelope (`x402Version === 2`, `scheme === 'exact'`, the
+ * `eip3009` method), the CAIP-2 network, hex addresses / bytes32 nonce / hex
+ * signature, and decimal-string amounts. It does NOT verify the signature is
+ * valid or that the payer holds the funds — that is `recoverEip3009Payer` +
+ * the facilitator's `/verify` · `/settle`.
  */
 export function isEip3009PaymentPayload(value: unknown): value is PaymentPayload {
-  if (typeof value !== 'object' || value === null) return false
-  const payload = (value as { payload?: unknown }).payload
-  if (typeof payload !== 'object' || payload === null) return false
-  if (typeof (payload as { signature?: unknown }).signature !== 'string') return false
-  const auth = (payload as { authorization?: unknown }).authorization
-  if (typeof auth !== 'object' || auth === null) return false
-  const a = auth as Record<string, unknown>
+  if (!isRecord(value)) return false
+  // Protocol envelope — this SDK models ONLY x402 v2 + exact/eip3009.
+  if (value['x402Version'] !== X402_VERSION) return false
+
+  // `accepted` — the PaymentRequirements the payer chose (read when recovering).
+  const accepted = value['accepted']
+  if (!isRecord(accepted)) return false
+  if (accepted['scheme'] !== 'exact') return false
+  if (!isMatch(accepted['network'], CAIP2_EIP155)) return false
+  if (!isMatch(accepted['amount'], DECIMAL)) return false
+  if (!isMatch(accepted['asset'], HEX_ADDRESS)) return false
+  if (!isMatch(accepted['payTo'], HEX_ADDRESS)) return false
+  const extra = accepted['extra']
+  if (!isRecord(extra)) return false
+  if (extra['assetTransferMethod'] !== 'eip3009') return false
+  if (typeof extra['name'] !== 'string' || typeof extra['version'] !== 'string') return false
+  if (typeof extra['signerAddress'] !== 'string') return false
+
+  // `payload` — the signed ExactEvmPayload.
+  const payload = value['payload']
+  if (!isRecord(payload)) return false
+  if (!isMatch(payload['signature'], HEX_SIGNATURE)) return false
+  const auth = payload['authorization']
+  if (!isRecord(auth)) return false
   return (
-    typeof a['from'] === 'string' &&
-    typeof a['to'] === 'string' &&
-    typeof a['value'] === 'string' &&
-    typeof a['validAfter'] === 'string' &&
-    typeof a['validBefore'] === 'string' &&
-    typeof a['nonce'] === 'string'
+    isMatch(auth['from'], HEX_ADDRESS) &&
+    isMatch(auth['to'], HEX_ADDRESS) &&
+    isMatch(auth['value'], DECIMAL) &&
+    isMatch(auth['validAfter'], DECIMAL) &&
+    isMatch(auth['validBefore'], DECIMAL) &&
+    isMatch(auth['nonce'], HEX_BYTES32)
   )
 }
 

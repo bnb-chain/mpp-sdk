@@ -39,6 +39,7 @@ import {
   type PayMode,
   type PayPolicy,
   PaymentRejectedError,
+  PaymentSideEffectError,
   pay,
 } from '@bnb-chain/mpp/client'
 import { http, createPublicClient, createWalletClient } from 'viem'
@@ -92,7 +93,21 @@ const walletClient = createWalletClient({ account: payer, chain, transport })
 
 /* ── Policy: the INTENT, not a credential type ──────────────────────────── */
 
-const mode = (process.env.PAY_MODE ?? 'prefer-gasless') as PayMode
+// Validate the env value before casting — pay() also rejects an unknown mode,
+// but catching a typo here gives a clean message instead of a stack trace.
+const PAY_MODES: readonly PayMode[] = [
+  'auto',
+  'prefer-gasless',
+  'require-gasless',
+  'prefer-direct',
+  'manual',
+]
+const modeRaw = process.env.PAY_MODE ?? 'prefer-gasless'
+if (!PAY_MODES.includes(modeRaw as PayMode)) {
+  console.error(`Invalid PAY_MODE '${modeRaw}' — expected one of: ${PAY_MODES.join(', ')}`)
+  process.exit(1)
+}
+const mode = modeRaw as PayMode
 const policy: PayPolicy = {
   mode,
   allowApproval: true, // permit the one-time Permit2 approve if a route needs it
@@ -128,7 +143,7 @@ try {
     console.log(`\n(no Payment-Receipt header on the response)`)
   }
 } catch (err) {
-  // The two fail-closed errors are the whole point — surface them clearly.
+  // The fail-closed errors are the whole point — surface them clearly.
   if (err instanceof NoAcceptableMethodError) {
     console.error(`\n✗ no route satisfied the policy — nothing was signed or sent:`)
     for (const r of err.rejected) console.error(`    ${r.id}: ${r.reason}`)
@@ -142,6 +157,17 @@ try {
     console.error(`  credential: ${err.credential}`)
     if (err.body) console.error(`  body: ${err.body}`)
     process.exit(3)
+  }
+  if (err instanceof PaymentSideEffectError) {
+    // A broadcast or in-flight retry failed AFTER an irreversible action —
+    // reconcile the exact artifact, never re-pay().
+    console.error(`\n✗ the ${err.route.id} payment failed after an irreversible step:`)
+    console.error(`  ${err.message}`)
+    if (err.txHash) console.error(`  transfer tx:  ${err.txHash}`)
+    if (err.approveTxHash) console.error(`  approve tx:   ${err.approveTxHash}`)
+    if (err.credential) console.error(`  credential:   ${err.credential}`)
+    if (err.cause instanceof Error) console.error(`  cause:        ${err.cause.message}`)
+    process.exit(4)
   }
   throw err
 }

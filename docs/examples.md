@@ -54,13 +54,21 @@ reserved for the payment credential; put app auth in `X-Api-Key` / `Cookie` /
 a custom header instead (`pay()` rejects an `Authorization` header up front,
 before any signing/broadcast).
 
-It fails closed in both directions: no acceptable route →
-`NoAcceptableMethodError` (with per-route reasons, nothing signed or sent); a
-server that rejects the retry → `PaymentRejectedError` — carries `credential`
-(the exact built value, already broadcast for `hash`/`transaction`) so you can
-reconcile or resubmit the SAME credential instead of calling `pay()` again and
-risking a second signature/broadcast. The viem wallet must already be on the
-challenge's chain, or `pay()` refuses (pass `allowChainMismatch` to override).
+It fails closed in every direction:
+
+- no acceptable route → `NoAcceptableMethodError` (per-route reasons; nothing
+  signed or sent);
+- the server rejects the retry (non-2xx) → `PaymentRejectedError` — carries
+  `credential` (the exact built value, already broadcast for `hash` /
+  `transaction`);
+- a failure AFTER an irreversible step — a broadcast, or a retry `fetch` that
+  threw / timed out — → `PaymentSideEffectError`, carrying whatever exists to
+  reconcile (`credential` / `txHash` / `approveTxHash` / `cause`).
+
+The last two mean the payment may already be in flight: reconcile on-chain and
+resubmit the SAME credential/tx — do NOT call `pay()` again (that re-signs /
+re-broadcasts). The viem wallet must already be on the challenge's chain, or
+`pay()` refuses (pass `allowChainMismatch` to override).
 
 Runnable: [`client-demo/src/pay-policy.ts`](../examples/client-demo/src/pay-policy.ts)
 is the same Node payer as `pay.ts` but driven entirely by `pay()` —

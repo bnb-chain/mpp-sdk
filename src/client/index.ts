@@ -105,6 +105,8 @@ export {
   type PayPolicy,
   type PayRequestInit,
   type PayResult,
+  PaymentSideEffectError,
+  type PaymentSideEffectContext,
   type RouteRejection,
   type RouteSelection,
   type SelectionContext,

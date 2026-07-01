@@ -4,8 +4,9 @@
  *   1. buildEip3009Payment signs typed data that recovers to the signer
  *   2. the authorization fields mirror the requirements (to/value/from/window)
  *   3. encodeXPayment / decodeXPayment round-trip
- *   4. isEip3009PaymentPayload narrows real payloads, rejects malformed ones
- *   5. buildEip3009Payment rejects non-eip3009 schemes
+ *   4. isEip3009PaymentPayload validates the full exact/eip3009/v2 shape +
+ *      wire format (not just the shallow authorization-field presence)
+ *   5. buildEip3009Payment rejects a non-eip3009 method AND a non-exact scheme
  *   6. chainIdFromNetwork parses CAIP-2; randomB402Nonce is a 32-byte hex
  */
 
@@ -67,7 +68,7 @@ describe('buildEip3009Payment', () => {
     expect(authorization.nonce).toMatch(/^0x[0-9a-f]{64}$/)
   })
 
-  test('rejects a non-eip3009 scheme', async () => {
+  test('rejects a non-eip3009 asset-transfer method', async () => {
     const account = privateKeyToAccount(generatePrivateKey())
     const requirements = eip3009Requirements()
     const permit2 = {
@@ -75,6 +76,14 @@ describe('buildEip3009Payment', () => {
       extra: { ...requirements.extra, assetTransferMethod: 'permit2-exact' as const },
     }
     await expect(buildEip3009Payment({ account, requirements: permit2 })).rejects.toThrow(/eip3009/)
+  })
+
+  test('rejects a non-exact scheme (only exact is modeled)', async () => {
+    const account = privateKeyToAccount(generatePrivateKey())
+    const upto = { ...eip3009Requirements(), scheme: 'upto' as const }
+    await expect(buildEip3009Payment({ account, requirements: upto })).rejects.toThrow(
+      /scheme 'upto'|only 'exact'/,
+    )
   })
 })
 
@@ -110,15 +119,53 @@ describe('X-PAYMENT-RESPONSE codec', () => {
 })
 
 describe('isEip3009PaymentPayload', () => {
-  test('accepts a well-formed payload, rejects malformed shapes', async () => {
+  test('accepts a well-formed payload', async () => {
     const account = privateKeyToAccount(generatePrivateKey())
     const good = await buildEip3009Payment({ account, requirements: eip3009Requirements() })
     expect(isEip3009PaymentPayload(good)).toBe(true)
+  })
 
+  test('rejects structural gaps', () => {
     expect(isEip3009PaymentPayload(null)).toBe(false)
     expect(isEip3009PaymentPayload({})).toBe(false)
     expect(isEip3009PaymentPayload({ x402Version: 2, accepted: {} })).toBe(false)
     expect(isEip3009PaymentPayload({ payload: { signature: '0x', authorization: {} } })).toBe(false)
+  })
+
+  test('rejects attacker shapes the old shallow guard would have PASSED', async () => {
+    const account = privateKeyToAccount(generatePrivateKey())
+    const good = await buildEip3009Payment({ account, requirements: eip3009Requirements() })
+    const withAccepted = (over: Record<string, unknown>): unknown => ({
+      ...good,
+      accepted: { ...good.accepted, ...over },
+    })
+    const withExtra = (over: Record<string, unknown>): unknown => ({
+      ...good,
+      accepted: { ...good.accepted, extra: { ...good.accepted.extra, ...over } },
+    })
+    const withAuth = (over: Record<string, unknown>): unknown => ({
+      ...good,
+      payload: { ...good.payload, authorization: { ...good.payload.authorization, ...over } },
+    })
+
+    // envelope — wrong version / scheme / method
+    expect(isEip3009PaymentPayload({ ...good, x402Version: 1 })).toBe(false)
+    expect(isEip3009PaymentPayload(withAccepted({ scheme: 'upto' }))).toBe(false)
+    expect(isEip3009PaymentPayload(withExtra({ assetTransferMethod: 'permit2-exact' }))).toBe(false)
+
+    // accepted fields recoverEip3009Payer reads — bad format
+    expect(isEip3009PaymentPayload(withAccepted({ network: 'solana:mainnet' }))).toBe(false)
+    expect(isEip3009PaymentPayload(withAccepted({ asset: '0xnothex' }))).toBe(false)
+    expect(isEip3009PaymentPayload(withAccepted({ amount: '1.5' }))).toBe(false)
+    expect(isEip3009PaymentPayload(withExtra({ name: 123 }))).toBe(false)
+
+    // authorization / signature shape
+    expect(
+      isEip3009PaymentPayload({ ...good, payload: { ...good.payload, signature: '0xdead' } }),
+    ).toBe(false)
+    expect(isEip3009PaymentPayload(withAuth({ nonce: '0x1234' }))).toBe(false) // not 32 bytes
+    expect(isEip3009PaymentPayload(withAuth({ from: 'not-an-address' }))).toBe(false)
+    expect(isEip3009PaymentPayload(withAuth({ value: 'abc' }))).toBe(false)
   })
 })
 

@@ -202,6 +202,15 @@ export function deriveLogicalPaths(challenge: Challenge.Challenge): LogicalPath[
   return paths
 }
 
+/** Every valid `PayMode` — runtime-checked so a JS/env typo fails CLOSED. */
+const PAY_MODES: ReadonlySet<PayMode> = new Set<PayMode>([
+  'auto',
+  'prefer-gasless',
+  'require-gasless',
+  'prefer-direct',
+  'manual',
+])
+
 /** Hard-constraint filter → mode rank → first. Pure; no I/O. */
 export function selectRoute(
   paths: readonly LogicalPath[],
@@ -209,6 +218,15 @@ export function selectRoute(
   ctx: SelectionContext,
 ): RouteSelection {
   const mode = policy.mode ?? 'auto'
+  // TS narrows `mode` to PayMode, but a JS caller or an env-var cast can smuggle
+  // an invalid string. An unknown mode would silently fall through rankRoutes to
+  // the prefer-direct branch (fail-OPEN). Reject it BEFORE any route is built.
+  if (!PAY_MODES.has(mode)) {
+    throw new Error(
+      `selectRoute: unknown policy.mode ${JSON.stringify(mode)} — expected one of: ` +
+        `${[...PAY_MODES].join(', ')}`,
+    )
+  }
   const allowApproval = policy.allowApproval ?? true
   const allowPayerGas = policy.allowPayerGas ?? true
   const { capabilities: cap } = ctx

@@ -113,6 +113,7 @@ export async function pay(url: string, options: PayOptions): Promise<PayResult> 
     amount: request.amount,
     permit2Address,
     allowApproval: options.policy?.allowApproval ?? true,
+    route,
     ...(facts.eip712 && { eip712: facts.eip712 }),
   })
 
@@ -136,4 +137,10 @@ export {
   deriveLogicalPaths,
   selectRoute,
 } from './routes.js'
-export { type PayRequestInit, type PayResult, PaymentRejectedError } from './request.js'
+export {
+  type PayRequestInit,
+  type PayResult,
+  type PaymentSideEffectContext,
+  PaymentRejectedError,
+  PaymentSideEffectError,
+} from './request.js'

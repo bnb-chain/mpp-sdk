@@ -14,8 +14,10 @@ import { describe, expect, test } from 'vitest'
 import {
   type LogicalPath,
   NoAcceptableMethodError,
-  PaymentRejectedError,
+  type PayMode,
   type PayPolicy,
+  PaymentRejectedError,
+  PaymentSideEffectError,
   type SelectionContext,
   type WalletCapabilities,
   deriveLogicalPaths,
@@ -124,6 +126,14 @@ describe('selectRoute · mode ranking', () => {
     const paths = deriveLogicalPaths(challengeWith(['transaction', 'hash']))
     const r = selectRoute(paths, { mode: 'require-gasless' }, ctx())
     expect(r.ok).toBe(false)
+  })
+
+  test('an unknown mode throws (fail-closed, not a silent prefer-direct)', () => {
+    const paths = deriveLogicalPaths(challengeWith(['authorization', 'hash']))
+    // A JS caller or env typo (e.g. 'require-gassless') smuggles an invalid mode.
+    expect(() => selectRoute(paths, { mode: 'require-gassless' as PayMode }, ctx())).toThrow(
+      /unknown policy\.mode/,
+    )
   })
 
   test('manual orders by routePreference and excludes unlisted routes', () => {
@@ -292,6 +302,10 @@ function payClients(
     decimalsThrows?: boolean
     chainId?: number
     publicChainId?: number
+    /** Status the confirmed tx receipt reports (default `'success'`). */
+    receiptStatus?: 'success' | 'reverted'
+    /** Make `waitForTransactionReceipt` throw (a timeout / RPC error). */
+    receiptThrows?: boolean
   } = {},
 ) {
   const writeCalls: string[] = []
@@ -309,7 +323,8 @@ function payClients(
       throw new Error(`unexpected readContract: ${functionName}`)
     },
     async waitForTransactionReceipt() {
-      return { status: 'success' }
+      if (opts.receiptThrows) throw new Error('receipt wait timed out')
+      return { status: opts.receiptStatus ?? 'success' }
     },
   } as never
   const walletClient = {
@@ -637,5 +652,157 @@ describe('pay · allowApproval enforcement', () => {
     ).rejects.toThrow(/allowApproval is false|refusing to send an approve/)
 
     expect(writeCalls).toEqual([]) // never approved
+  })
+})
+
+/* ── pay — validate-before-side-effect + post-side-effect reconciliation ──── */
+
+describe('pay · failure paths', () => {
+  test('permit2 with a MISSING permit2Spender fails before any approve (no state change)', async () => {
+    // challengeWith omits permit2Spender — createPermit2Credential would reject
+    // it, but only AFTER a max approve. The pre-validation must catch it first.
+    const wwwAuth = Challenge.serialize(challengeWith(['permit2']))
+    const { publicClient, walletClient, writeCalls } = payClients({ allowance: 0n })
+    const { fetch, calls } = payFetch(wwwAuth, { status: 200, receipt: 'r' })
+
+    await expect(
+      pay('https://api.example/report', {
+        wallet: { account: payAccount(), publicClient, walletClient },
+        policy: { mode: 'auto', allowApproval: true },
+        fetch,
+      }),
+    ).rejects.toThrow(/permit2Spender is missing/)
+
+    expect(writeCalls).toEqual([]) // no approve broadcast
+    expect(calls).toEqual(['probe']) // never retried
+  })
+
+  test('a reverted hash transfer → PaymentSideEffectError with txHash, no credential', async () => {
+    const wwwAuth = Challenge.serialize(challengeWith(['hash']))
+    const { publicClient, walletClient, writeCalls } = payClients({ receiptStatus: 'reverted' })
+    const { fetch, calls } = payFetch(wwwAuth, { status: 200, receipt: 'r' })
+
+    const err = await pay('https://api.example/report', {
+      wallet: { account: payAccount(), publicClient, walletClient },
+      fetch,
+    }).catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(PaymentSideEffectError)
+    const e = err as PaymentSideEffectError
+    expect(e.route.id).toBe('mpp:hash')
+    expect(e.txHash).toBe(VALID_TXHASH)
+    expect(e.credential).toBeUndefined() // never got to build the credential
+    expect(writeCalls).toEqual(['transfer']) // it DID broadcast
+    expect(calls).toEqual(['probe']) // never retried
+  })
+
+  test('a hash receipt timeout → PaymentSideEffectError carrying txHash + cause', async () => {
+    const wwwAuth = Challenge.serialize(challengeWith(['hash']))
+    const { publicClient, walletClient, writeCalls } = payClients({ receiptThrows: true })
+    const { fetch } = payFetch(wwwAuth, { status: 200, receipt: 'r' })
+
+    const err = await pay('https://api.example/report', {
+      wallet: { account: payAccount(), publicClient, walletClient },
+      fetch,
+    }).catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(PaymentSideEffectError)
+    const e = err as PaymentSideEffectError
+    expect(e.txHash).toBe(VALID_TXHASH)
+    expect(e.cause).toBeInstanceOf(Error)
+    expect(writeCalls).toEqual(['transfer'])
+  })
+
+  test('a reverted permit2 approve → PaymentSideEffectError with approveTxHash', async () => {
+    const wwwAuth = Challenge.serialize(permit2Challenge()) // has permit2Spender
+    const { publicClient, walletClient, writeCalls } = payClients({
+      allowance: 0n,
+      receiptStatus: 'reverted',
+    })
+    const { fetch } = payFetch(wwwAuth, { status: 200, receipt: 'r' })
+
+    const err = await pay('https://api.example/report', {
+      wallet: { account: payAccount(), publicClient, walletClient },
+      policy: { allowApproval: true },
+      fetch,
+    }).catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(PaymentSideEffectError)
+    const e = err as PaymentSideEffectError
+    expect(e.approveTxHash).toBe(VALID_TXHASH)
+    expect(writeCalls).toEqual(['approve']) // approved (reverted); never built the credential
+  })
+
+  test('a retry fetch that THROWS → PaymentSideEffectError carrying the credential', async () => {
+    const wwwAuth = Challenge.serialize(challengeWith(['hash']))
+    const { publicClient, walletClient, writeCalls } = payClients()
+    const fetchStub = (async (_url: string, init?: RequestInit) => {
+      if (!init?.headers) {
+        return new Response(null, { status: 402, headers: { 'WWW-Authenticate': wwwAuth } })
+      }
+      throw new Error('network down') // the paid retry fails to complete
+    }) as unknown as typeof fetch
+
+    const err = await pay('https://api.example/report', {
+      wallet: { account: payAccount(), publicClient, walletClient },
+      fetch: fetchStub,
+    }).catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(PaymentSideEffectError)
+    const e = err as PaymentSideEffectError
+    expect(e.route.id).toBe('mpp:hash')
+    expect(e.credential).toMatch(/^Payment /) // the caller can resubmit THIS
+    expect(e.cause).toBeInstanceOf(Error)
+    expect(writeCalls).toEqual(['transfer']) // hash broadcast BEFORE the failing retry
+  })
+
+  // An account whose signTypedData rejects (wallet prompt declined / RPC error).
+  const rejectingAccount = () =>
+    ({
+      address: payAccount().address,
+      type: 'local',
+      async signTypedData() {
+        throw new Error('user rejected the signature')
+      },
+      async signTransaction() {
+        return '0x'
+      },
+    }) as never
+
+  test('permit2 credential-build failure AFTER the approve → PaymentSideEffectError with approveTxHash', async () => {
+    const wwwAuth = Challenge.serialize(permit2Challenge()) // has permit2Spender
+    // allowance short → approve fires + confirms success, THEN signTypedData rejects.
+    const { publicClient, walletClient, writeCalls } = payClients({ allowance: 0n })
+    const { fetch } = payFetch(wwwAuth, { status: 200, receipt: 'r' })
+
+    const err = await pay('https://api.example/report', {
+      wallet: { account: rejectingAccount(), publicClient, walletClient },
+      policy: { allowApproval: true },
+      fetch,
+    }).catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(PaymentSideEffectError)
+    const e = err as PaymentSideEffectError
+    expect(e.approveTxHash).toBe(VALID_TXHASH) // the on-chain allowance grant to reconcile
+    expect(e.cause).toBeInstanceOf(Error)
+    expect(writeCalls).toEqual(['approve']) // approved, then the sign failed
+  })
+
+  test('permit2 sign failure with NO approve → plain error (never a false PaymentSideEffectError)', async () => {
+    const wwwAuth = Challenge.serialize(permit2Challenge())
+    // allowance already sufficient → NO approve broadcast; signTypedData still rejects.
+    const { publicClient, walletClient, writeCalls } = payClients({ allowance: BigInt(AMOUNT) })
+    const { fetch } = payFetch(wwwAuth, { status: 200, receipt: 'r' })
+
+    const err = await pay('https://api.example/report', {
+      wallet: { account: rejectingAccount(), publicClient, walletClient },
+      policy: { allowApproval: true },
+      fetch,
+    }).catch((e: unknown) => e)
+
+    // Nothing irreversible happened — surface the original error, not a side-effect error.
+    expect(err).not.toBeInstanceOf(PaymentSideEffectError)
+    expect((err as Error).message).toMatch(/rejected/)
+    expect(writeCalls).toEqual([]) // no approve
   })
 })

@@ -215,7 +215,47 @@ describe('B402Adapter', () => {
     const { client } = fakeB402Client({ success: true, transaction: B402_TX }, [])
     await expect(
       new B402Adapter(client).settleAuthorization(await settlement(), ctx),
-    ).rejects.toThrow(/no eip3009 kind/)
+    ).rejects.toThrow(/no exact\/eip3009/)
+  })
+
+  test('ignores a /supported kind whose scheme is not exact (its extra must not be reused)', async () => {
+    const uptoKind: SupportedResponse['kinds'] = [
+      {
+        x402Version: 2,
+        scheme: 'upto',
+        network: NETWORK,
+        extra: {
+          name: TOKEN_NAME,
+          version: TOKEN_VERSION,
+          assetTransferMethod: 'eip3009',
+          signerAddress: SIGNER_ADDRESS,
+        },
+      },
+    ]
+    const { client } = fakeB402Client({ success: true, transaction: B402_TX }, uptoKind)
+    await expect(
+      new B402Adapter(client).settleAuthorization(await settlement(), ctx),
+    ).rejects.toThrow(/no exact\/eip3009/)
+  })
+
+  test('ignores a /supported kind advertised under a different x402Version', async () => {
+    const v1Kind: SupportedResponse['kinds'] = [
+      {
+        x402Version: 1,
+        scheme: 'exact',
+        network: NETWORK,
+        extra: {
+          name: TOKEN_NAME,
+          version: TOKEN_VERSION,
+          assetTransferMethod: 'eip3009',
+          signerAddress: SIGNER_ADDRESS,
+        },
+      },
+    ]
+    const { client } = fakeB402Client({ success: true, transaction: B402_TX }, v1Kind)
+    await expect(
+      new B402Adapter(client).settleAuthorization(await settlement(), ctx),
+    ).rejects.toThrow(/no exact\/eip3009/)
   })
 
   test('success with no/invalid tx hash → SettlePendingError (never fabricate 0x + consume)', async () => {
@@ -303,7 +343,7 @@ describe('B402Adapter', () => {
         { ...(await settlement()), eip712: { name: 'USD Coin', version: '2' } },
         ctx,
       ),
-    ).rejects.toThrow(/no eip3009 kind/)
+    ).rejects.toThrow(/no exact\/eip3009/)
   })
 
   test('declares it settles authorization', () => {

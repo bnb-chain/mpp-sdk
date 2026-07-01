@@ -7,6 +7,7 @@
  */
 
 import { Challenge } from 'mppx'
+import type { Hex } from 'viem'
 
 import type { LogicalPath } from './routes.js'
 
@@ -57,6 +58,42 @@ export class PaymentRejectedError extends Error {
     this.route = route
     this.body = body
     this.credential = credential
+  }
+}
+
+/** Reconciliation identifiers attached to a {@link PaymentSideEffectError}. */
+export interface PaymentSideEffectContext {
+  /** The built `Authorization` header value, when the credential was already produced. */
+  readonly credential?: string
+  /** The settlement transfer tx hash (`hash` route), when already broadcast. */
+  readonly txHash?: Hex
+  /** The one-time Permit2 `approve` tx hash (`permit2` route), when already broadcast. */
+  readonly approveTxHash?: Hex
+  /** The underlying failure. */
+  readonly cause?: unknown
+}
+
+/**
+ * Thrown when `pay()` fails AFTER an irreversible side effect — a broadcast
+ * (`hash` transfer / `permit2` approve) or a built credential that may already
+ * be in flight (a retry `fetch` that threw / timed out). It carries whatever
+ * reconciliation identifiers exist at that point (`credential` / `txHash` /
+ * `approveTxHash`) so the caller can check on-chain and resubmit the SAME
+ * artifact instead of calling `pay()` again and risking a SECOND
+ * signature/broadcast for the same payment. The original failure is `cause`.
+ */
+export class PaymentSideEffectError extends Error {
+  readonly route: LogicalPath
+  readonly credential?: string
+  readonly txHash?: Hex
+  readonly approveTxHash?: Hex
+  constructor(message: string, route: LogicalPath, ctx: PaymentSideEffectContext = {}) {
+    super(message, ctx.cause !== undefined ? { cause: ctx.cause } : undefined)
+    this.name = 'PaymentSideEffectError'
+    this.route = route
+    if (ctx.credential !== undefined) this.credential = ctx.credential
+    if (ctx.txHash !== undefined) this.txHash = ctx.txHash
+    if (ctx.approveTxHash !== undefined) this.approveTxHash = ctx.approveTxHash
   }
 }
 
@@ -138,7 +175,21 @@ export async function submitPayment(
 ): Promise<PayResult> {
   const headers = new Headers(req?.headers)
   headers.set('Authorization', credential)
-  const response = await doFetch(url, { ...baseInit(req), headers })
+  // The credential is already built (and, for hash/transaction, the transfer is
+  // already broadcast) — so a fetch that THROWS (network / timeout) is a
+  // post-side-effect failure, not a clean "nothing happened". Carry the
+  // credential so the caller can reconcile / resubmit it, never re-`pay()`.
+  let response: Response
+  try {
+    response = await doFetch(url, { ...baseInit(req), headers })
+  } catch (cause) {
+    throw new PaymentSideEffectError(
+      `${route.id}: the payment retry request did not complete — the credential was already ` +
+        `built (hash/transaction transfers are already broadcast); reconcile before retrying`,
+      route,
+      { credential, cause },
+    )
+  }
   if (!response.ok) {
     const body = await response.text().catch(() => '')
     throw new PaymentRejectedError(response.status, route, body, credential)

@@ -40,12 +40,13 @@ import {
   type SettleReceipt,
 } from '../../server/index.js'
 import { B402Client } from '../Client.js'
-import type {
-  BazaarMetadata,
-  PaymentPayload,
-  PaymentRequirements,
-  SupportedKind,
-  SupportedResponse,
+import {
+  type BazaarMetadata,
+  type PaymentPayload,
+  type PaymentRequirements,
+  type SupportedKind,
+  type SupportedResponse,
+  X402_VERSION,
 } from '../Types.js'
 
 export interface B402AdapterOptions {
@@ -183,8 +184,14 @@ export class B402Adapter implements SettleAdapter {
     // version: the same token name can exist at different EIP-712 domain versions
     // (e.g. a token upgrade), and the wrong version yields a wrong domain.
     if (!this.#supportedCache) this.#supportedCache = await this.#client.supported()
+    // Match the scheme + protocol version we actually settle as (`exact` / v2 —
+    // the adapter hard-codes both below), not just the token: a `/supported`
+    // entry advertising eip3009 under a different scheme/version carries an
+    // `extra` we must NOT copy into an `exact`/v2 requirement.
     const kind = this.#supportedCache.kinds.find(
       (k) =>
+        k.x402Version === X402_VERSION &&
+        k.scheme === 'exact' &&
         k.network === network &&
         k.extra.assetTransferMethod === 'eip3009' &&
         k.extra.name === tokenName &&
@@ -192,7 +199,8 @@ export class B402Adapter implements SettleAdapter {
     )
     if (!kind) {
       throw new Error(
-        `b402 /supported has no eip3009 kind named '${tokenName}' (version '${tokenVersion}') on ${network} ` +
+        `b402 /supported has no exact/eip3009 (x402 v${X402_VERSION}) kind named '${tokenName}' ` +
+          `(version '${tokenVersion}') on ${network} ` +
           `(extra.name + extra.version must match the token's on-chain EIP-712 domain)`,
       )
     }
