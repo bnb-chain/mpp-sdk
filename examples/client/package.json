@@ -1,7 +1,7 @@
 {
   "name": "@bnb-chain/mpp-example-client",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "The buyer side of the @bnb-chain/mpp demo pair — a browser wallet UI (React 18 + shadcn/ui + wagmi v2 + RainbowKit) that pays the example server over both wires: mppx charge (hash / permit2 / EIP-3009 authorization) and standalone x402 (b402 permit2-exact).",
   "type": "module",
   "scripts": {
