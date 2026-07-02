@@ -1,7 +1,7 @@
 {
   "name": "@bnb-chain/mpp-example-server",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "The merchant side of the @bnb-chain/mpp demo pair — a plain API endpoint (server-plain.ts) and the same endpoint charging per request (server.ts): mppx charge wire with three settlement modes (payer-funded / local permit2 signer / b402 EIP-3009) plus an optional standalone x402 route (b402 permit2-exact).",
   "type": "module",
   "scripts": {
