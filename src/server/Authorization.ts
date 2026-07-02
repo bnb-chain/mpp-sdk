@@ -83,6 +83,7 @@ import { authKey, type ChargeStore, markRejected, release, reserve } from './Rep
 import {
   LocalSignerAdapter,
   SettlePendingError,
+  SettleRejectedError,
   type SettleAdapter,
   type SettleReceipt,
 } from './Settle.js'
@@ -269,8 +270,19 @@ function caip2ChainId(network: string): number | null {
  */
 type FrontRunProbeOutcome =
   | { readonly kind: 'recovered'; readonly receipt: EvmReceipt }
+  /** EVIDENCE-based hold: the nonce IS burned on-chain but the consuming tx is
+   *  unlocatable / below confirmation depth — a payment may have landed. */
   | { readonly kind: 'pending'; readonly reason: string }
+  /** The probe itself could not EXECUTE (authorizationState reverted — e.g. a
+   *  facilitator-gated token like testnet $U — or a transport failure). No
+   *  evidence either way; each call site decides fail-open vs fail-closed. */
+  | { readonly kind: 'unreadable'; readonly reason: string }
   | { readonly kind: 'none' }
+
+/** Viem contract errors span many lines; HTTP `reason` strings keep the first. */
+function firstLine(message: string): string {
+  return message.split('\n', 1)[0] ?? message
+}
 
 /* -------------------------------------------------------------------------- */
 /*  verifyAuthorization                                                       */
@@ -562,17 +574,17 @@ export async function verifyAuthorization({
           }),
         }
       } catch (recoveryErr) {
-        // Probe failure means settlement state is unknown. Releasing here
-        // would re-admit an authorization whose nonce may already be burned.
+        // The probe itself failed to EXECUTE — authorizationState reverted
+        // (facilitator-gated tokens like testnet $U gate that view) or a
+        // transport error. This is NOT evidence the nonce is burned; report
+        // 'unreadable' and let each call site pick fail-open vs fail-closed
+        // (pre-settle shortfall releases; post-settle keeps the slot).
+        const msg = recoveryErr instanceof Error ? recoveryErr.message : String(recoveryErr)
         // eslint-disable-next-line no-console -- operator hint
-        console.warn(
-          '[verifyAuthorization] front-run recovery probe failed; keeping slot inflight:',
-          recoveryErr instanceof Error ? recoveryErr.message : String(recoveryErr),
-        )
+        console.warn('[verifyAuthorization] front-run recovery probe errored:', msg)
         return {
-          kind: 'pending',
-          reason:
-            'front-run recovery probe failed; settlement state unknown, retry after inflight window',
+          kind: 'unreadable',
+          reason: `front-run probe unavailable (authorizationState read failed: ${firstLine(msg)})`,
         }
       }
     }
@@ -593,16 +605,25 @@ export async function verifyAuthorization({
       const probe = await recoverFrontRunSettlement()
       if (probe.kind === 'recovered') return probe.receipt
       if (probe.kind === 'pending') {
+        // Evidence-based hold: the nonce IS burned but the consuming tx is
+        // unlocatable / shallow — carry the balance context so the buyer can
+        // tell this apart from a routine shortfall.
         throw new Errors.VerificationFailedError({
           ...(challengeId && { id: challengeId }),
-          reason: probe.reason,
+          reason: `${probe.reason} (context: signer balance ${balance} < value ${payload.value})`,
         })
       }
-      // Genuinely unconsumed nonce + insufficient balance → a real shortfall.
+      // 'none' (nonce genuinely unconsumed) OR 'unreadable' (probe cannot run —
+      // e.g. facilitator-gated tokens where authorizationState reverts for
+      // everyone but the facilitator): no settle was attempted in THIS flow, so
+      // releasing only re-admits verification — it cannot double-settle. Fail
+      // with the REAL, actionable shortfall error instead of a probe artifact.
       await release(store, key, claimed)
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
-        reason: `signer balance ${balance} < value ${payload.value}`,
+        reason:
+          `signer balance ${balance} < value ${payload.value}` +
+          (probe.kind === 'unreadable' ? ` (${probe.reason})` : ''),
       })
     }
 
@@ -647,6 +668,9 @@ export async function verifyAuthorization({
         },
       )
     } catch (settleErr) {
+      const settleMsg = firstLine(
+        settleErr instanceof Error ? settleErr.message : String(settleErr),
+      )
       // SettlePendingError = tx broadcast but receipt unconfirmed (timeout):
       // keep the slot INFLIGHT (reclaimed after inflightTtlMs) — the tx may
       // still mine and burn the nonce.
@@ -661,15 +685,36 @@ export async function verifyAuthorization({
       const probe = await recoverFrontRunSettlement()
       if (probe.kind === 'recovered') return probe.receipt
       if (probe.kind === 'pending') {
+        // Never mask the underlying settle failure with the probe outcome.
         throw new Errors.VerificationFailedError({
           ...(challengeId && { id: challengeId }),
-          reason: probe.reason,
+          reason: `${probe.reason}; underlying settle failure: ${settleMsg}`,
+        })
+      }
+      // SettleRejectedError = the backend DEFINITIVELY rejected pre-broadcast
+      // (e.g. b402 refused the payout/params) — nothing was broadcast by us, so
+      // even when the probe is unreadable, releasing is safe (a retry can only
+      // re-enter verification) and the backend's reason is the actionable one.
+      if (settleErr instanceof SettleRejectedError) {
+        await release(store, key, claimed)
+        throw new Errors.VerificationFailedError({
+          ...(challengeId && { id: challengeId }),
+          reason: `settle backend rejected the authorization pre-broadcast: ${settleMsg}`,
+        })
+      }
+      if (probe.kind === 'unreadable') {
+        // Unknown broadcast state + unreadable nonce state → fail CLOSED (keep
+        // the slot inflight; reclaimed after inflightTtlMs), but surface BOTH
+        // failures so the outcome is diagnosable.
+        throw new Errors.VerificationFailedError({
+          ...(challengeId && { id: challengeId }),
+          reason: `${probe.reason}; underlying settle failure: ${settleMsg}`,
         })
       }
       await release(store, key, claimed)
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
-        reason: `authorization simulate/broadcast failed: ${settleErr instanceof Error ? settleErr.message : String(settleErr)}`,
+        reason: `authorization simulate/broadcast failed: ${settleMsg}`,
       })
     }
 
@@ -680,13 +725,19 @@ export async function verifyAuthorization({
       if (probe.kind === 'pending') {
         throw new Errors.VerificationFailedError({
           ...(challengeId && { id: challengeId }),
-          reason: probe.reason,
+          reason: `${probe.reason}; our settle tx ${settleReceipt.transactionHash} reverted`,
         })
       }
+      // 'none' or 'unreadable': an EIP-3009 revert does NOT consume the nonce,
+      // so OUR side burned nothing — releasing is safe either way. When the
+      // probe was unreadable, say so (third-party front-run state unknown).
       await release(store, key, claimed)
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
-        reason: `authorization settlement reverted on-chain (status=${settleReceipt.status})`,
+        reason:
+          `authorization settlement reverted on-chain ` +
+          `(tx=${settleReceipt.transactionHash}, status=${settleReceipt.status})` +
+          (probe.kind === 'unreadable' ? ` (${probe.reason})` : ''),
       })
     }
 

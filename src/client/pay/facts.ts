@@ -53,6 +53,12 @@ export interface ResolvedFacts {
   readonly capabilities: WalletCapabilities
   readonly maxAmountBase?: bigint
   readonly eip712?: { readonly name: string; readonly version: string }
+  /**
+   * Payer's token balance. `undefined` when unreadable — the affordability
+   * pre-check then fails OPEN (an RPC hiccup or nonstandard token must not
+   * block a payment the chain would accept; the server re-checks anyway).
+   */
+  readonly balance?: bigint
 }
 
 /**
@@ -83,7 +89,20 @@ export async function resolveFacts(args: {
       args: [account.address, permit2Address],
     })
     .catch(() => 0n)
-  const eip712 = args.eip712Domains?.[`${chainId}:${currency.toLowerCase()}`]
+  const balance = await publicClient
+    .readContract({
+      address: currency,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [account.address],
+    })
+    .catch(() => undefined)
+  // The map key's address part is matched case-insensitively — a checksummed
+  // key must not silently miss the (lowercase) wire currency.
+  const eip712Key = `${chainId}:${currency.toLowerCase()}`
+  const eip712 = args.eip712Domains
+    ? Object.entries(args.eip712Domains).find(([k]) => k.toLowerCase() === eip712Key)?.[1]
+    : undefined
 
   let maxAmountBase: bigint | undefined
   if (args.maxAmount !== undefined) {
@@ -108,5 +127,6 @@ export async function resolveFacts(args: {
     capabilities,
     ...(maxAmountBase !== undefined && { maxAmountBase }),
     ...(eip712 && { eip712 }),
+    ...(balance !== undefined && { balance }),
   }
 }

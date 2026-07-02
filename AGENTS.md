@@ -136,10 +136,11 @@ test/                           vitest config + setup; live/ = testnet e2e scaff
 ├── helpers/server/             test seams kept OUT of the published src tarball
 │                               (preflightChargeForTest, terminalFailureStore)
 └── interop/                    viem cross-check vectors
-examples/                       merchant-demo + client-demo (CLI buyer) + full
-                                charge-server (Hono) + charge-demo (React wallet).
-                                b402 settle is folded into these: merchant-demo
-                                mode 3 (B402Adapter) + charge-demo's BSC Testnet
+examples/                       exactly two: server (Hono merchant — mppx modes
+                                1-3 + optional /x402 permit2-exact route) and
+                                client (React browser wallet — both wires).
+                                b402 is folded into these: server mode 3
+                                (B402Adapter) + the client's $U authorization
                                 /$U authorization path — see docs/examples.md
 docs/                           public docs (architecture, spec-compliance, replay-store, examples, adr/)
 ```

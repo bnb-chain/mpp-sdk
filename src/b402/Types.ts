@@ -5,15 +5,16 @@
  * different HTTP envelope from this SDK's mppx charge flow, but the underlying
  * EIP-3009 credential is the same primitive (`src/protocol/TypedData.ts`).
  * This module models the slice the SDK supports: the `exact` scheme with the
- * `eip3009` asset-transfer method. Browser-safe (types only).
+ * `eip3009` OR `permit2-exact` asset-transfer method —
+ * `PaymentPayload.payload` is a union of `ExactEvmPayload` (EIP-3009, built by
+ * `buildEip3009Payment`) and `Permit2EvmPayload` (permit2-exact, built by
+ * `buildPermit2ExactPayment`; ADR-0004). Browser-safe (types only).
  *
- * Permit2 methods (`permit2-exact` / `permit2-upto`) appear in the
- * `AssetTransferMethod` union so `/supported` kinds that advertise them still
- * PARSE (the adapter filters for `eip3009`), but this module models the EIP-3009
- * payload ONLY: `PaymentPayload.payload` is an `ExactEvmPayload` (EIP-3009) and
- * there is no Permit2 payload variant. `B402Client.verify`/`settle` are typed to
- * `PaymentPayload`, so a Permit2 payment cannot be built or forwarded today —
- * supporting it would require adding a Permit2 `PaymentPayload` variant.
+ * `permit2-upto` appears in the `AssetTransferMethod` union so `/supported`
+ * kinds that advertise it still PARSE, but its payload is deliberately NOT
+ * modeled: b402 documents its (different) witness struct as contact-the-team
+ * only. The mppx bridge (`B402Adapter`) additionally stays eip3009-only — a
+ * b402 Permit2 signature can never double as an mppx `permit2` credential.
  */
 
 /** x402 protocol version. b402 V2 rejects any value other than 2. */
@@ -78,14 +79,51 @@ export interface ExactEvmPayload {
   readonly authorization: Eip3009Authorization
 }
 
+/**
+ * Permit2 `PermitWitnessTransferFrom` arguments for `permit2-exact` — the b402
+ * "Permit2 Signing Guide" wire shape. All numeric fields are DECIMAL STRINGS on
+ * the wire (they sign as uint256 in the EIP-712 typed data). The witness is
+ * exactly `Witness { to, validAfter }` — field order and struct name are
+ * load-bearing for the typehash. (`permit2-upto` uses a DIFFERENT witness
+ * struct and is not modeled — b402 documents it as contact-the-team only.)
+ */
+export interface Permit2Authorization {
+  readonly permitted: { readonly token: `0x${string}`; readonly amount: string }
+  readonly from: `0x${string}`
+  /** The Permit2 proxy contract (`extra.spenderAddress`) — NOT the facilitator EOA. */
+  readonly spender: `0x${string}`
+  /** 256-bit random, decimal string (Permit2 unordered nonce bitmap). */
+  readonly nonce: string
+  /** Unix seconds, decimal string. */
+  readonly deadline: string
+  readonly witness: { readonly to: `0x${string}`; readonly validAfter: string }
+}
+
+/** The `exact`/permit2-exact payment payload body (b402 `payload`). */
+export interface Permit2EvmPayload {
+  /** 65-byte EIP-712 signature, 0x-prefixed. */
+  readonly signature: `0x${string}`
+  readonly permit2Authorization: Permit2Authorization
+}
+
 /** The full payment object the buyer base64-encodes into the `X-PAYMENT` header. */
 export interface PaymentPayload {
   readonly x402Version: number
   readonly resource?: ResourceInfo
   /** The PaymentRequirements the buyer chose to fulfill (echoed from the 402). */
   readonly accepted: PaymentRequirements
-  readonly payload: ExactEvmPayload
+  readonly payload: ExactEvmPayload | Permit2EvmPayload
   readonly extensions?: Record<string, unknown>
+}
+
+/** A PaymentPayload refined to the eip3009 body (what `buildEip3009Payment` makes). */
+export interface Eip3009PaymentPayload extends PaymentPayload {
+  readonly payload: ExactEvmPayload
+}
+
+/** A PaymentPayload refined to the permit2-exact body (what `buildPermit2ExactPayment` makes). */
+export interface Permit2PaymentPayload extends PaymentPayload {
+  readonly payload: Permit2EvmPayload
 }
 
 /**

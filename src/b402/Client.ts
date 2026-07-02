@@ -39,8 +39,9 @@ export interface B402Credentials {
 }
 
 /** A `/verify` or `/settle` request body. `settleAmount` is reserved for the
- *  `permit2-upto` scheme, which this EIP-3009-only client does not build a payload
- *  for yet (kept on the wire type for forward compatibility). */
+ *  `permit2-upto` scheme, which the SDK does not build a payload for
+ *  (undocumented witness — ADR-0004; kept on the wire type for forward
+ *  compatibility). eip3009 and permit2-exact payloads both ride this shape. */
 export interface FacilitatorRequest {
   readonly x402Version: number
   readonly paymentPayload: PaymentPayload
@@ -107,9 +108,63 @@ export function verifyTeslaSignature(
 
 export class B402Client {
   readonly #credentials: B402Credentials
+  readonly #signingKey: KeyObject
+
+  /**
+   * Build a client from the conventional `B402_*` environment variables:
+   * `B402_BASE_URL`, `B402_CLIENT_ID`, `B402_ACCESS_TOKEN`, and
+   * `B402_PRIVATE_KEY` (or `B402_PRIVATE_KEY_B64`).
+   *
+   * All four absent → `undefined` (b402 not configured — run without it).
+   * SOME BUT NOT ALL set → throws listing the missing names. A partial config
+   * must fail loudly: silently proceeding without b402 swaps the settlement
+   * semantics behind the operator's back, so a typo'd variable name would
+   * masquerade as a working boot.
+   */
+  static fromEnv(
+    env: Readonly<Record<string, string | undefined>> = process.env,
+  ): B402Client | undefined {
+    // `||`, not `??`: the missing-var check below treats '' as absent (a
+    // dotenv `B402_PRIVATE_KEY=` line yields ''), so an empty primary variable
+    // must fall through to a set B402_PRIVATE_KEY_B64 too.
+    const privateKey = env['B402_PRIVATE_KEY'] || env['B402_PRIVATE_KEY_B64']
+    const vars: Record<string, string | undefined> = {
+      B402_BASE_URL: env['B402_BASE_URL'],
+      B402_CLIENT_ID: env['B402_CLIENT_ID'],
+      B402_ACCESS_TOKEN: env['B402_ACCESS_TOKEN'],
+      'B402_PRIVATE_KEY (or B402_PRIVATE_KEY_B64)': privateKey,
+    }
+    const missing = Object.keys(vars).filter((name) => !vars[name])
+    if (missing.length === Object.keys(vars).length) return undefined
+    if (missing.length > 0) {
+      throw new B402Error(
+        `B402Client.fromEnv: partial b402 config — missing ${missing.join(', ')}. ` +
+          `Set ALL of B402_BASE_URL, B402_CLIENT_ID, B402_ACCESS_TOKEN, B402_PRIVATE_KEY, ` +
+          `or unset them all to run without b402.`,
+      )
+    }
+    return new B402Client({
+      baseUrl: env['B402_BASE_URL'] as string,
+      clientId: env['B402_CLIENT_ID'] as string,
+      accessToken: env['B402_ACCESS_TOKEN'] as string,
+      privateKey: privateKey as string,
+    })
+  }
 
   constructor(credentials: B402Credentials) {
     this.#credentials = credentials
+    // Parse the RSA key EAGERLY so a malformed key fails at boot with a
+    // format hint — not at the first paid request (after the buyer already
+    // signed) as a bare node:crypto error. Also avoids re-parsing per request.
+    try {
+      this.#signingKey = loadRsaPrivateKey(credentials.privateKey)
+    } catch (cause) {
+      throw new B402Error(
+        'B402Client: could not parse `privateKey` — expected a raw PEM, a Base64-wrapped ' +
+          'PEM, or the one-line Base64 PKCS#8 DER issued at onboarding (private_key.base64); ' +
+          `NOT an EVM 0x private key. Underlying: ${cause instanceof Error ? cause.message : String(cause)}`,
+      )
+    }
   }
 
   /** POST /papi/v2/b402/supported — payment kinds + signer addresses (cache it). */
@@ -131,7 +186,10 @@ export class B402Client {
     // Sign the EXACT bytes we send: serialize once, sign body+timestamp, ship body.
     const body = JSON.stringify(payload)
     const timestamp = Date.now().toString()
-    const signature = signTeslaRequest(this.#credentials.privateKey, body, timestamp)
+    const signature = createSign('RSA-SHA256')
+      .update(body + timestamp, 'utf8')
+      .end()
+      .sign(this.#signingKey, 'base64')
 
     const response = await fetch(`${this.#credentials.baseUrl}${path}`, {
       method: 'POST',

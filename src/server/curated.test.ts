@@ -224,13 +224,13 @@ describe('bsc/FDUSD and bsc/U entries', () => {
   })
 
   // ('bsc-testnet', 'U') is the b402 TESTNET settlement token at
-  // 0x180Bc1a9843A65D4116e44886FD3558515a56A49 (a DIFFERENT contract from the
+  // 0xc70b8741b8b07a6d61e54fd4b20f22fa648e5565 (a DIFFERENT contract from the
   // non-EIP-3009 sibling 0x2Ae9...0a66, which is NOT in the matrix). On-chain
   // probe (2026-06-30): name="United Stables", decimals=18, transferWithAuthorization
   // present. eip3009Supported, so it advertises the authorization credential.
   test("('bsc-testnet', 'U') is the b402 testnet EIP-3009 token", () => {
     expect(resolveCuratedTokenAddress('bsc-testnet', 'U')).toBe(
-      '0x180Bc1a9843A65D4116e44886FD3558515a56A49',
+      '0xc70b8741b8b07a6d61e54fd4b20f22fa648e5565',
     )
     expect(getAcceptedCredentialTypes('bsc-testnet', 'U')).toContain('authorization')
     // Lock the EIP-712 domain — `name` is on-chain-verified; `version: '1'` is the

@@ -109,6 +109,7 @@ export {
   type SettleAdapter,
   type SettleContext,
   SettlePendingError,
+  SettleRejectedError,
   type SettleProof,
   type SettleReceipt,
 } from './Settle.js'

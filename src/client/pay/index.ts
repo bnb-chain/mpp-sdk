@@ -90,6 +90,17 @@ export async function pay(url: string, options: PayOptions): Promise<PayResult> 
     ...(options.eip712Domains && { eip712Domains: options.eip712Domains }),
   })
 
+  // Affordability pre-check — BEFORE any signature or broadcast, so an unfunded
+  // payer gets a local, actionable error instead of a server-side rejection
+  // after signing. Fails OPEN when the balance is unreadable (the server
+  // re-checks; an RPC hiccup must not block an affordable payment).
+  if (facts.balance !== undefined && facts.balance < amountBase) {
+    throw new Error(
+      `payer balance ${facts.balance} is below the challenge amount ${amountBase} ` +
+        `(token ${currency}, chain ${chainId}) — fund ${wallet.account.address} before retrying`,
+    )
+  }
+
   // 3. Derive routes + select one (fail-closed if the policy admits none).
   const paths = deriveLogicalPaths(challenge)
   const selection = selectRoute(paths, options.policy ?? {}, {

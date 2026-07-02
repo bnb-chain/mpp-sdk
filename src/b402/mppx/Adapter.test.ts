@@ -19,7 +19,11 @@ import { describe, expect, test } from 'vitest'
 
 import { eip3009Domain, eip3009Nonce, eip3009Types } from '../../protocol/TypedData.js'
 import { type AuthorizationVerifierArgs, verifyAuthorization } from '../../server/Authorization.js'
-import { type Eip3009Settlement, SettlePendingError } from '../../server/index.js'
+import {
+  type Eip3009Settlement,
+  SettlePendingError,
+  SettleRejectedError,
+} from '../../server/index.js'
 import type { ChargeStore } from '../../server/Replay.js'
 import type { B402Client } from '../Client.js'
 import type { SupportedResponse } from '../Types.js'
@@ -200,15 +204,19 @@ describe('B402Adapter', () => {
     expect(out.proof.kind).toBe('facilitator')
   })
 
-  test('failure with NO tx → throws (pre-broadcast rejection)', async () => {
+  test('failure with NO tx → typed SettleRejectedError carrying the b402 reason', async () => {
+    // Definitive pre-broadcast rejection: typed so the verifier RELEASES the
+    // slot and surfaces this reason (instead of a front-run probe artifact).
     const { client } = fakeB402Client({
       success: false,
       transaction: '',
       errorReason: 'insufficient_funds',
     })
-    await expect(
-      new B402Adapter(client).settleAuthorization(await settlement(), ctx),
-    ).rejects.toThrow(/insufficient_funds/)
+    const err = await new B402Adapter(client)
+      .settleAuthorization(await settlement(), ctx)
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(SettleRejectedError)
+    expect((err as Error).message).toMatch(/insufficient_funds/)
   })
 
   test('rejects when /supported has no matching eip3009 kind for the token name', async () => {

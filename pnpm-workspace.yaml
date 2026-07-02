@@ -42,7 +42,7 @@ nodeOptions: '--disable-warning=ExperimentalWarning --disable-warning=Deprecatio
 # undecided entry).
 #   - bufferutil / utf-8-validate: optional ws perf addons — ws falls
 #     back to its JS implementations when the bindings are absent.
-#   - keccak: transitive via charge-demo's wagmi → @coinbase/wallet-sdk;
+#   - keccak: transitive via the example client's wagmi → @coinbase/wallet-sdk;
 #     browser-bundled there and ships a pure-JS fallback.
 # None of the three needs its native build, so CI stays node-gyp-free.
 allowBuilds:

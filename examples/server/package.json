@@ -1,0 +1,26 @@
+{
+  "name": "@bnb-chain/mpp-example-server",
+  "private": true,
+  "version": "0.0.1",
+  "description": "The merchant side of the @bnb-chain/mpp demo pair — a plain API endpoint (server-plain.ts) and the same endpoint charging per request (server.ts): mppx charge wire with three settlement modes (payer-funded / local permit2 signer / b402 EIP-3009) plus an optional standalone x402 route (b402 permit2-exact).",
+  "type": "module",
+  "scripts": {
+    "prestart": "pnpm -C ../.. build",
+    "start": "node --import tsx --no-warnings src/server.ts",
+    "start:plain": "node --import tsx --no-warnings src/server-plain.ts",
+    "check:types": "tsgo --noEmit"
+  },
+  "dependencies": {
+    "@bnb-chain/mpp": "workspace:*",
+    "@hono/node-server": "^1.13.0",
+    "hono": "^4.6.0",
+    "mppx": "^0.6.28",
+    "viem": "^2.51.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@typescript/native-preview": "7.0.0-dev.20260323.1",
+    "tsx": "^4.19.0",
+    "typescript": "~5.9.0"
+  }
+}

@@ -42,7 +42,7 @@ import {
   verifyAuthorization,
 } from './Authorization.js'
 import { authKey, type ChargeStore } from './Replay.js'
-import type { SettleAdapter, SettleReceipt } from './Settle.js'
+import { SettleRejectedError, type SettleAdapter, type SettleReceipt } from './Settle.js'
 
 /* -------------------------------------------------------------------------- */
 /*  Fixtures                                                                  */
@@ -1162,21 +1162,97 @@ describe('verifyAuthorization front-run recovery', () => {
     })
 
     try {
+      // The reason now carries BOTH failures: the unreadable probe AND the
+      // underlying settle error — neither is masked.
       await expect(
         verifyAuthorization({
           credential: buildCredential(sig),
           request: baseRequest,
           ctx,
         }),
-      ).rejects.toThrow(/front-run recovery probe failed; settlement state unknown/)
+      ).rejects.toThrow(
+        /front-run probe unavailable.*underlying settle failure:.*authorization is used or canceled/,
+      )
 
       expect((await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE)))?.state).toBe(
         'inflight',
       )
       expect(warn).toHaveBeenCalledWith(
-        '[verifyAuthorization] front-run recovery probe failed; keeping slot inflight:',
+        '[verifyAuthorization] front-run recovery probe errored:',
         'unexpected readContract: authorizationState',
       )
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  test('BALANCE-SHORTFALL entry + unreadable probe (gated token) → release + REAL shortfall error', async () => {
+    // The b402 $U testnet token gates authorizationState() to the facilitator:
+    // the probe can NEVER read nonce state. A plain insufficient balance must
+    // surface as the actionable shortfall error and RELEASE the slot — not as
+    // a generic probe artifact holding the slot for the whole inflight TTL.
+    const sig = await signEip3009()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        balance: 1n,
+        // authorizationState intentionally omitted → the probe read throws
+        // (same shape as the gated token's revert).
+      }),
+      settlementSigner: stubWalletClient(),
+    })
+
+    try {
+      await expect(
+        verifyAuthorization({
+          credential: buildCredential(sig),
+          request: baseRequest,
+          ctx,
+        }),
+      ).rejects.toThrow(/signer balance 1 < value .*front-run probe unavailable/)
+
+      // Released — the buyer can retry immediately after topping up.
+      expect(await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE))).toBeNull()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  test('settle backend REJECTS pre-broadcast (SettleRejectedError) → release + backend reason', async () => {
+    // b402 /settle returning success:false with NO tx is a definitive
+    // pre-broadcast rejection: nothing on-chain, nonce unburned. Even when the
+    // probe is unreadable (gated token), the slot must be released and the
+    // backend's reason surfaced — not a probe artifact.
+    const sig = await signEip3009()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const rejectingBackend: SettleAdapter = {
+      settles: ['authorization'],
+      settleAuthorization: vi.fn(async () => {
+        throw new SettleRejectedError('b402 settle rejected: RECEIVER_NOT_REGISTERED')
+      }),
+    }
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        // balance OK; authorizationState omitted → probe unreadable.
+      }),
+      settlementSigner: stubWalletClient(),
+      settleBackend: rejectingBackend,
+    })
+
+    try {
+      await expect(
+        verifyAuthorization({
+          credential: buildCredential(sig),
+          request: baseRequest,
+          ctx,
+        }),
+      ).rejects.toThrow(
+        /settle backend rejected the authorization pre-broadcast:.*RECEIVER_NOT_REGISTERED/,
+      )
+
+      // Released — a corrected config / retry can re-enter verification.
+      expect(await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE))).toBeNull()
+      expect(rejectingBackend.settleAuthorization).toHaveBeenCalledOnce()
     } finally {
       warn.mockRestore()
     }

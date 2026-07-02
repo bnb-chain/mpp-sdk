@@ -14,7 +14,13 @@ import { createPublicKey, generateKeyPairSync, type KeyObject } from 'node:crypt
 
 import { describe, expect, test } from 'vitest'
 
-import { loadRsaPrivateKey, signTeslaRequest, verifyTeslaSignature } from './Client.js'
+import {
+  B402Client,
+  B402Error,
+  loadRsaPrivateKey,
+  signTeslaRequest,
+  verifyTeslaSignature,
+} from './Client.js'
 
 function keypair(): { publicKey: KeyObject; derB64: string; pem: string } {
   const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
@@ -65,5 +71,62 @@ describe('loadRsaPrivateKey', () => {
       // Sanity: a public key can be derived from it.
       expect(createPublicKey(key).asymmetricKeyType).toBe('rsa')
     }
+  })
+})
+
+describe('B402Client constructor', () => {
+  const creds = { baseUrl: 'https://example.test', clientId: 'cid', accessToken: 'tok' }
+
+  test('parses the RSA key EAGERLY — a malformed key fails at construction with a format hint', () => {
+    // Before: a bad key surfaced only at the FIRST paid request (after the
+    // buyer already signed) as a bare node:crypto error.
+    expect(() => new B402Client({ ...creds, privateKey: '0xdeadbeef' })).toThrowError(B402Error)
+    expect(() => new B402Client({ ...creds, privateKey: 'not-a-key' })).toThrow(
+      /could not parse `privateKey`.*Base64 PKCS#8 DER/,
+    )
+  })
+
+  test('accepts all three documented key forms', () => {
+    const { derB64, pem } = keypair()
+    const pemB64 = Buffer.from(pem, 'utf8').toString('base64')
+    for (const form of [derB64, pemB64, pem]) {
+      expect(() => new B402Client({ ...creds, privateKey: form })).not.toThrow()
+    }
+  })
+})
+
+describe('B402Client.fromEnv', () => {
+  const full = () => ({
+    B402_BASE_URL: 'https://example.test',
+    B402_CLIENT_ID: 'cid',
+    B402_ACCESS_TOKEN: 'tok',
+    B402_PRIVATE_KEY: keypair().derB64,
+  })
+
+  test('all four unset → undefined (b402 simply not configured)', () => {
+    expect(B402Client.fromEnv({})).toBeUndefined()
+    expect(B402Client.fromEnv({ UNRELATED: 'x' })).toBeUndefined()
+  })
+
+  test('all four set → a working client', () => {
+    expect(B402Client.fromEnv(full())).toBeInstanceOf(B402Client)
+  })
+
+  test('accepts B402_PRIVATE_KEY_B64 as the key variable', () => {
+    const { B402_PRIVATE_KEY, ...rest } = full()
+    expect(B402Client.fromEnv({ ...rest, B402_PRIVATE_KEY_B64: B402_PRIVATE_KEY })).toBeInstanceOf(
+      B402Client,
+    )
+  })
+
+  test('SECURITY: a partial config fails LOUDLY, naming the missing vars', () => {
+    // Silently proceeding without b402 would swap the settlement semantics
+    // behind the operator's back — a typo'd var name must not boot.
+    const { B402_ACCESS_TOKEN: _, ...partial } = full()
+    expect(() => B402Client.fromEnv(partial)).toThrowError(B402Error)
+    expect(() => B402Client.fromEnv(partial)).toThrow(/missing B402_ACCESS_TOKEN/)
+    expect(() => B402Client.fromEnv({ B402_BASE_URL: 'https://x' })).toThrow(
+      /B402_CLIENT_ID.*B402_ACCESS_TOKEN.*B402_PRIVATE_KEY/,
+    )
   })
 })

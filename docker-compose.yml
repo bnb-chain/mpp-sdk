@@ -1,40 +1,54 @@
-# charge-demo + charge-server, same-origin reverse-proxy topology.
+# client + server, same-origin reverse-proxy topology.
 #
-# Browser → charge-demo (nginx, public via Traefik) → /api/* proxied to
-# charge-server (internal only). Deploy on Dokploy as a single "Compose"
-# service; set the secrets below in Dokploy → Environment, and attach a domain
-# to the charge-demo service on port 80 (Dokploy wires Traefik + TLS).
+# Browser → client (nginx, public via Traefik) → /api/* and /x402/* proxied to
+# the server (internal only). Deploy on Dokploy as a single "Compose" service;
+# set the secrets below in Dokploy → Environment, and attach a domain to the
+# client service on port 80 (Dokploy wires Traefik + TLS).
 #
-# Local smoke test (from repo root):
-#   RECIPIENT_ADDRESS=0x… MPP_SECRET_KEY=… SETTLEMENT_PRIVATE_KEY=0x… \
-#   RPC_URL=https://ethereum-sepolia-rpc.publicnode.com \
+# Local smoke test (from repo root) — mode 1 needs only the two required vars:
+#   RECIPIENT_ADDRESS=0x… MPP_SECRET_KEY=… \
+#   RPC_URL=https://data-seed-prebsc-1-s1.binance.org:8545 \
 #   docker compose up --build
-#   # then add `ports: ["8080:80"]` to charge-demo and open http://localhost:8080
+#   # then add `ports: ["8080:80"]` to client and open http://localhost:8080
 services:
-  charge-server:
+  server:
     build:
       context: .
-      dockerfile: examples/charge-server/Dockerfile
+      dockerfile: examples/server/Dockerfile
     environment:
+      # Required (mode 1 — payer-funded, testnet, no server key):
       RECIPIENT_ADDRESS: ${RECIPIENT_ADDRESS}
       MPP_SECRET_KEY: ${MPP_SECRET_KEY}
-      SETTLEMENT_PRIVATE_KEY: ${SETTLEMENT_PRIVATE_KEY}
-      # REQUIRED — without a real RPC the Permit2 preflight probe hangs.
+      # Recommended — the bundled public RPC rate-limits in containers.
       RPC_URL: ${RPC_URL}
-      PORT: '3000'
+      # Optional → mode 2 (server-sponsored permit2 settle; signer pays gas):
+      SETTLEMENT_PRIVATE_KEY: ${SETTLEMENT_PRIVATE_KEY:-}
+      # Optional → mode 3 (b402 EIP-3009 settle) + /x402 permit2 route — see
+      # examples/server/.env.example for the full commented matrix:
+      B402_BASE_URL: ${B402_BASE_URL:-}
+      B402_CLIENT_ID: ${B402_CLIENT_ID:-}
+      B402_ACCESS_TOKEN: ${B402_ACCESS_TOKEN:-}
+      B402_PRIVATE_KEY: ${B402_PRIVATE_KEY:-}
+      B402_CHAIN: ${B402_CHAIN:-}
+      B402_RPC_URL: ${B402_RPC_URL:-}
+      PRICE_DECIMAL: ${PRICE_DECIMAL:-}
+      X402_TOKEN_ADDRESS: ${X402_TOKEN_ADDRESS:-}
+      X402_TOKEN_NAME: ${X402_TOKEN_NAME:-}
+      PORT: '3001'
     expose:
-      - '3000' # internal only; reached by charge-demo's nginx, not published
+      - '3001' # internal only; reached by the client's nginx, not published
     restart: unless-stopped
 
-  charge-demo:
+  client:
     build:
       context: .
-      dockerfile: examples/charge-demo/Dockerfile
+      dockerfile: examples/client/Dockerfile
       args:
-        # RPC the in-browser wallet uses to read Sepolia (inlined at build).
-        VITE_SEPOLIA_RPC_URL: ${VITE_SEPOLIA_RPC_URL:-https://ethereum-sepolia-rpc.publicnode.com}
+        # RPCs the in-browser wallet uses to read the chains (inlined at build).
+        VITE_BSC_TESTNET_RPC_URL: ${VITE_BSC_TESTNET_RPC_URL:-}
+        VITE_BSC_RPC_URL: ${VITE_BSC_RPC_URL:-}
     depends_on:
-      - charge-server
+      - server
     expose:
       - '80' # Dokploy/Traefik publishes this via the attached domain
     restart: unless-stopped

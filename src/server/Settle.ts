@@ -119,6 +119,21 @@ export class SettlePendingError extends Error {
 }
 
 /**
+ * Thrown when the settle backend DEFINITIVELY rejected the settlement BEFORE
+ * any broadcast (e.g. b402 `/settle` returned `success:false` with no tx —
+ * unregistered payout, bad params). Nothing reached the chain and no nonce was
+ * burned by this flow, so the verifier RELEASES the replay slot and surfaces
+ * the backend's reason to the buyer — in contrast to `SettlePendingError`
+ * (broadcast happened, outcome unknown → the slot stays inflight).
+ */
+export class SettleRejectedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SettleRejectedError'
+  }
+}
+
+/**
  * Pluggable settlement backend for the EIP-3009 `authorization` path.
  *
  * v1 SCOPE: this interface covers the `authorization` (EIP-3009) credential

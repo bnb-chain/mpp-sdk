@@ -28,7 +28,7 @@ import {
 /* ── Fixtures ─────────────────────────────────────────────────────────────── */
 
 const CHAIN_ID = 97
-const CURRENCY = '0x180bc1a9843a65d4116e44886fd3558515a56a49' as const
+const CURRENCY = '0xc70b8741b8b07a6d61e54fd4b20f22fa648e5565' as const
 const PERMIT2 = '0x000000000022d473030f116ddee9f6b43ac78ba3' as const
 const RECIPIENT = '0x2222222222222222222222222222222222222222' as const
 const AMOUNT = '1000000000000000000' // 1.0 @ 18 decimals
@@ -189,7 +189,7 @@ describe('selectRoute · hard filters', () => {
   })
 
   test('allowedAssets address compare is case-insensitive (checksummed vs lowercase)', () => {
-    const CHECKSUMMED = '0x180Bc1a9843A65D4116e44886FD3558515a56A49' as const
+    const CHECKSUMMED = '0xc70b8741b8b07a6d61e54fd4b20f22fa648e5565' as const
     expect(
       selectRoute(all(), { allowedAssets: [{ chainId: CHAIN_ID, address: CHECKSUMMED }] }, ctx())
         .ok,
@@ -302,6 +302,8 @@ function payClients(
     decimalsThrows?: boolean
     chainId?: number
     publicChainId?: number
+    /** Payer token balance; omit → the read throws and the pre-check fails OPEN. */
+    balance?: bigint
     /** Status the confirmed tx receipt reports (default `'success'`). */
     receiptStatus?: 'success' | 'reverted'
     /** Make `waitForTransactionReceipt` throw (a timeout / RPC error). */
@@ -320,6 +322,7 @@ function payClients(
         return 18
       }
       if (functionName === 'allowance') return opts.allowance ?? 0n
+      if (functionName === 'balanceOf' && opts.balance !== undefined) return opts.balance
       throw new Error(`unexpected readContract: ${functionName}`)
     },
     async waitForTransactionReceipt() {
@@ -844,5 +847,56 @@ describe('pay · failure paths', () => {
     expect(err).not.toBeInstanceOf(PaymentSideEffectError)
     expect((err as Error).message).toMatch(/rejected/)
     expect(writeCalls).toEqual([]) // no approve
+  })
+})
+
+/* ── pay — affordability pre-check + eip712 key normalization ─────────────── */
+
+describe('pay · affordability pre-check', () => {
+  test('a readable SHORT balance fails locally — before any signature/broadcast', async () => {
+    const wwwAuth = Challenge.serialize(challengeWith(['hash']))
+    const { publicClient, walletClient, writeCalls } = payClients({ balance: 0n })
+    const { fetch, calls } = payFetch(wwwAuth, { status: 200, receipt: 'r' })
+
+    await expect(
+      pay('https://api.example/report', {
+        wallet: { account: payAccount(), publicClient, walletClient },
+        fetch,
+      }),
+    ).rejects.toThrow(/payer balance 0 is below the challenge amount/)
+
+    expect(writeCalls).toEqual([]) // nothing broadcast
+    expect(calls).toEqual(['probe']) // never retried
+  })
+
+  test('an UNREADABLE balance fails open (server re-checks; RPC hiccups must not block)', async () => {
+    const wwwAuth = Challenge.serialize(challengeWith(['hash']))
+    // payClients without `balance` → the balanceOf read throws → undefined.
+    const { publicClient, walletClient } = payClients()
+    const { fetch } = payFetch(wwwAuth, { status: 200, receipt: 'r' })
+
+    const result = await pay('https://api.example/report', {
+      wallet: { account: payAccount(), publicClient, walletClient },
+      fetch,
+    })
+    expect(result.route.id).toBe('mpp:hash')
+  })
+})
+
+describe('pay · eip712Domains key normalization', () => {
+  test('a CHECKSUMMED-address key still resolves the authorization domain', async () => {
+    const wwwAuth = Challenge.serialize(challengeWith(['authorization']))
+    const { publicClient, walletClient } = payClients({ balance: BigInt(AMOUNT) })
+    const { fetch } = payFetch(wwwAuth, { status: 200, receipt: 'r' })
+
+    const result = await pay('https://api.example/report', {
+      wallet: { account: payAccount(), publicClient, walletClient },
+      // Key uses the CHECKSUMMED address; the wire currency is lowercase.
+      eip712Domains: {
+        '97:0xc70b8741b8b07a6d61e54fd4b20f22fa648e5565': { name: 'United Stables', version: '1' },
+      },
+      fetch,
+    })
+    expect(result.route.id).toBe('mpp:authorization') // domain found → route viable
   })
 })

@@ -17,6 +17,7 @@ import { eip3009Domain, eip3009Types } from '../protocol/TypedData.js'
 import {
   X402_VERSION,
   type Eip3009Authorization,
+  type Eip3009PaymentPayload,
   type PaymentPayload,
   type PaymentRequirements,
   type SettleResult,
@@ -50,7 +51,7 @@ export interface BuildEip3009PaymentOptions {
  */
 export async function buildEip3009Payment(
   options: BuildEip3009PaymentOptions,
-): Promise<PaymentPayload> {
+): Promise<Eip3009PaymentPayload> {
   const { account, requirements } = options
   // This SDK models ONLY the x402 `exact` scheme with the `eip3009` transfer
   // method (see Types.ts). Reject anything else rather than sign an `exact`
@@ -119,7 +120,7 @@ export async function buildEip3009Payment(
  * against `payload.payload.authorization.from` and the payment requirements
  * before settling. Reads the domain from `payload.accepted` (what was signed).
  */
-export function recoverEip3009Payer(payload: PaymentPayload): Promise<`0x${string}`> {
+export function recoverEip3009Payer(payload: Eip3009PaymentPayload): Promise<`0x${string}`> {
   const { accepted } = payload
   const auth = payload.payload.authorization
   return recoverTypedDataAddress({
@@ -200,7 +201,7 @@ function isMatch(v: unknown, re: RegExp): boolean {
  * valid or that the payer holds the funds — that is `recoverEip3009Payer` +
  * the facilitator's `/verify` · `/settle`.
  */
-export function isEip3009PaymentPayload(value: unknown): value is PaymentPayload {
+export function isEip3009PaymentPayload(value: unknown): value is Eip3009PaymentPayload {
   if (!isRecord(value)) return false
   // Protocol envelope — this SDK models ONLY x402 v2 + exact/eip3009.
   if (value['x402Version'] !== X402_VERSION) return false

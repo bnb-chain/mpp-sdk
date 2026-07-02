@@ -334,7 +334,7 @@ const TOKEN_MATRIX: Readonly<
       // does NOT implement EIP-3009 — probing transferWithAuthorization
       // (selector 0xe3ee160e) falls through to "Contract does not have
       // fallback nor receive functions". The b402 TESTNET deployment is a
-      // DIFFERENT contract (0x180Bc1a9843A65D4116e44886FD3558515a56A49) that DOES
+      // DIFFERENT contract (0xc70b8741b8b07a6d61e54fd4b20f22fa648e5565) that DOES
       // implement it — see ('bsc-testnet', 'U') below.
       address: '0xcE24439F2D9C6a2289F741120FE202248B666666',
       decimals: 18,
@@ -446,7 +446,7 @@ const TOKEN_MATRIX: Readonly<
   },
   // ── Ethereum Sepolia (testnet, Circle native USDC) ──
   //
-  // Added for the interactive browser demo (`examples/charge-demo`) so the
+  // Added for the interactive browser demo (`examples/client`) so the
   // demo can exercise real on-chain settlement on testnet without burning
   // mainnet gas. Circle ships USDC natively on Sepolia (faucet:
   // https://faucet.circle.com); same `name`/`version` EIP-712 domain as
@@ -555,7 +555,7 @@ const TOKEN_MATRIX: Readonly<
       // On-chain probe (2026-06-08 via data-seed-prebsc-1-s1.binance.org):
       // symbol="USDT", name="USDT Token", decimals=18, chainId=97. Standard
       // BEP-20 — no EIP-3009, so it advertises permit2 / transaction / hash
-      // only. Pinned for the interactive charge-demo + charge-server
+      // only. Pinned for the interactive example client/server pair
       // end-to-end testnet settlement (Permit2 deployed at the canonical
       // address on chain 97, verified ~9KB bytecode).
       address: '0x337610d27c682E347C9cD60BD4b3b107C9d34dDd',
@@ -563,23 +563,24 @@ const TOKEN_MATRIX: Readonly<
       eip3009Supported: false,
     },
     U: {
-      // United Stables ("$U") on BSC TESTNET — the b402 testnet settlement token.
-      // NOTE: this is a DIFFERENT deployment from the non-EIP-3009 testnet sibling
-      // at 0x2Ae9...0a66 flagged under ('bsc', 'U') — that one lacks
-      // transferWithAuthorization; THIS one (0x180B...) implements it.
-      // On-chain probe (2026-06-30 via data-seed-prebsc-2-s3.binance.org):
-      //   name()="United Stables", symbol()="U", decimals()=18, chainId=97.
-      //   transferWithAuthorization exists (reverts with empty data on a dummy
-      //   payload, NOT "no fallback/receive"). It appears facilitator-gated, so
-      //   DOMAIN_SEPARATOR() / version() / eip712Domain() / authorizationState()
-      //   all revert and the EIP-712 version can't be read on-chain.
-      // ⚠️ eip712Version="1" is ASSUMED (parity with mainnet $U). CONFIRM it
-      //   equals b402 /supported `extra.version` for this kind once the b402 RSA
-      //   creds are configured (B402Adapter.#resolveKind throws on a mismatch, and
-      //   a wrong-version buyer signature reverts on-chain — both fail safe, no
-      //   silent bad settle). Only used via the b402 settle path (B402Adapter);
-      //   the SDK never broadcasts it locally.
-      address: '0x180Bc1a9843A65D4116e44886FD3558515a56A49',
+      // United Stables ("$U") on BSC TESTNET. Three same-name deployments exist;
+      // this pins 0xC70b…5565 — the one holding circulating test funds, with
+      // ALL reads public. On-chain probe (2026-07-02):
+      //   name()="United Stables", symbol()="U", decimals()=18, chainId=97;
+      //   EIP-712 domain VERIFIED by DOMAIN_SEPARATOR() reconstruction —
+      //   name "United Stables", version "1" (cryptographic match, not assumed);
+      //   authorizationState() / transfer / approve publicly callable (no
+      //   facilitator gate observed on any probed read).
+      // Siblings deliberately NOT curated: 0x2Ae9…0a66 (no EIP-3009 at all) and
+      // 0x180B…6A49 (facilitator-gated: DOMAIN_SEPARATOR/version/authorizationState
+      // all revert, domain unreadable on-chain).
+      // ⚠️ b402 CAVEAT: the testnet facilitator's /supported eip3009 kind
+      //   advertises extra.name "U", which does NOT match this contract's
+      //   EIP-712 name ("United Stables") — so B402Adapter.#resolveKind finds no
+      //   matching testnet kind and the b402 settle path fails safe (mainnet is
+      //   the verified-working b402 eip3009 chain). Tracked as ADR-0004 open
+      //   question 2; the local-signer settle path is unaffected.
+      address: '0xc70b8741b8b07a6d61e54fd4b20f22fa648e5565',
       decimals: 18,
       eip3009Supported: true,
       eip712Name: 'United Stables',

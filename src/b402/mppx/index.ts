@@ -32,12 +32,17 @@
 import { type Address, type Hex } from 'viem'
 
 import {
+  type ChallengeBindingConfig,
   type Eip3009Settlement,
+  type ServerParameters,
   type SettleAdapter,
   type SettleContext,
   SettlePendingError,
+  SettleRejectedError,
   type SettleProof,
   type SettleReceipt,
+  type SupportedChainPreset,
+  type SupportedTokenPreset,
 } from '../../server/index.js'
 import { B402Client } from '../Client.js'
 import {
@@ -139,16 +144,27 @@ export class B402Adapter implements SettleAdapter {
     }
     // Failed WITH a tx hash → on-chain revert: the verifier runs its front-run
     // probe (a front-runner may have settled the same authorization).
+    // SettleReceipt carries no failure-reason field, so surface b402's
+    // errorReason as an operator hint before the reverted receipt drops it.
     if (result.transaction) {
+      // eslint-disable-next-line no-console -- operator hint
+      console.warn(
+        `[B402Adapter] /settle reverted (tx=${result.transaction}): ` +
+          `${result.errorReason ?? 'no errorReason'}${result.errorMessage ? ` — ${result.errorMessage}` : ''}`,
+      )
       return {
         status: 'reverted',
         transactionHash: result.transaction as Hex,
         proof: this.#facilitatorProof(result),
       }
     }
-    // Failed with NO tx (pre-broadcast rejection) → throw so the verifier's
-    // front-run probe releases the slot.
-    throw new Error(`b402 settle failed: ${result.errorReason ?? 'unknown reason'}`)
+    // Failed with NO tx → the facilitator DEFINITIVELY rejected pre-broadcast
+    // (unregistered payout, bad params, ...). Typed so the verifier releases
+    // the slot and surfaces this reason instead of a probe artifact.
+    throw new SettleRejectedError(
+      `b402 settle rejected: ${result.errorReason ?? 'unknown reason'}` +
+        (result.errorMessage ? ` — ${result.errorMessage}` : ''),
+    )
   }
 
   /**
@@ -205,5 +221,59 @@ export class B402Adapter implements SettleAdapter {
       )
     }
     return kind
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  b402ChargeParams — the mode-3 ServerParameters in one call                 */
+/* -------------------------------------------------------------------------- */
+
+export interface B402ChargeParamsOptions {
+  /** The credentialed facilitator client (see `B402Client.fromEnv`). */
+  readonly client: B402Client
+  /** Curated chain preset — `'bsc'` (⚠️ real funds) or `'bsc-testnet'`. */
+  readonly chain: SupportedChainPreset
+  /** Your REGISTERED b402 payout for this chain — b402 settles to it. */
+  readonly recipient: `0x${string}`
+  /** Curated token preset; defaults to `'U'` (the b402 settlement token). */
+  readonly token?: SupportedTokenPreset
+  /** RPC for the balance pre-checks on this chain (curated default if unset). */
+  readonly rpcUrl?: string
+  /** Opt-in Bazaar discovery blob, attached to every `/settle`. */
+  readonly bazaar?: BazaarMetadata
+  /** Challenge binding; defaults to `{ mode: 'mppx-managed' }` (Mppx.create). */
+  readonly challengeBinding?: ChallengeBindingConfig
+}
+
+/**
+ * Assemble the `ServerParameters` for a b402-settled charge — the whole
+ * "mode 3" wiring (`credentialTypes: ['authorization']` + a `B402Adapter`
+ * settle backend) in one call:
+ *
+ * ```ts
+ * const client = B402Client.fromEnv()
+ * if (!client) throw new Error('b402 not configured') // fromEnv → B402Client | undefined
+ * const charge = await chargeAsync(b402ChargeParams({ client, chain: 'bsc', recipient }))
+ * ```
+ *
+ * Returns a plain object — spread it to add anything else
+ * (`{ ...b402ChargeParams(...), store, amount }`). Buyers are unaffected
+ * (same mppx wire); only the settle step goes through b402, which broadcasts
+ * `transferWithAuthorization` and pays the gas (docs/adr/0002).
+ */
+export function b402ChargeParams(options: B402ChargeParamsOptions): ServerParameters {
+  return {
+    chain: options.chain,
+    token: options.token ?? 'U',
+    recipient: options.recipient,
+    challengeBinding: options.challengeBinding ?? { mode: 'mppx-managed' },
+    // b402 covers the authorization settle; there is no local signer, so the
+    // permit2 / transaction / hash paths are deliberately not advertised.
+    credentialTypes: ['authorization'],
+    settleBackend: new B402Adapter(
+      options.client,
+      options.bazaar ? { bazaar: options.bazaar } : {},
+    ),
+    ...(options.rpcUrl ? { rpcUrl: options.rpcUrl } : {}),
   }
 }
