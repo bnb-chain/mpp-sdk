@@ -114,6 +114,14 @@ export interface ReplaySlotValue {
   readonly ts: number
   /** Diagnostic only — populated for 'rejected' slots. */
   readonly reason?: string
+  /**
+   * Per-reservation fencing token, set when the slot enters `inflight`. It lets
+   * `release()` prove it OWNS the slot: after a stale-inflight reclaim the
+   * successor writes a fresh token, so a stranded original flow's `release`
+   * (carrying the old token) becomes a noop instead of deleting the successor's
+   * live slot. Absent on terminal (`consumed` / `rejected`) slots.
+   */
+  readonly token?: string
 }
 
 /* -------------------------------------------------------------------------- */
@@ -155,17 +163,19 @@ export const DEFAULT_INFLIGHT_TTL_MS = 10 * 60 * 1000
 /**
  * Atomically claim a replay slot.
  *
- * Returns `true` iff the slot was free (and is now `inflight`); `false` if
- * any prior state is present (inflight from a concurrent verify, consumed
- * from a successful settlement, or rejected from a known-bad credential).
+ * Returns the reservation's fencing TOKEN (an opaque non-empty string) iff the
+ * slot was free (and is now `inflight`); `null` if any prior state is present
+ * (inflight from a concurrent verify, consumed from a successful settlement, or
+ * rejected from a known-bad credential). The caller passes the token back to
+ * `release()` so a stale flow cannot delete a successor's slot.
  *
  * Stale-inflight reclaim: a crash, receipt-wait timeout, or severed
  * connection can strand a slot in `inflight`. Without recovery, every
  * retry would fail "concurrent verify in progress" forever. A slot whose
  * `ts` is older than `inflightTtlMs` (default 10min) is therefore
- * reclaimed — atomically, inside the same CAS — and the retry re-enters
- * verification. This is safe because every verifier re-checks on-chain
- * state after reserve (nonce consumption / receipt lookups), so a
+ * reclaimed — atomically, inside the same CAS, WITH A FRESH TOKEN — and the
+ * retry re-enters verification. This is safe because every verifier re-checks
+ * on-chain state after reserve (nonce consumption / receipt lookups), so a
  * settlement that DID land while the slot was stranded is detected
  * rather than double-executed. Terminal states (consumed / rejected) are
  * NEVER reclaimed.
@@ -177,16 +187,18 @@ export async function reserve(
   store: ChargeStore,
   key: ReplayKey,
   opts?: { readonly inflightTtlMs?: number | undefined },
-): Promise<boolean> {
+): Promise<string | null> {
   const inflightTtlMs = opts?.inflightTtlMs ?? DEFAULT_INFLIGHT_TTL_MS
+  const token = crypto.randomUUID()
   return withStoreUnavailableWrap('reserve', key, () =>
     store.update(key, (current) => {
       if (current !== null) {
         const stale = current.state === 'inflight' && Date.now() - current.ts >= inflightTtlMs
-        if (!stale) return { op: 'noop', result: false }
-        // fall through: reclaim the stale inflight slot
+        if (!stale) return { op: 'noop', result: null }
+        // fall through: reclaim the stale inflight slot with a FRESH token, so
+        // the stranded original flow's release no longer matches this slot.
       }
-      return { op: 'set', value: { state: 'inflight', ts: Date.now() }, result: true }
+      return { op: 'set', value: { state: 'inflight', ts: Date.now(), token }, result: token }
     }),
   )
 }
@@ -248,13 +260,16 @@ export async function markRejected(
 
 /**
  * Release a slot back to the free state. Only legal when the slot is still
- * `inflight` (verification failed before any on-chain mutation). Calling
- * release on a `consumed` or `rejected` slot is a noop — those are permanent.
+ * `inflight` (verification failed before any on-chain mutation) AND the caller
+ * owns it — `token` must equal the value `reserve()` returned. Calling release
+ * on a `consumed` / `rejected` slot, an empty slot, or an inflight slot a
+ * SUCCESSOR reclaimed (different token) is a noop. The token guard prevents a
+ * stranded flow from deleting a reclaim-winner's live inflight slot.
  */
-export async function release(store: ChargeStore, key: ReplayKey): Promise<void> {
+export async function release(store: ChargeStore, key: ReplayKey, token: string): Promise<void> {
   await withStoreUnavailableWrap('release', key, () =>
     store.update(key, (current) => {
-      if (current === null || current.state !== 'inflight') {
+      if (current === null || current.state !== 'inflight' || current.token !== token) {
         return { op: 'noop', result: false as const }
       }
       return { op: 'delete', result: true as const }
@@ -265,7 +280,7 @@ export async function release(store: ChargeStore, key: ReplayKey): Promise<void>
 /**
  * Read the current slot state with backend-error normalization.
  *
- * Verifiers call this AFTER `reserve()` returns `false` to diagnose
+ * Verifiers call this AFTER `reserve()` returns `null` to diagnose
  * which terminal state the slot landed in (consumed / rejected) so
  * the user-facing error message is actionable. Previously each verifier
  * called raw `store.get(key)`; a backend failure there leaked the raw

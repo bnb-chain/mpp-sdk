@@ -1,4 +1,5 @@
 node_modules/
+.pnpm-store/
 dist/
 coverage/
 .idea
@@ -21,3 +22,6 @@ vite.config.d.ts.map
 .env
 .env.local
 
+
+# Local preview-server launch config (machine-specific Node paths)
+.claude/launch.json

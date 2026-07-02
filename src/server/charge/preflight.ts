@@ -38,7 +38,7 @@ import type { PreflightInternalHooks, ResolvedChargeParams, ServerParameters } f
 
 /**
  * Sentinel value used by curated matrix entries whose real contract
- * address has not yet been pinned (e.g. `bsc-testnet` `TEST_USDT`).
+ * address has not yet been pinned (e.g. `opbnb-testnet` `TEST_USDT`).
  * preflightCharge rejects this value unless an internal hook explicitly
  * allows it (see `PreflightInternalHooks.allowSentinelTokenAddress`).
  */
@@ -105,7 +105,7 @@ export async function preflightChargeInternal(
   // —— Reject sentinel zero-address tokens (placeholder curated entries) ——
   //
   // Curated entries whose real verified contract address has not been
-  // pinned (e.g. `bsc-testnet` `TEST_USDT`) carry the sentinel
+  // pinned (e.g. `opbnb-testnet` `TEST_USDT`) carry the sentinel
   // 0x000...000 — `resolveCuratedTokenAddress` returns it as-is. Without
   // this guard a deployment could happily emit zero-address `currency` on
   // the wire and pretend nothing's wrong. The test seam
@@ -396,8 +396,12 @@ export async function preflightChargeInternal(
 
   // —— Settlement signer (AFTER Permit2 probe — otherwise we'd require signer
   //    in cases where Permit2 ended up removed from the resolved set) ——
+  // A `settleBackend` (e.g. B402Adapter) that covers `authorization` settles it
+  // without a local signer. permit2 always settles locally, so it still needs one.
+  const backendCoversAuth = params.settleBackend?.settles.includes('authorization') ?? false
   const needsSigner =
-    resolvedCredentialTypes.includes('permit2') || resolvedCredentialTypes.includes('authorization')
+    resolvedCredentialTypes.includes('permit2') ||
+    (resolvedCredentialTypes.includes('authorization') && !backendCoversAuth)
   const settlementSigner = resolveSettlementSigner(params, {
     viemChain,
     transportUrl,
@@ -406,7 +410,8 @@ export async function preflightChargeInternal(
   if (needsSigner && !settlementSigner) {
     throw new Errors.InvalidChallengeError({
       reason:
-        'permit2/authorization require settlementAccount or settlementWalletClient; ' +
+        'permit2/authorization require settlementAccount or settlementWalletClient ' +
+        '(or a settleBackend covering authorization); ' +
         "or restrict credentialTypes to ['transaction', 'hash']",
     })
   }
@@ -435,6 +440,7 @@ export async function preflightChargeInternal(
       transportUrl,
       viemChain,
       settlementSigner,
+      settleBackend: params.settleBackend,
       store,
       verifyChallengeBinding,
       confirmations,

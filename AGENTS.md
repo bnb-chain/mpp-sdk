@@ -29,7 +29,9 @@ landing in this repo.
   `tsc`/`eslint`/`prettier` — the stack is deliberately pinned to mppx's.
 - **Packages**: top-level barrel `@bnb-chain/mpp` (`chargeFromDecimal` +
   receipt codec), `@bnb-chain/mpp/server` (factory + verifiers),
-  `@bnb-chain/mpp/client` (credential constructors).
+  `@bnb-chain/mpp/client` (credential constructors), `@bnb-chain/mpp/b402`
+  (+ `/server`) — the Binance OnchainPay (x402 v2) facilitator integration,
+  parallel to the mppx charge flow (see [`docs/b402.md`](docs/b402.md)).
 
 ## Current implementation status
 
@@ -45,9 +47,10 @@ end-to-end:
   — see [`docs/spec-compliance.md`](docs/spec-compliance.md) +
   [`docs/adr/0001-permit2-spender.md`](docs/adr/0001-permit2-spender.md).
 - **Curated matrix**: `src/server/curated.ts`. Note `TEST_USDT` on
-  `bsc-testnet` carries a sentinel zero address (rejected by
-  `preflightCharge`) pending a real verified testnet contract before any
-  live-test broadcast.
+  `opbnb-testnet` (NOT `bsc-testnet`, which is pinned to a real verified
+  contract) carries a sentinel zero address (rejected by `preflightCharge`)
+  pending a real verified opBNB testnet contract before any live-test
+  broadcast.
 
 ## When touching wire contracts
 
@@ -107,23 +110,38 @@ src/
 │   ├── Transport.ts            evmHttpTransport (C2 path, §13.4.1)
 │   ├── curated.ts              SupportedChainPreset / SupportedTokenPreset + TOKEN_MATRIX
 │   └── index.ts                `@bnb-chain/mpp/server` barrel
-└── client/
-    ├── Authorization.ts        createAuthorizationCredential (EIP-3009 signer)
-    ├── Hash.ts                 createHashCredential (tx-hash reference; no signing)
-    ├── Permit2.ts              createPermit2Credential (single + batch with splits)
-    ├── Transaction.ts          createTransactionCredential (EIP-1559 signer)
-    ├── internal/
-    │   └── AssertChallenge.ts  parseEvmChargeChallenge + accepted-types / drift / splits guards
-    └── index.ts                `@bnb-chain/mpp/client` barrel.
-                                §11 unified charge() factory deferred to v1.1
-                                (see src/client/index.ts JSDoc for rationale).
+├── client/
+│   ├── Authorization.ts        createAuthorizationCredential (EIP-3009 signer)
+│   ├── Hash.ts                 createHashCredential (tx-hash reference; no signing)
+│   ├── Permit2.ts              createPermit2Credential (single + batch with splits)
+│   ├── Transaction.ts          createTransactionCredential (EIP-1559 signer)
+│   ├── internal/
+│   │   └── AssertChallenge.ts  parseEvmChargeChallenge + accepted-types / drift / splits guards
+│   ├── pay/                    pay(url, { wallet, policy }) high-level buyer surface —
+│   │                           index (orchestrator) + routes/facts/build/request
+│   │                           (ADR-0003 Phase 1; hard-filter → mode-rank → fail-closed)
+│   └── index.ts                `@bnb-chain/mpp/client` barrel — the four credential
+│                               constructors + the high-level pay().
+└── b402/                       x402 v2 facilitator integration (parallel to charge;
+    │                           only shared seam = protocol/TypedData.ts)
+    ├── Types.ts                x402 v2 wire types (browser-safe)
+    ├── Payload.ts              buildEip3009Payment / X-PAYMENT(-RESPONSE) codecs /
+    │                           recoverEip3009Payer / nonce (browser-safe)
+    ├── Client.ts               B402Client — RSA "Tesla" signed /supported·/verify·/settle (Node)
+    ├── index.ts                `@bnb-chain/mpp/b402` barrel (browser-safe, core-free)
+    ├── server/index.ts         `@bnb-chain/mpp/b402/server` barrel (+ B402Client, core-free)
+    └── mppx/index.ts           `@bnb-chain/mpp/b402/mppx` — B402Adapter (the ONLY b402
+                                subpath that imports core's SettleAdapter seam)
 test/                           vitest config + setup; live/ = testnet e2e scaffolds
 ├── helpers/server/             test seams kept OUT of the published src tarball
 │                               (preflightChargeForTest, terminalFailureStore)
 └── interop/                    viem cross-check vectors
-examples/                       per-audience demos (merchant-demo / client-demo /
-                                facilitator-demo) + full charge-server (Hono) +
-                                charge-demo (React) — see docs/examples.md
+examples/                       exactly two: server (Hono merchant — mppx modes
+                                1-3 + optional /x402 permit2-exact route) and
+                                client (React browser wallet — both wires).
+                                b402 is folded into these: server mode 3
+                                (B402Adapter) + the client's $U authorization
+                                /$U authorization path — see docs/examples.md
 docs/                           public docs (architecture, spec-compliance, replay-store, examples, adr/)
 ```
 

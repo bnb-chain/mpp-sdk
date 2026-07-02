@@ -96,6 +96,7 @@ export function charge(
     resolvedCredentialTypes,
     publicClient,
     settlementSigner,
+    settleBackend,
     store,
     verifyChallengeBinding,
     confirmations,
@@ -175,6 +176,7 @@ export function charge(
       inflightTtlMs: params.inflightTtlMs,
       hashFromPolicy: params.hashFromPolicy,
       settlementSigner,
+      settleBackend,
       eip712,
     }),
   })

@@ -9,8 +9,8 @@
  *     (token consumed nonce on-chain).
  *   - Front-run recovery (both entry points): recovered → consume + receipt
  *     referencing the front-runner tx; pending (shallow depth / consuming tx
- *     outside search window) → retryable, slot stays inflight; none
- *     (unconsumed / genuine cancel) → release + original error.
+ *     outside search window / probe RPC failure) → retryable, slot stays
+ *     inflight; none (unconsumed / genuine cancel) → release + original error.
  *   - Happy path → markConsumed + receipt.
  *   - Replay pre-state terminal.
  */
@@ -42,6 +42,7 @@ import {
   verifyAuthorization,
 } from './Authorization.js'
 import { authKey, type ChargeStore } from './Replay.js'
+import { SettleRejectedError, type SettleAdapter, type SettleReceipt } from './Settle.js'
 
 /* -------------------------------------------------------------------------- */
 /*  Fixtures                                                                  */
@@ -401,6 +402,82 @@ describe('verifyAuthorization happy path', () => {
 })
 
 /* -------------------------------------------------------------------------- */
+/*  settleBackend routing respects `settles` (the machine-checkable contract) */
+/* -------------------------------------------------------------------------- */
+
+describe('verifyAuthorization settleBackend routing', () => {
+  test('a settleBackend that does NOT declare authorization is never invoked — falls back to settlementSigner', async () => {
+    const sig = await signEip3009()
+    const receipt = buildReceipt([
+      transferLog({ from: SIGNER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY }),
+    ])
+    // A backend configured for some OTHER purpose (settles: [] — declares nothing).
+    // If dispatch ignored `settles`, this would be called instead of the local
+    // signer; make it throw so any such call fails the test loudly.
+    const misconfiguredBackend: SettleAdapter = {
+      settles: [],
+      settleAuthorization: vi.fn(async () => {
+        throw new Error(
+          'settleAuthorization must not be called — settles does not include authorization',
+        )
+      }),
+    }
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({ receipt }),
+      settlementSigner: stubWalletClient(),
+      settleBackend: misconfiguredBackend,
+    })
+
+    const out = await verifyAuthorization({
+      credential: buildCredential(sig),
+      request: baseRequest,
+      ctx,
+    })
+
+    expect(out.status).toBe('success') // settled via the local signer, not the backend
+    expect(misconfiguredBackend.settleAuthorization).not.toHaveBeenCalled()
+    expect((await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE)))?.state).toBe(
+      'consumed',
+    )
+  })
+
+  test('a settleBackend that DOES declare authorization is used over settlementSigner', async () => {
+    const sig = await signEip3009()
+    const backendReceipt: SettleReceipt = {
+      status: 'success',
+      transactionHash: `0x${'f'.repeat(64)}`,
+      // facilitator proof — echoes payer/network/amount matching the authorization (step 14).
+      proof: {
+        kind: 'facilitator',
+        payer: SIGNER,
+        network: `eip155:${CHAIN_ID}`,
+        amount: BigInt(AMOUNT),
+      },
+    }
+    const backend: SettleAdapter = {
+      settles: ['authorization'],
+      settleAuthorization: vi.fn(async () => backendReceipt),
+    }
+    const localSigner = stubWalletClient()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient(),
+      settlementSigner: localSigner,
+      settleBackend: backend,
+    })
+
+    const out = await verifyAuthorization({
+      credential: buildCredential(sig),
+      request: baseRequest,
+      ctx,
+    })
+
+    expect(out.status).toBe('success')
+    expect(out.reference).toBe(backendReceipt.transactionHash)
+    expect(backend.settleAuthorization).toHaveBeenCalledOnce()
+  })
+})
+
+/* -------------------------------------------------------------------------- */
 /*  Local validation failures (steps 1-8)                                     */
 /* -------------------------------------------------------------------------- */
 
@@ -506,10 +583,12 @@ describe('verifyAuthorization local validation', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('verifyAuthorization on-chain pre-broadcast failures release the slot', () => {
-  test('insufficient balance → release', async () => {
+  test('insufficient balance (nonce unconsumed) → release', async () => {
     const sig = await signEip3009()
+    // authorizationState:false → the balance-shortfall recovery probe returns
+    // 'none' (genuine shortfall, not a front-run), so it rejects + releases.
     const ctx = buildCtx({
-      publicClient: stubPublicClient({ balance: 1n }),
+      publicClient: stubPublicClient({ balance: 1n, authorizationState: false }),
       settlementSigner: stubWalletClient(),
     })
 
@@ -529,6 +608,11 @@ describe('verifyAuthorization on-chain pre-broadcast failures release the slot',
     const ctx = buildCtx({
       publicClient: stubPublicClient({
         simulateError: new Error('FiatTokenV2: authorization is used'),
+        // The recovery probe DEFINITIVELY finds the nonce unconsumed → 'none' →
+        // release (the safe-to-retry case). Without this the probe's first RPC
+        // throws, which now (correctly) keeps the slot inflight, not released —
+        // see the 'recovery probe RPC failure → INFLIGHT' test.
+        authorizationState: false,
       }),
       settlementSigner: stubWalletClient(),
     })
@@ -869,6 +953,63 @@ describe('verifyAuthorization front-run recovery', () => {
     )
   })
 
+  test('BALANCE-SHORTFALL entry: front-run drained the balance → recovery, not a false rejection', async () => {
+    // The exact authorized transfer was already front-run-settled: the recipient
+    // was paid V, the nonce is burned, and the payer's balance is now below V.
+    // The balance gate must PROBE recovery (not release + reject) — else the
+    // buyer paid but gets no receipt.
+    const sig = await signEip3009()
+    const frontRunReceipt = buildReceipt([
+      transferLog({ from: SIGNER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY }),
+    ])
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        balance: BigInt(AMOUNT) - 1n, // drained below the authorized value
+        authorizationState: true,
+        usedLogs: [{ transactionHash: FRONT_RUN_TX }],
+        frontRunReceipt,
+        latestBlock: 10_000n,
+      }),
+      settlementSigner: stubWalletClient(),
+      confirmations: 12,
+    })
+
+    const out = await verifyAuthorization({
+      credential: buildCredential(sig),
+      request: baseRequest,
+      ctx,
+    })
+
+    expect(out.status).toBe('success')
+    expect(out.reference).toBe(FRONT_RUN_TX) // receipt references the front-runner's tx
+    expect((await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE)))?.state).toBe(
+      'consumed',
+    )
+  })
+
+  test('BALANCE-SHORTFALL entry: nonce genuinely unconsumed → real shortfall, slot released', async () => {
+    // Low balance AND the nonce is NOT consumed → a genuine insufficient-funds
+    // failure; the probe returns 'none', so it still rejects and releases.
+    const sig = await signEip3009()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        balance: BigInt(AMOUNT) - 1n,
+        authorizationState: false,
+      }),
+      settlementSigner: stubWalletClient(),
+    })
+
+    await expect(
+      verifyAuthorization({
+        credential: buildCredential(sig),
+        request: baseRequest,
+        ctx,
+      }),
+    ).rejects.toThrow(/signer balance .* < value/)
+
+    expect(await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE))).toBeNull() // released
+  })
+
   test('authorizationState false → original simulate error surfaces, slot released', async () => {
     const sig = await signEip3009()
     const ctx = buildCtx({
@@ -1004,6 +1145,117 @@ describe('verifyAuthorization front-run recovery', () => {
     expect((await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE)))?.state).toBe(
       'inflight',
     )
+  })
+
+  test('recovery probe RPC failure → retryable, slot stays INFLIGHT', async () => {
+    // The settle attempt failed before we know whether a third party consumed
+    // the authorization. If the probe also fails, settlement state is unknown:
+    // releasing would allow another broadcast of a nonce that may be burned.
+    const sig = await signEip3009()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        simulateError: new Error('FiatTokenV2: authorization is used or canceled'),
+        // authorizationState intentionally omitted: the probe's first RPC throws.
+      }),
+      settlementSigner: stubWalletClient(),
+    })
+
+    try {
+      // The reason now carries BOTH failures: the unreadable probe AND the
+      // underlying settle error — neither is masked.
+      await expect(
+        verifyAuthorization({
+          credential: buildCredential(sig),
+          request: baseRequest,
+          ctx,
+        }),
+      ).rejects.toThrow(
+        /front-run probe unavailable.*underlying settle failure:.*authorization is used or canceled/,
+      )
+
+      expect((await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE)))?.state).toBe(
+        'inflight',
+      )
+      expect(warn).toHaveBeenCalledWith(
+        '[verifyAuthorization] front-run recovery probe errored:',
+        'unexpected readContract: authorizationState',
+      )
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  test('BALANCE-SHORTFALL entry + unreadable probe (gated token) → release + REAL shortfall error', async () => {
+    // The b402 $U testnet token gates authorizationState() to the facilitator:
+    // the probe can NEVER read nonce state. A plain insufficient balance must
+    // surface as the actionable shortfall error and RELEASE the slot — not as
+    // a generic probe artifact holding the slot for the whole inflight TTL.
+    const sig = await signEip3009()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        balance: 1n,
+        // authorizationState intentionally omitted → the probe read throws
+        // (same shape as the gated token's revert).
+      }),
+      settlementSigner: stubWalletClient(),
+    })
+
+    try {
+      await expect(
+        verifyAuthorization({
+          credential: buildCredential(sig),
+          request: baseRequest,
+          ctx,
+        }),
+      ).rejects.toThrow(/signer balance 1 < value .*front-run probe unavailable/)
+
+      // Released — the buyer can retry immediately after topping up.
+      expect(await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE))).toBeNull()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  test('settle backend REJECTS pre-broadcast (SettleRejectedError) → release + backend reason', async () => {
+    // b402 /settle returning success:false with NO tx is a definitive
+    // pre-broadcast rejection: nothing on-chain, nonce unburned. Even when the
+    // probe is unreadable (gated token), the slot must be released and the
+    // backend's reason surfaced — not a probe artifact.
+    const sig = await signEip3009()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const rejectingBackend: SettleAdapter = {
+      settles: ['authorization'],
+      settleAuthorization: vi.fn(async () => {
+        throw new SettleRejectedError('b402 settle rejected: RECEIVER_NOT_REGISTERED')
+      }),
+    }
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({
+        // balance OK; authorizationState omitted → probe unreadable.
+      }),
+      settlementSigner: stubWalletClient(),
+      settleBackend: rejectingBackend,
+    })
+
+    try {
+      await expect(
+        verifyAuthorization({
+          credential: buildCredential(sig),
+          request: baseRequest,
+          ctx,
+        }),
+      ).rejects.toThrow(
+        /settle backend rejected the authorization pre-broadcast:.*RECEIVER_NOT_REGISTERED/,
+      )
+
+      // Released — a corrected config / retry can re-enter verification.
+      expect(await ctx.store.get(authKey(CHAIN_ID, CURRENCY, SIGNER, NONCE))).toBeNull()
+      expect(rejectingBackend.settleAuthorization).toHaveBeenCalledOnce()
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
 

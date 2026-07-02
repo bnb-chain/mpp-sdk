@@ -6,18 +6,21 @@ Brings the BNB Chain ecosystem (BSC, opBNB) plus the wider EVM landscape (Ethere
 
 ## Capabilities
 
-| Area                  | Supported                                                                                                                      |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| **Credential types**  | `authorization` (EIP-3009), `permit2` (single + batch with splits), `transaction` (EIP-1559), `hash`                           |
-| **Challenge binding** | `mppx-managed` (under `Mppx.create`), `mppx-hmac` (bare verify), `stored-lookup` (draft §6 zero-deviation)                     |
-| **Settlement**        | Server-side broadcast for `permit2` / `authorization` (settlement signer pays gas); payer-broadcast for `hash` / `transaction` |
-| **Tokens / chains**   | Curated `(chain, token)` matrix — see [Tokens](#tokens) / [Chains](#chains)                                                    |
-| **Receipt**           | `draft §7.6` `Payment-Receipt` via a browser-safe codec (`buildEvmReceipt` / `serializeEvmReceipt`)                            |
-| **Replay protection** | 3-state atomic store (inflight / consumed / rejected); durable backend required in production                                  |
+| Area                  | Supported                                                                                                                                                                                                                           |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Credential types**  | `authorization` (EIP-3009), `permit2` (single + batch with splits), `transaction` (EIP-1559), `hash`                                                                                                                                |
+| **Buyer client**      | Four low-level credential constructors **plus high-level `pay(url, { wallet, policy })`** — express an intent (gasless / token / cap) and the SDK auto-selects the route ([ADR-0003](docs/adr/0003-payment-offer-layer.md) Phase 1) |
+| **Challenge binding** | `mppx-managed` (under `Mppx.create`), `mppx-hmac` (bare verify), `stored-lookup` (draft §6 zero-deviation)                                                                                                                          |
+| **Settlement**        | Server-side broadcast for `permit2` / `authorization` (settlement signer pays gas); payer-broadcast for `hash` / `transaction`                                                                                                      |
+| **Tokens / chains**   | Curated `(chain, token)` matrix — see [Tokens](#tokens) / [Chains](#chains)                                                                                                                                                         |
+| **Receipt**           | `draft §7.6` `Payment-Receipt` via a browser-safe codec (`buildEvmReceipt` / `serializeEvmReceipt`)                                                                                                                                 |
+| **Replay protection** | 3-state atomic store (inflight / consumed / rejected); durable backend required in production                                                                                                                                       |
 
-All four credential paths are live end-to-end (see `examples/charge-server` + `examples/charge-demo`). For the full picture see [`docs/`](docs/) — architecture, spec compliance / extensions, replay store, and example walkthroughs. Release notes are managed with [Changesets](https://github.com/changesets/changesets) (`.changeset/`); `CHANGELOG.md` is generated at publish time — see [`docs/releasing.md`](docs/releasing.md) for the release pipeline.
+All four credential paths are live end-to-end (see `examples/server` + `examples/client`). For the full picture see [`docs/`](docs/) — architecture, spec compliance / extensions, replay store, and example walkthroughs. Release notes are managed with [Changesets](https://github.com/changesets/changesets) (`.changeset/`); `CHANGELOG.md` is generated at publish time — see [`docs/releasing.md`](docs/releasing.md) for the release pipeline.
 
 v1 limits: curated token presets only (no arbitrary BYO ERC-20), and the SDK adds one spec extension (`methodDetails.permit2Spender`) that `draft-evm-charge-00` doesn't define but Permit2 settlement requires — see [`docs/spec-compliance.md`](docs/spec-compliance.md).
+
+**Beyond the mppx charge flow**, the SDK also speaks **x402 v2**: `@bnb-chain/mpp/b402` (+ `/server`) integrates the [Binance OnchainPay (b402)](https://developers.binance.com/docs/onchainpay-x402/introduction) facilitator. Use it standalone (a parallel x402 envelope, sharing only the EIP-3009 EIP-712 primitive) **or** as an mppx settlement backend — `B402Adapter` keeps your buyers on the mppx wire and just delegates the EIP-3009 settle to b402. The browser client's `$U` **Authorization** tab pays a mode-3 `examples/server` end-to-end over b402 (mainnet — ⚠️ real funds; testnet authorization settling is currently blocked upstream, see ADR-0004), and its **x402 · Permit2** tab pays the same server's `/x402/premium` route over the standalone x402 wire with a b402 `permit2-exact` credential (see [`examples/client`](examples/client)) — see [`docs/b402.md`](docs/b402.md).
 
 ## Install
 
@@ -54,7 +57,7 @@ const handler = Mppx.create({
       store: createRedisReplayStore({ url: process.env.REDIS_URL! }),
     }),
   ],
-  secretKey: process.env.MPPX_SECRET_KEY!,
+  secretKey: process.env.MPP_SECRET_KEY!,
   // No `transport` here — chargeAsync() factory auto-wires evmHttpTransport
   // on the per-method transport slot (spec §13.4.1 C2 auto-wire).
 })
@@ -191,16 +194,16 @@ The SDK ships a curated matrix — every `(chain, token)` pair lands alongside i
 
 The table below lists the **EIP-3009-enabled** anchors (where the `authorization` path is live). Broader issuer-native stablecoin coverage (probe-gated, `authorization` off) is summarized under [Expanded coverage](#expanded-coverage).
 
-| Chain       | Token            | Contract                                                                                           | Decimals | EIP-3009                                                                       |
-| ----------- | ---------------- | -------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------ |
-| ethereum    | USDC             | [`0xa0b8...eb48`](https://etherscan.io/address/0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48)         | 6        | yes (Circle native, domain `USD Coin` / `2`)                                   |
-| ethereum    | USDT             | [`0xdac1...1ec7`](https://etherscan.io/address/0xdac17f958d2ee523a2206206994597c13d831ec7)         | 6        | no                                                                             |
-| base        | USDC             | [`0x8335...2913`](https://basescan.org/address/0x833589fcd6edb6e08f4c7c32d4f71b54bda02913)         | 6        | yes (Circle native, domain `USD Coin` / `2`)                                   |
-| bsc         | BINANCE_PEG_USDT | [`0x55d3...7955`](https://bscscan.com/address/0x55d398326f99059ff775485246999027b3197955)          | 18       | no                                                                             |
-| bsc         | FDUSD            | [`0xc5f0...6409`](https://bscscan.com/address/0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409)          | 18       | yes (First Digital Labs, domain `First Digital USD` / `1`)                     |
-| bsc         | U                | [`0xcE24...6666`](https://bscscan.com/address/0xcE24439F2D9C6a2289F741120FE202248B666666)          | 18       | yes (United Stables `$U`, domain `United Stables` / `1`)                       |
-| sepolia     | USDC             | [`0x1c7D...7238`](https://sepolia.etherscan.io/address/0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238) | 6        | yes (Circle native, domain `USDC` / `2`) — testnet, see `examples/charge-demo` |
-| bsc-testnet | TEST_USDT        | [`0x3376...4dDd`](https://testnet.bscscan.com/address/0x337610d27c682E347C9cD60BD4b3b107C9d34dDd)  | 18       | no — testnet-only (PancakeSwap test USDT), see `examples/charge-server`        |
+| Chain       | Token            | Contract                                                                                           | Decimals | EIP-3009                                                         |
+| ----------- | ---------------- | -------------------------------------------------------------------------------------------------- | -------- | ---------------------------------------------------------------- |
+| ethereum    | USDC             | [`0xa0b8...eb48`](https://etherscan.io/address/0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48)         | 6        | yes (Circle native, domain `USD Coin` / `2`)                     |
+| ethereum    | USDT             | [`0xdac1...1ec7`](https://etherscan.io/address/0xdac17f958d2ee523a2206206994597c13d831ec7)         | 6        | no                                                               |
+| base        | USDC             | [`0x8335...2913`](https://basescan.org/address/0x833589fcd6edb6e08f4c7c32d4f71b54bda02913)         | 6        | yes (Circle native, domain `USD Coin` / `2`)                     |
+| bsc         | BINANCE_PEG_USDT | [`0x55d3...7955`](https://bscscan.com/address/0x55d398326f99059ff775485246999027b3197955)          | 18       | no                                                               |
+| bsc         | FDUSD            | [`0xc5f0...6409`](https://bscscan.com/address/0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409)          | 18       | yes (First Digital Labs, domain `First Digital USD` / `1`)       |
+| bsc         | U                | [`0xcE24...6666`](https://bscscan.com/address/0xcE24439F2D9C6a2289F741120FE202248B666666)          | 18       | yes (United Stables `$U`, domain `United Stables` / `1`)         |
+| sepolia     | USDC             | [`0x1c7D...7238`](https://sepolia.etherscan.io/address/0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238) | 6        | yes (Circle native, domain `USDC` / `2`) — testnet               |
+| bsc-testnet | TEST_USDT        | [`0x3376...4dDd`](https://testnet.bscscan.com/address/0x337610d27c682E347C9cD60BD4b3b107C9d34dDd)  | 18       | no — testnet-only (PancakeSwap test USDT), see `examples/server` |
 
 ### Expanded coverage
 
@@ -230,7 +233,7 @@ Issuer-native stablecoins curated across the supported chains. These advertise `
 | opbnb                                                                       | 204     | 1                     |              |
 | sepolia / _-sepolia / _-amoy / avalanche-fuji / bsc-testnet / opbnb-testnet | various | 0                     | dev velocity |
 
-The default confirmations depth is overridable via `ServerParameters.confirmations` and applies to **all four credential paths** — the verification depth for `hash` / `transaction` AND the settlement-receipt wait for `permit2` / `authorization`. Two related `ServerParameters` knobs: `settlementTimeoutMs` caps how long the settling verifiers hold the HTTP request open waiting for the settlement receipt (unset → viem's 180 s default; set it below your load balancer's idle timeout), and `inflightTtlMs` sets the age after which a stale `inflight` replay slot becomes reclaimable by a retry (default 10 min; keep it comfortably above `settlementTimeoutMs` — see [`docs/replay-store.md`](docs/replay-store.md)).
+The default confirmations depth is overridable via `ServerParameters.confirmations` and applies to the paths where core waits on-chain — the verification depth for `hash` / `transaction`, the `permit2` settlement, and `authorization` settled by the **local signer**. It does **not** apply to `authorization` settled by a facilitator backend (b402), which trusts the facilitator's `success` + tx hash and does not re-fetch the receipt (see [`docs/b402.md`](docs/b402.md) trust model). Two related `ServerParameters` knobs: `settlementTimeoutMs` caps how long the settling verifiers hold the HTTP request open waiting for the settlement receipt (unset → viem's 180 s default; set it below your load balancer's idle timeout), and `inflightTtlMs` sets the age after which a stale `inflight` replay slot becomes reclaimable by a retry (default 10 min; keep it comfortably above `settlementTimeoutMs` — see [`docs/replay-store.md`](docs/replay-store.md)).
 
 Permit2 deployment is auto-probed at `preflightCharge` time via `eth_getCode` against the resolved address. v1 does not open arbitrary BYO chain — `rpcUrl` and `chainOverride` may only override an existing preset's RPC / viem `Chain` metadata.
 

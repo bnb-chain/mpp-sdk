@@ -35,7 +35,7 @@
  *
  * The receipt codec is intentionally JS-stdlib-only because the same module
  * is re-exported from `@bnb-chain/mpp` (root barrel) for browser callers
- * (`examples/charge-demo` etc.). An earlier `Buffer.from(...).toString('base64url')`
+ * (`examples/client` etc.). An earlier `Buffer.from(...).toString('base64url')`
  * implementation Vite-bundled cleanly but crashed at runtime in the browser
  * with `Buffer is not defined`.
  *

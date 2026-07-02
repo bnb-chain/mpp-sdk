@@ -40,31 +40,38 @@
  * source of truth on which credential types the deployment accepts;
  * clients pick one and call the matching constructor.
  *
- * ## §11 unified `charge(params)` factory: DEFERRED to v1.1
+ * ## Two layers: low-level constructors + the `pay()` auto-selector
  *
- * Spec §11 specifies a high-level `charge(params)` factory built on
- * `Method.toClient(chargeMethod, ...)` that auto-selects the credential
- * type by `priorityOrder` and lifts caller-supplied `account` / `rpcUrl`
- * into nonce / allowance / chainId reads. v1.0.0 ships only the four
- * low-level constructors below. The SAFETY half of §11.2 (default
- * accepted-set is `['transaction', 'hash']` when the server omits
- * `methodDetails.credentialTypes`) is enforced HERE in v1.0.0 by every
- * low-level constructor — see `src/client/internal/AssertChallenge.ts`
- * `parseEvmChargeChallenge` + `assertCredentialTypeAccepted`. Only the
- * ergonomic auto-selection + capability matrix is deferred.
+ * The four constructors above are the low-level layer — you pick the
+ * credential type and supply its signing inputs. On top of them,
+ * `pay(url, { wallet, policy })` (exported below) is the §11-style
+ * high-level entry: it fetches the 402, reads `account` / viem clients
+ * for nonce / allowance / chainId / decimals, derives the offered routes
+ * from `methodDetails.credentialTypes`, and auto-selects one by a
+ * capability-and-policy filter (hard constraints filter, `mode` ranks,
+ * empty → `NoAcceptableMethodError`). This is **Phase 1** of the
+ * multi-rail Payment Offer Layer (`docs/adr/0003-payment-offer-layer.md`)
+ * — today it covers the mpp credentials only; cross-rail (x402 / b402
+ * facilitator) selection is the future phase.
  *
- * Until v1.1 lands, callers do:
+ * The SAFETY half of §11.2 (default accepted-set is
+ * `['transaction', 'hash']` when the server omits
+ * `methodDetails.credentialTypes`) is enforced in BOTH layers — by every
+ * low-level constructor (`src/client/internal/AssertChallenge.ts`
+ * `parseEvmChargeChallenge` + `assertCredentialTypeAccepted`) and by
+ * `pay()`'s `deriveLogicalPaths`.
  *
+ * Pick the layer by need:
+ *
+ *   // high-level — express intent, let the SDK route:
+ *   import { pay } from '@bnb-chain/mpp/client'
+ *   const { response } = await pay(url, { wallet, policy: { mode: 'prefer-gasless' } })
+ *
+ *   // low-level — you already know the credential type:
  *   import { Challenge } from 'mppx'
  *   import { createPermit2Credential } from '@bnb-chain/mpp/client'
  *   const challenge = Challenge.deserialize(authHeader)
  *   const credential = await createPermit2Credential({ challenge, account, ... })
- *
- * The decision to defer was scope: the auto-selection layer requires
- * viem `PublicClient` integration for nonce / allowance / chainId reads
- * across all four credential types (~200-300 LOC + RPC mocking in tests),
- * which is a non-trivial follow-up. The shipped low-level constructors
- * cover every credential type with full wire validation today.
  */
 
 export { type CreateHashCredentialOptions, createHashCredential } from './Hash.js'
@@ -84,3 +91,28 @@ export {
   type CreateAuthorizationCredentialOptions,
   createAuthorizationCredential,
 } from './Authorization.js'
+
+// Phase-1 unified buyer surface (ADR-0003): pay(url, { wallet, policy }) over the
+// mpp credentials. The pure deriveLogicalPaths/selectRoute are exported for reuse + tests.
+export {
+  type AssetId,
+  type Eip712DomainMap,
+  type LogicalPath,
+  NoAcceptableMethodError,
+  PaymentRejectedError,
+  type PayMode,
+  type PayOptions,
+  type PayPolicy,
+  type PayRequestInit,
+  type PayResult,
+  PaymentSideEffectError,
+  type PaymentSideEffectContext,
+  type RouteRejection,
+  type RouteSelection,
+  type SelectionContext,
+  type WalletCapabilities,
+  type WalletContext,
+  deriveLogicalPaths,
+  pay,
+  selectRoute,
+} from './pay/index.js'

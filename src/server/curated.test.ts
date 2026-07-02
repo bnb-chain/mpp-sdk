@@ -223,13 +223,24 @@ describe('bsc/FDUSD and bsc/U entries', () => {
     ])
   })
 
-  // BSC testnet $U sibling (0x2Ae9...0a66) does NOT implement EIP-3009 —
-  // the testnet sibling contract reverts on transferWithAuthorization with
-  // "Contract does not have fallback nor receive functions". Lock the
-  // matrix to ensure no one accidentally adds ('bsc-testnet', 'U') with
-  // eip3009Supported: true and ships a credential type that can't settle.
-  test("('bsc-testnet', 'U') is NOT in the matrix", () => {
-    expect(() => resolveCuratedTokenAddress('bsc-testnet', 'U')).toThrow(CuratedLookupError)
+  // ('bsc-testnet', 'U') is the b402 TESTNET settlement token at
+  // 0xc70b8741b8b07a6d61e54fd4b20f22fa648e5565 (a DIFFERENT contract from the
+  // non-EIP-3009 sibling 0x2Ae9...0a66, which is NOT in the matrix). On-chain
+  // probe (2026-06-30): name="United Stables", decimals=18, transferWithAuthorization
+  // present. eip3009Supported, so it advertises the authorization credential.
+  test("('bsc-testnet', 'U') is the b402 testnet EIP-3009 token", () => {
+    expect(resolveCuratedTokenAddress('bsc-testnet', 'U')).toBe(
+      '0xc70b8741b8b07a6d61e54fd4b20f22fa648e5565',
+    )
+    expect(getAcceptedCredentialTypes('bsc-testnet', 'U')).toContain('authorization')
+    // Lock the EIP-712 domain — `name` is on-chain-verified; `version: '1'` is the
+    // ASSUMED value (mainnet parity; the contract is facilitator-gated so it can't
+    // be read on-chain). This pins the assumption so a buyer-signing change is
+    // caught — confirm vs b402 /supported `extra.version` once creds are set.
+    expect(getCuratedEip712Domain('bsc-testnet', 'U')).toEqual({
+      name: 'United Stables',
+      version: '1',
+    })
   })
 })
 

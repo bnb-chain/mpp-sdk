@@ -94,7 +94,7 @@ export async function verifyHash({
   // ── Step 1: atomic reserve ─────────────────────────────────────────────
   const claimed = await reserve(store, key, { inflightTtlMs })
   if (!claimed) {
-    await throwReserveConflict({
+    return await throwReserveConflict({
       store,
       key,
       challengeId,
@@ -136,7 +136,7 @@ export async function verifyHash({
       // is client-actionable; a generic RPC failure (timeout / 429 /
       // network) is operator-actionable and must not masquerade as
       // "tx not broadcast".
-      await release(store, key)
+      await release(store, key, claimed)
       if (rpcErr instanceof TransactionReceiptNotFoundError) {
         throw new Errors.VerificationFailedError({
           ...(challengeId && { id: challengeId }),
@@ -155,7 +155,7 @@ export async function verifyHash({
     const txConfirmations =
       latestBlock >= receipt.blockNumber ? latestBlock - receipt.blockNumber + 1n : 0n
     if (txConfirmations < BigInt(confirmations)) {
-      await release(store, key)
+      await release(store, key, claimed)
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
         reason: `insufficient confirmations: have ${txConfirmations}, need ${confirmations}`,
@@ -272,6 +272,7 @@ export async function verifyHash({
       err,
       store,
       key,
+      token: claimed,
       terminalPhase,
       label: '[verifyHash]',
       cleanupNoun: 'release',

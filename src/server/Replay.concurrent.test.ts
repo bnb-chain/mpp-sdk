@@ -71,8 +71,8 @@ describe('Replay primitives — concurrent reserve atomicity', () => {
     const N = 50
 
     const results = await Promise.all(Array.from({ length: N }, () => reserve(store, key)))
-    const winners = results.filter((r) => r === true)
-    const losers = results.filter((r) => r === false)
+    const winners = results.filter((r) => r !== null)
+    const losers = results.filter((r) => r === null)
     expect(winners).toHaveLength(1)
     expect(losers).toHaveLength(N - 1)
   })
@@ -86,14 +86,14 @@ describe('Replay primitives — concurrent reserve atomicity', () => {
         return reserve(store, txHashKey(CHAIN_ID, tx))
       }),
     )
-    expect(results.every((r) => r === true)).toBe(true)
+    expect(results.every((r) => r !== null)).toBe(true)
   })
 
   test('reserve → reserve on same key returns false (sequential sanity)', async () => {
     const store = freshStore()
     const key = txHashKey(CHAIN_ID, TX)
-    expect(await reserve(store, key)).toBe(true)
-    expect(await reserve(store, key)).toBe(false)
+    expect(await reserve(store, key)).not.toBeNull()
+    expect(await reserve(store, key)).toBeNull()
   })
 })
 
@@ -288,7 +288,7 @@ describe('cross-type replay — transaction and hash credentials share the txHas
     // The SAME key factory serves BOTH credential types (spec §8): a
     // `transaction` credential for this tx would reserve this exact key,
     // so its reserve must lose against the hash-settled slot.
-    expect(await reserve(store, txHashKey(CHAIN_ID, TX))).toBe(false)
+    expect(await reserve(store, txHashKey(CHAIN_ID, TX))).toBeNull()
     expect((await store.get(txHashKey(CHAIN_ID, TX)))?.state).toBe('consumed')
   })
 

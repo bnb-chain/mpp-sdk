@@ -10,13 +10,14 @@ end-to-end without mainnet funds — the same pair the bundled
 pair (e.g. `ethereum` / `USDC`) by changing two strings; see
 [Curated pairs](#curated-chain--token-pairs).
 
-> Prefer reading code? [`examples/charge-server`](../examples/charge-server)
->
-> - [`examples/charge-demo`](../examples/charge-demo) are the full, running
->   version of everything below.
+> Prefer running code? The repo ships exactly two examples — a merchant
+> [`examples/server`](../examples/server) and a browser-wallet
+> [`examples/client`](../examples/client) — see
+> [Run the demo pair](#run-the-demo-pair-2-terminals) below.
 
 ## Contents
 
+- [Run the demo pair (2 terminals)](#run-the-demo-pair-2-terminals)
 - [Install](#install)
 - [Concepts in 30 seconds](#concepts-in-30-seconds)
 - [1. Server — protect a route](#1-server--protect-a-route)
@@ -26,21 +27,68 @@ pair (e.g. `ethereum` / `USDC`) by changing two strings; see
 - [Challenge binding modes](#challenge-binding-modes)
 - [Production checklist](#production-checklist)
 
+## Run the demo pair (2 terminals)
+
+One narrow happy path: **BSC Testnet, mode 1 (payer-funded), the Hash tab.**
+No server keys, no server gas, two env vars. Every command runs from the
+**repo root**:
+
+```bash
+# 0. once — requires Node >= 22
+git clone <this repo> && cd mpp-sdk && corepack enable && pnpm install
+
+# 1. configure the server — exactly two values
+cp examples/server/.env.example examples/server/.env
+#    edit examples/server/.env:
+#      RECIPIENT_ADDRESS=<your EVM address>          # you get paid here
+#      MPP_SECRET_KEY=<openssl rand -hex 32>         # challenge-binding HMAC key
+
+# 2. terminal 1 — the merchant (:3001)
+pnpm --filter @bnb-chain/mpp-example-server start
+
+# 3. terminal 2 — the buyer (browser wallet UI, :5173)
+pnpm --filter @bnb-chain/mpp-example-client dev
+```
+
+4. In the browser: connect MetaMask on **BSC Testnet** — the wallet needs
+   [tBNB](https://www.bnbchain.org/en/testnet-faucet) for gas (faucet) and
+   [TEST_USDT](https://testnet.bscscan.com/token/0x337610d27c682E347C9cD60BD4b3b107C9d34dDd)
+   (no faucet: swap a little tBNB on testnet PancakeSwap, or transfer from an
+   already-funded wallet). Stay on the **Hash** tab, hit **⚡ Run All** — a
+   real `402 → pay on-chain → Payment-Receipt` loop, end to end.
+
+That's the whole quickstart. **Everything else is an advanced flow**,
+enabled one at a time via the clearly marked LEVELs in
+[`examples/server/.env.example`](../examples/server/.env.example) — full
+walkthroughs in the
+[server README](../examples/server/README.md#advanced-flows) and
+[client README](../examples/client/README.md#tabs--server-modes).
+
 ## Install
 
 ```bash
 pnpm add @bnb-chain/mpp mppx viem
 ```
 
+The runnable server below additionally uses `hono` + `@hono/node-server`
+(any HTTP framework works) and `tsx` to run TypeScript directly —
+`pnpm add hono @hono/node-server && pnpm add -D tsx`.
+
 Peers: `mppx ^0.6.28`, `viem ^2.51.0`. **Node ≥ 22.**
 
-Three entry points:
+Four entry points:
 
-| Import                  | Use it for                                                                                      |
-| ----------------------- | ----------------------------------------------------------------------------------------------- |
-| `@bnb-chain/mpp/server` | The server factory (`chargeAsync` / `preflightCharge`), composed with `Mppx.create()`.          |
-| `@bnb-chain/mpp/client` | The four credential constructors (`createHashCredential`, `createPermit2Credential`, …).        |
-| `@bnb-chain/mpp`        | Universal helpers — `chargeFromDecimal` (decimal → base units) and the `Payment-Receipt` codec. |
+| Import                                       | Use it for                                                                                                                                                                                         |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@bnb-chain/mpp/server`                      | The server factory (`chargeAsync` / `preflightCharge`), composed with `Mppx.create()`.                                                                                                             |
+| `@bnb-chain/mpp/client`                      | The four credential constructors (`createHashCredential`, `createPermit2Credential`, …) **plus `pay(url, { wallet, policy })`** — the high-level buyer that auto-selects a route from your policy. |
+| `@bnb-chain/mpp`                             | Universal helpers — `chargeFromDecimal` (decimal → base units) and the `Payment-Receipt` codec.                                                                                                    |
+| `@bnb-chain/mpp/b402` (+ `/server`, `/mppx`) | x402 v2 (Binance OnchainPay) — the facilitator client, or `B402Adapter` to settle mppx `authorization` through b402. See [`docs/b402.md`](b402.md).                                                |
+
+> The `b402` entry points are a **separate flow** (x402 v2), not part of the
+> charge request/credential loop in this guide. `B402Adapter` lets you settle
+> mppx `authorization` credentials through b402 without changing your buyers —
+> see [`docs/b402.md`](b402.md).
 
 ## Concepts in 30 seconds
 
@@ -78,6 +126,13 @@ method. Hand it to `Mppx.create()`, then call
 `handler.evm.charge({ amount })(request)` per route: it returns a `402`
 challenge when there's no valid credential, or settles and gives you a
 `withReceipt()` wrapper when there is.
+
+> This walkthrough builds the **server-settled `permit2`** variant — it
+> needs a funded `SETTLEMENT_PRIVATE_KEY` (hot signer, pays gas). For the
+> zero-key payer-funded shape the golden path above runs, drop
+> `settlementAccount` and pass
+> `credentialTypes: ['transaction', 'hash']` instead — that's exactly
+> [`examples/server`](../examples/server)'s LEVEL 0.
 
 ```ts
 // server.ts — run with: node --import tsx --env-file=.env server.ts (Node ≥22)
@@ -134,7 +189,7 @@ serve({ fetch: app.fetch, port: 3000 }, (i) =>
 ```bash
 RECIPIENT_ADDRESS=0xYourMerchantAddress
 MPP_SECRET_KEY=...            # openssl rand -hex 32
-SETTLEMENT_PRIVATE_KEY=0x...  # 32-byte hex; fund with tBNB (https://testnet.bnbchain.org/faucet-smart)
+SETTLEMENT_PRIVATE_KEY=0x...  # 32-byte hex; fund with tBNB (https://www.bnbchain.org/en/testnet-faucet)
 ```
 
 Probe the challenge phase:
@@ -188,6 +243,13 @@ const req = challenge.request as {
 const { amount, currency, recipient } = req
 const { chainId, permit2Address } = req.methodDetails
 ```
+
+**Fund the payer:** the client signs with `PAYER_PRIVATE_KEY` — a funded
+BSC Testnet key. It needs tBNB for gas
+(https://www.bnbchain.org/en/testnet-faucet) and TEST_USDT — PancakeSwap's
+BSC Testnet USDT (`0x337610d27c682E347C9cD60BD4b3b107C9d34dDd`) —
+transferred from an existing funded wallet or swapped on testnet
+PancakeSwap.
 
 ### Option A — `hash` (payer broadcasts, then references the tx)
 
@@ -259,8 +321,8 @@ console.log(await paid.json())
 > **Browser wallets (MetaMask, etc.):** pass an `account` whose
 > `signTypedData` delegates to the wallet (e.g. wagmi's
 > `walletClient.signTypedData`) instead of a `privateKeyToAccount`. See
-> [`examples/charge-demo/src/actions`](../examples/charge-demo/src/actions)
-> for the adapter.
+> `walletSignerFor` in
+> [`examples/client/src/actions/shared.tsx`](../examples/client/src/actions/shared.tsx).
 
 ## 3. Read the receipt
 
@@ -274,6 +336,11 @@ const receipt = deserializeEvmReceipt(receiptHeader)
 // { method, challengeId, reference, status, timestamp, chainId, externalId? }
 // `reference` is the on-chain settlement / transfer tx hash.
 ```
+
+If you already hold a parsed receipt object from an untrusted source (a
+webhook payload, a queue message) rather than the header string, gate it
+with `assertEvmReceipt` (also exported from `@bnb-chain/mpp`) before
+trusting its fields.
 
 ## Curated chain / token pairs
 
@@ -310,10 +377,22 @@ verification notes live in `src/server/curated.ts`.
   `Store.memory()` is dev/test only. See [`replay-store.md`](replay-store.md).
 - **Settlement signer** — fund it and treat the key as a hot wallet (rotate,
   scope per-deployment). Only needed for permit2 / authorization.
+- **Settlement knobs** — `confirmations` sets the finality depth for the
+  on-chain-waiting paths (per-chain defaults from the curated matrix);
+  `settlementTimeoutMs` caps the receipt wait (set it below your LB idle
+  timeout); `inflightTtlMs` is the stale-inflight reclaim age (keep it
+  comfortably above `settlementTimeoutMs`). See
+  [`replay-store.md`](replay-store.md).
 - **RPC** — pin your own provider via `rpcUrl`; public endpoints rate-limit.
-- **Hardening** — rate-limit, gas budget, and degrade-to-payer-funded
-  patterns are shown in [`examples/charge-server`](../examples/charge-server)
-  (`src/hardening.ts`).
+- **Hardening** — three patterns worth carrying into any deployment:
+  1. _Rate-limit per caller_ (key off `X-Forwarded-For` behind a proxy) so
+     challenge issuance can't be farmed.
+  2. _Gas budget the settlement signer_ — cap what the hot wallet may spend
+     per day and alert on threshold, since every `permit2`/`authorization`
+     settle costs the server gas.
+  3. _Degrade to payer-funded_ — when the signer is unhealthy (empty, budget
+     hit), drop `permit2` from `credentialTypes` and keep serving
+     `transaction`/`hash` instead of going down.
 
 ## See also
 

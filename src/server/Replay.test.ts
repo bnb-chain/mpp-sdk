@@ -50,7 +50,7 @@ describe('reserve (atomic CAS)', () => {
   test('first reserve returns true; slot now inflight', async () => {
     const store = freshStore()
     const key = txHashKey(1, TX_HASH)
-    expect(await reserve(store, key)).toBe(true)
+    expect(await reserve(store, key)).not.toBeNull()
     const slot = await store.get(key)
     expect(slot?.state).toBe('inflight')
     expect(slot?.ts).toBeTypeOf('number')
@@ -59,15 +59,15 @@ describe('reserve (atomic CAS)', () => {
   test('second reserve returns false while inflight', async () => {
     const store = freshStore()
     const key = txHashKey(1, TX_HASH)
-    expect(await reserve(store, key)).toBe(true)
-    expect(await reserve(store, key)).toBe(false)
+    expect(await reserve(store, key)).not.toBeNull()
+    expect(await reserve(store, key)).toBeNull()
   })
 
   test('parallel reserves: exactly one returns true', async () => {
     const store = freshStore()
     const key = txHashKey(1, TX_HASH)
     const results = await Promise.all(Array.from({ length: 20 }, () => reserve(store, key)))
-    expect(results.filter((r) => r === true)).toHaveLength(1)
+    expect(results.filter((r) => r !== null)).toHaveLength(1)
   })
 })
 
@@ -82,15 +82,15 @@ describe('markConsumed (permanent)', () => {
     await reserve(store, key)
     await markConsumed(store, key)
     expect((await store.get(key))?.state).toBe('consumed')
-    expect(await reserve(store, key)).toBe(false)
+    expect(await reserve(store, key)).toBeNull()
   })
 
   test('release after consumed is a noop (slot stays consumed)', async () => {
     const store = freshStore()
     const key = txHashKey(1, TX_HASH)
-    await reserve(store, key)
+    const token = await reserve(store, key)
     await markConsumed(store, key)
-    await release(store, key)
+    await release(store, key, token!)
     expect((await store.get(key))?.state).toBe('consumed')
   })
 })
@@ -115,16 +115,16 @@ describe('markRejected (permanent + reason)', () => {
     const key = txHashKey(1, TX_HASH)
     await reserve(store, key)
     await markRejected(store, key, 'Transfer log mismatch')
-    expect(await reserve(store, key)).toBe(false)
+    expect(await reserve(store, key)).toBeNull()
     expect((await store.get(key))?.state).toBe('rejected')
   })
 
   test('release after rejected is a noop (slot stays rejected)', async () => {
     const store = freshStore()
     const key = txHashKey(1, TX_HASH)
-    await reserve(store, key)
+    const token = await reserve(store, key)
     await markRejected(store, key, 'sig invalid')
-    await release(store, key)
+    await release(store, key, token!)
     expect((await store.get(key))?.state).toBe('rejected')
   })
 
@@ -214,23 +214,36 @@ describe('release', () => {
   test('inflight → free (entry deleted)', async () => {
     const store = freshStore()
     const key = txHashKey(1, TX_HASH)
-    await reserve(store, key)
-    await release(store, key)
+    const token = await reserve(store, key)
+    await release(store, key, token!)
     expect(await store.get(key)).toBeNull()
   })
 
   test('released slot can be re-reserved', async () => {
     const store = freshStore()
     const key = txHashKey(1, TX_HASH)
-    await reserve(store, key)
-    await release(store, key)
-    expect(await reserve(store, key)).toBe(true)
+    const token = await reserve(store, key)
+    await release(store, key, token!)
+    expect(await reserve(store, key)).not.toBeNull()
   })
 
   test('release on missing slot is noop', async () => {
     const store = freshStore()
     const key = txHashKey(1, TX_HASH)
-    await release(store, key)
+    await release(store, key, 'no-token')
+    expect(await store.get(key)).toBeNull()
+  })
+
+  test('release with the WRONG token does NOT delete the inflight slot (fencing)', async () => {
+    const store = freshStore()
+    const key = txHashKey(1, TX_HASH)
+    const token = await reserve(store, key)
+    // A stranded flow (or a reclaim loser) presenting a stale/other token
+    // must NOT delete the live inflight slot.
+    await release(store, key, 'someone-elses-token')
+    expect((await store.get(key))?.state).toBe('inflight')
+    // The real owner's token still frees it.
+    await release(store, key, token!)
     expect(await store.get(key)).toBeNull()
   })
 })
@@ -258,7 +271,7 @@ describe('stale-inflight reclaim', () => {
     const freshTs = Date.now()
     await writeSlot(store, key, { state: 'inflight', ts: freshTs })
 
-    expect(await reserve(store, key)).toBe(false)
+    expect(await reserve(store, key)).toBeNull()
 
     // Slot untouched — the losing reserve must not refresh a live slot's ts
     // (that would let serial losers keep a crashed verify pinned forever).
@@ -274,7 +287,7 @@ describe('stale-inflight reclaim', () => {
     const staleTs = Date.now() - 11 * 60 * 1000
     await writeSlot(store, key, { state: 'inflight', ts: staleTs })
 
-    expect(await reserve(store, key)).toBe(true)
+    expect(await reserve(store, key)).not.toBeNull()
 
     // The reclaiming reserve re-enters verification: the slot is inflight
     // again with a REFRESHED ts (a second concurrent retry must now wait
@@ -292,9 +305,9 @@ describe('stale-inflight reclaim', () => {
     await writeSlot(store, key, { state: 'inflight', ts })
 
     // Default TTL: not stale → not reclaimable.
-    expect(await reserve(store, key)).toBe(false)
+    expect(await reserve(store, key)).toBeNull()
     // Custom 1s TTL: stale → reclaimed.
-    expect(await reserve(store, key, { inflightTtlMs: 1000 })).toBe(true)
+    expect(await reserve(store, key, { inflightTtlMs: 1000 })).not.toBeNull()
     expect((await store.get(key))?.ts).toBeGreaterThan(ts)
   })
 
@@ -305,9 +318,9 @@ describe('stale-inflight reclaim', () => {
     const ancientTs = Date.now() - 365 * 24 * 60 * 60 * 1000
     await writeSlot(store, key, { state: 'consumed', ts: ancientTs })
 
-    expect(await reserve(store, key)).toBe(false)
+    expect(await reserve(store, key)).toBeNull()
     // Even an absurdly aggressive TTL must not resurrect a settled payment.
-    expect(await reserve(store, key, { inflightTtlMs: 1 })).toBe(false)
+    expect(await reserve(store, key, { inflightTtlMs: 1 })).toBeNull()
 
     const slot = await store.get(key)
     expect(slot?.state).toBe('consumed')
@@ -324,8 +337,8 @@ describe('stale-inflight reclaim', () => {
       reason: 'on-chain reverted',
     })
 
-    expect(await reserve(store, key)).toBe(false)
-    expect(await reserve(store, key, { inflightTtlMs: 1 })).toBe(false)
+    expect(await reserve(store, key)).toBeNull()
+    expect(await reserve(store, key, { inflightTtlMs: 1 })).toBeNull()
 
     const slot = await store.get(key)
     expect(slot?.state).toBe('rejected')
@@ -448,7 +461,7 @@ describe('ReplayStoreUnavailableError', () => {
   })
 
   test('release() wraps backend throw', async () => {
-    await expect(release(brokenStore(), key)).rejects.toThrow(ReplayStoreUnavailableError)
+    await expect(release(brokenStore(), key, 'tok')).rejects.toThrow(ReplayStoreUnavailableError)
   })
 
   test('getReplaySlot() wraps backend throw on .get', async () => {
@@ -516,7 +529,7 @@ describe('ReplayStoreUnavailableError', () => {
 
   test('successful operations are unaffected (happy path passes through normalization)', async () => {
     const store = Store.memory() as unknown as ChargeStore
-    expect(await reserve(store, key)).toBe(true)
+    expect(await reserve(store, key)).not.toBeNull()
     await markConsumed(store, key)
     const slot = await store.get(key)
     expect(slot?.state).toBe('consumed')

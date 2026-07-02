@@ -107,12 +107,18 @@ export async function throwReserveConflict(args: {
 }): Promise<never> {
   const { store, key, challengeId, describe } = args
   const current = await getReplaySlot(store, key)
+  // An inflight slot is not necessarily a CONCURRENT verify — it can be a
+  // fail-closed hold from an earlier attempt (settle timeout, unresolved
+  // front-run probe). Reporting its age tells the buyer whether to wait for
+  // the reclaim window or investigate.
+  const heldSeconds =
+    current?.state === 'inflight' ? Math.max(0, Math.round((Date.now() - current.ts) / 1000)) : 0
   const reasonText =
     current?.state === 'consumed'
       ? describe.consumed
       : current?.state === 'rejected'
         ? describe.rejected(current.reason)
-        : describe.inflight
+        : `${describe.inflight} (slot held for ${heldSeconds}s; a stale hold is reclaimed after the inflight TTL)`
   throw new Errors.VerificationFailedError({
     ...(challengeId && { id: challengeId }),
     reason: reasonText,
@@ -144,13 +150,16 @@ export async function handleVerifierFailure(args: {
   err: unknown
   store: ChargeStore
   key: ReplayKey
+  /** The fencing token from this verifier's `reserve()` — so the safety-net
+   *  release only deletes ITS OWN inflight slot, not a successor's. */
+  token: string
   terminalPhase: boolean
   /** Warn-label prefix, e.g. '[verifyPermit2]'. */
   label: string
   /** Word the verifier's cleanup-failure warn historically used. */
   cleanupNoun: 'cleanup' | 'release'
 }): Promise<never> {
-  const { err, store, key, terminalPhase, label, cleanupNoun } = args
+  const { err, store, key, token, terminalPhase, label, cleanupNoun } = args
   if (err instanceof Errors.VerificationFailedError) throw err
   if (terminalPhase) {
     // eslint-disable-next-line no-console -- terminal-phase operator hint
@@ -162,7 +171,7 @@ export async function handleVerifierFailure(args: {
     throw err
   }
   try {
-    await release(store, key)
+    await release(store, key, token)
   } catch (cleanupErr) {
     // eslint-disable-next-line no-console -- intentional one-off operator hint
     console.warn(
