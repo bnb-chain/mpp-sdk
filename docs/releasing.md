@@ -10,7 +10,7 @@ you want a release to go out. Everything else is automated by
 1. **Every user-visible PR adds a changeset** — run `pnpm changeset`
    (or write `.changeset/<slug>.md` by hand) describing the change and
    its semver bump. PRs without behavior changes (docs, CI) skip this.
-2. **Merge to `v1`** — the `release` workflow runs `verify`
+2. **Merge to `main`** — the `release` workflow runs `verify`
    (lint / types / tests / build), then the changesets action opens or
    updates a **`chore: version package`** PR. That PR consumes all
    pending `.changeset/*.md` files, bumps `package.json#version`, and
@@ -22,6 +22,18 @@ you want a release to go out. Everything else is automated by
 
 Nothing publishes from a workstation; the version PR is the release
 button.
+
+## Manual recovery bump
+
+When a changeset was accidentally consumed without publishing a new npm
+version, run **Actions → release → Run workflow** on `main` and choose `patch`,
+`minor`, or `major`. The dispatch creates a synthetic changeset and opens the
+same reviewable version PR as the normal flow. It never publishes directly;
+merge the generated version PR to publish.
+
+The recovery path refuses to run while a normal changeset is pending. Use
+`pnpm changeset status` first and select a version that does not already exist
+on npm. npm versions are immutable and cannot be overwritten.
 
 ## One-time setup (repo + npm admins)
 
@@ -68,9 +80,11 @@ bottom of `release.yml`.
 
 ## Branch map
 
-- `v1` — release base branch (`.changeset/config.json#baseBranch`).
-  Pushes here drive the workflow.
-- Feature branches → PR into `v1`; `verify.yml` runs on the PR.
+- `main` — release base branch (`.changeset/config.json#baseBranch`). Pushes
+  here drive the workflow.
+- `v1` — legacy release trigger retained for compatibility; new work targets
+  `main`.
+- Feature branches → PR into `main`; `verify.yml` runs on the PR.
 
 ## Sanity checks
 
