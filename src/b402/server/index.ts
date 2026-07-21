@@ -3,14 +3,23 @@
  *
  * Re-exports the browser-safe core (`@bnb-chain/mpp/b402`) plus `B402Client`,
  * which signs every request with the merchant's RSA key (`node:crypto`) and
- * calls the facilitator's `/supported` · `/verify` · `/settle` endpoints —
- * and `createPermit2ExactX402Gate`, the explicitly named one-call
- * standalone-x402 permit2-exact merchant recipe (`createX402Gate` remains a
- * compatibility alias)
- * (402 menu → X-PAYMENT validation → verify → settle → X-PAYMENT-RESPONSE).
+ * calls the facilitator's `/supported` · `/verify` · `/settle` endpoints.
+ * `charge` is the MPP-native B402 method and `createB402Facilitator` is the
+ * EIP-3009 compatibility Adapter for mppx's standard `evm/charge` method.
  */
 
 export * from '../index.js'
+
+export { charge } from './Charge.js'
+export { createB402Facilitator } from './Facilitator.js'
+export {
+  B402SettlementUnknownError,
+  settleB402,
+  type B402SettlementExpectation,
+  type B402SettlementUnknownEvent,
+  type B402SettlementUnknownHandler,
+} from './Settlement.js'
+export type { B402FacilitatorClient } from './Types.js'
 
 export {
   B402Client,
@@ -23,35 +32,14 @@ export {
 } from '../Client.js'
 
 export {
-  createB402ExactHandler,
-  createFixedB402ExactHandler,
-  type B402ExactClient,
-  type B402ExactHandler,
-  type B402ExactHandlerOptions,
-  type B402ExactPayment,
-  type B402ExactResult,
-  type B402FixedExactHandler,
-  type B402FixedExactHandlerOptions,
-  type B402SettlementUnknown,
-} from '../Exact.js'
-
-export {
-  createDynamicPermit2ExactX402Gate,
-  createPermit2ExactX402Gate,
-  createX402Gate,
-  type DynamicPermit2ExactPayment,
-  type DynamicPermit2ExactX402Gate,
-  type DynamicPermit2ExactX402GateOptions,
-  type X402Gate,
-  type X402GateClient,
-  type X402GateOptions,
-  type X402GateResult,
-  type X402SettlementUnknown,
-} from '../Gate.js'
-
-export {
   B402SupportedCache,
   type B402SupportedCacheOptions,
   type B402SupportedClient,
   DEFAULT_B402_SUPPORTED_TTL_MS,
 } from '../Supported.js'
+
+import { charge } from './Charge.js'
+
+export const b402 = {
+  charge,
+} as const

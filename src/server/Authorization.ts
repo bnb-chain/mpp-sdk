@@ -112,13 +112,13 @@ export interface AuthorizationVerifierCtx {
   readonly chainId: number
   /**
    * Local settlement signer for the default `LocalSignerAdapter`. OPTIONAL when
-   * a `settleBackend` is supplied (e.g. `B402Adapter` needs no local signer).
+   * an external `settleBackend` is supplied.
    */
   readonly settlementSigner?: WalletClient
   /**
    * Override the on-chain settle step. Default:
-   * `LocalSignerAdapter(settlementSigner)`. Set a `B402Adapter` to delegate
-   * EIP-3009 settlement to the Binance b402 facilitator (it broadcasts + pays gas).
+   * `LocalSignerAdapter(settlementSigner)`. Set an external Adapter to delegate
+   * EIP-3009 settlement to another broadcaster.
    */
   readonly settleBackend?: SettleAdapter
   /**
@@ -629,7 +629,7 @@ export async function verifyAuthorization({
 
     // ── Step 11-13: delegate the broadcast to the settle adapter ────────
     // Default: LocalSignerAdapter(settlementSigner) — the original
-    // simulate→write→wait. A B402Adapter forwards to the b402 facilitator.
+    // simulate→write→wait. An external Adapter can delegate broadcasting.
     // Only route to `settleBackend` when it DECLARES `authorization` in
     // `settles` (see Settle.ts SettleAdapter JSDoc — that's the machine-checkable
     // contract). A backend configured for some other purpose must not silently

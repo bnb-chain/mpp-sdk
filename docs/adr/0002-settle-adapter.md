@@ -3,6 +3,10 @@
 - **Status:** Accepted
 - **Scope:** `authorization` (EIP-3009) credential settle step only
 
+> B402-specific Adapter decisions in this historical ADR are superseded by
+> [ADR-0005](0005-b402-provider-extension.md). The generic `SettleAdapter`
+> Seam remains supported.
+
 ## Context
 
 The EVM Charge flow's `authorization` verifier (`src/server/Authorization.ts`)

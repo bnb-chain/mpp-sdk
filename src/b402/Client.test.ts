@@ -5,9 +5,9 @@
  *   2. the signed canonical string is exactly `body + timestamp`
  *   3. loadRsaPrivateKey accepts Base64-DER-PKCS#8, Base64-PEM, and raw PEM
  *
- * The /supported · /settle flow is exercised end-to-end through `B402Adapter`
- * (against a fake B402Client) in src/b402/mppx/Adapter.test.ts; here we pin the
- * signing primitive that authenticates to b402.
+ * Provider flows are exercised through the server payment Method and standard
+ * facilitator Adapter tests; here we pin the signing primitive that
+ * authenticates to B402.
  */
 
 import { createPublicKey, generateKeyPairSync, type KeyObject } from 'node:crypto'

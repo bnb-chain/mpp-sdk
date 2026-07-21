@@ -1,23 +1,16 @@
-# Quickstart
+# Generic EVM Charge quickstart
 
-A runnable, end-to-end walkthrough of `@bnb-chain/mpp`: stand up a server
-that gates a route behind a stablecoin payment (`402 Payment Required`),
-then build a client credential, submit it, and read the `Payment-Receipt`.
+This guide shows the SDK's generic `evm/charge` method: protect a route with
+`402 Payment Required`, build a credential, submit it, and read the
+`Payment-Receipt`. The snippets use **BSC Testnet + `TEST_USDT`**.
 
-This guide uses **BSC Testnet (chainId 97) + `TEST_USDT`** so you can run it
-end-to-end without mainnet funds — the same pair the bundled
-[`examples/`](../examples) run on. Swap to any other curated `(chain, token)`
-pair (e.g. `ethereum` / `USDC`) by changing two strings; see
-[Curated pairs](#curated-chain--token-pairs).
-
-> Prefer running code? The repo ships exactly two examples — a merchant
-> [`examples/server`](../examples/server) and a browser-wallet
-> [`examples/client`](../examples/client) — see
-> [Run the demo pair](#run-the-demo-pair-2-terminals) below.
+The bundled runnable pair is intentionally B402-only and demonstrates
+EIP-3009 plus Permit2 Exact through `b402/charge`; see
+[`docs/examples.md`](examples.md). The generic Module documented here remains
+part of the SDK and is covered by its test suite.
 
 ## Contents
 
-- [Run the demo pair (2 terminals)](#run-the-demo-pair-2-terminals)
 - [Install](#install)
 - [Concepts in 30 seconds](#concepts-in-30-seconds)
 - [1. Server — protect a route](#1-server--protect-a-route)
@@ -26,43 +19,6 @@ pair (e.g. `ethereum` / `USDC`) by changing two strings; see
 - [Curated chain / token pairs](#curated-chain--token-pairs)
 - [Challenge binding modes](#challenge-binding-modes)
 - [Production checklist](#production-checklist)
-
-## Run the demo pair (2 terminals)
-
-One narrow happy path: **BSC Testnet, mode 1 (payer-funded), the Hash tab.**
-No server keys, no server gas, two env vars. Every command runs from the
-**repo root**:
-
-```bash
-# 0. once — requires Node >= 22
-git clone <this repo> && cd mpp-sdk && corepack enable && pnpm install
-
-# 1. configure the server — exactly two values
-cp examples/server/.env.example examples/server/.env
-#    edit examples/server/.env:
-#      RECIPIENT_ADDRESS=<your EVM address>          # you get paid here
-#      MPP_SECRET_KEY=<openssl rand -hex 32>         # challenge-binding HMAC key
-
-# 2. terminal 1 — the merchant (:3001)
-pnpm --filter @bnb-chain/mpp-example-server start
-
-# 3. terminal 2 — the buyer (browser wallet UI, :5173)
-pnpm --filter @bnb-chain/mpp-example-client dev
-```
-
-4. In the browser: connect MetaMask on **BSC Testnet** — the wallet needs
-   [tBNB](https://www.bnbchain.org/en/testnet-faucet) for gas (faucet) and
-   [TEST_USDT](https://testnet.bscscan.com/token/0x337610d27c682E347C9cD60BD4b3b107C9d34dDd)
-   (no faucet: swap a little tBNB on testnet PancakeSwap, or transfer from an
-   already-funded wallet). Stay on the **Hash** tab, hit **⚡ Run All** — a
-   real `402 → pay on-chain → Payment-Receipt` loop, end to end.
-
-That's the whole quickstart. **Everything else is an advanced flow**,
-enabled one at a time via the clearly marked LEVELs in
-[`examples/server/.env.example`](../examples/server/.env.example) — full
-walkthroughs in the
-[server README](../examples/server/README.md#advanced-flows) and
-[client README](../examples/client/README.md#tabs--server-modes).
 
 ## Install
 
@@ -78,17 +34,15 @@ Peers: `mppx ^0.8.12`, `viem ^2.54.0`. **Node ≥ 22.**
 
 Four entry points:
 
-| Import                                       | Use it for                                                                                                                                                                                         |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@bnb-chain/mpp/server`                      | The server factory (`chargeAsync` / `preflightCharge`), composed with `Mppx.create()`.                                                                                                             |
-| `@bnb-chain/mpp/client`                      | The four credential constructors (`createHashCredential`, `createPermit2Credential`, …) **plus `pay(url, { wallet, policy })`** — the high-level buyer that auto-selects a route from your policy. |
-| `@bnb-chain/mpp`                             | Universal helpers — `chargeFromDecimal` (decimal → base units) and the `Payment-Receipt` codec.                                                                                                    |
-| `@bnb-chain/mpp/b402` (+ `/server`, `/mppx`) | x402 v2 (Binance OnchainPay) — the facilitator client, or `B402Adapter` to settle mppx `authorization` through b402. See [`docs/b402.md`](b402.md).                                                |
+| Import                                         | Use it for                                                                                                                                                                                         |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@bnb-chain/mpp/server`                        | The server factory (`chargeAsync` / `preflightCharge`), composed with `Mppx.create()`.                                                                                                             |
+| `@bnb-chain/mpp/client`                        | The four credential constructors (`createHashCredential`, `createPermit2Credential`, …) **plus `pay(url, { wallet, policy })`** — the high-level buyer that auto-selects a route from your policy. |
+| `@bnb-chain/mpp`                               | Universal helpers — `chargeFromDecimal` (decimal → base units) and the `Payment-Receipt` codec.                                                                                                    |
+| `@bnb-chain/mpp/b402` (+ `/client`, `/server`) | B402 provider extension — MPP-native EIP-3009 + Permit2 Exact, or an EIP-3009 facilitator Adapter for standard `mppx` EVM Charge. See [`docs/b402.md`](b402.md).                                   |
 
-> The `b402` entry points are a **separate flow** (x402 v2), not part of the
-> charge request/credential loop in this guide. `B402Adapter` lets you settle
-> mppx `authorization` credentials through b402 without changing your buyers —
-> see [`docs/b402.md`](b402.md).
+> B402 is a peer payment-method/provider Module; it does not replace the
+> generic EVM Charge API in this guide. See [`docs/b402.md`](b402.md).
 
 ## Concepts in 30 seconds
 
@@ -129,10 +83,9 @@ challenge when there's no valid credential, or settles and gives you a
 
 > This walkthrough builds the **server-settled `permit2`** variant — it
 > needs a funded `SETTLEMENT_PRIVATE_KEY` (hot signer, pays gas). For the
-> zero-key payer-funded shape the golden path above runs, drop
+> zero-key payer-funded shape, drop
 > `settlementAccount` and pass
-> `credentialTypes: ['transaction', 'hash']` instead — that's exactly
-> [`examples/server`](../examples/server)'s LEVEL 0.
+> `credentialTypes: ['transaction', 'hash']` instead.
 
 ```ts
 // server.ts — run with: node --import tsx --env-file=.env server.ts (Node ≥22)
@@ -319,8 +272,8 @@ console.log(await paid.json())
 
 > **Browser wallets (MetaMask, etc.):** pass an `account` whose
 > `signTypedData` delegates to the wallet (e.g. wagmi's
-> `walletClient.signTypedData`) instead of a `privateKeyToAccount`. See
-> `walletSignerFor` in
+> `walletClient.signTypedData`) instead of a `privateKeyToAccount`. See the
+> `walletSignerFor` adapter in
 > [`examples/client/src/actions/shared.tsx`](../examples/client/src/actions/shared.tsx).
 
 ## 3. Read the receipt

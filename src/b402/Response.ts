@@ -3,9 +3,9 @@
  *
  * TypeScript types disappear at runtime; the facilitator is an external
  * system and may return a malformed or newly-shaped payload even inside a
- * successful `{ code: "000000", data }` envelope. Parse before Gate/Adapter
- * code reads nested fields so schema drift fails at the boundary with a useful
- * path instead of surfacing later as a misleading settlement error.
+ * successful `{ code: "000000", data }` envelope. Parse before payment-method
+ * code reads nested fields so schema drift fails at the provider boundary
+ * instead of surfacing later as a misleading settlement error.
  */
 
 import type {

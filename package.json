@@ -1,6 +1,6 @@
 {
   "name": "@bnb-chain/mpp",
-  "description": "BNB Chain EVM Charge implementation of the Machine Payments Protocol (mppx).",
+  "description": "MPP payment methods and provider extensions for BNB Chain and EVM applications.",
   "version": "0.2.0",
   "type": "module",
   "license": "MIT",
@@ -38,15 +38,15 @@
       "src": "./src/b402/index.ts",
       "default": "./dist/b402/index.js"
     },
+    "./b402/client": {
+      "types": "./dist/b402/client/index.d.ts",
+      "src": "./src/b402/client/index.ts",
+      "default": "./dist/b402/client/index.js"
+    },
     "./b402/server": {
       "types": "./dist/b402/server/index.d.ts",
       "src": "./src/b402/server/index.ts",
       "default": "./dist/b402/server/index.js"
-    },
-    "./b402/mppx": {
-      "types": "./dist/b402/mppx/index.d.ts",
-      "src": "./src/b402/mppx/index.ts",
-      "default": "./dist/b402/mppx/index.js"
     }
   },
   "scripts": {

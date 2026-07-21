@@ -12,10 +12,10 @@ export function Header(): JSX.Element {
           <div className="leading-tight">
             <div className="text-base font-extrabold tracking-tight">
               <span className="text-bnb">@bnb-chain/mpp</span>
-              <span className="font-medium text-muted-foreground"> · Interactive Demo</span>
+              <span className="font-medium text-muted-foreground"> · B402 Demo</span>
             </div>
             <div className="font-mono text-[10px] text-muted-foreground">
-              draft-evm-charge-00 on mppx@0.8.12
+              b402/charge · EIP-3009 + Permit2 Exact
             </div>
           </div>
         </a>

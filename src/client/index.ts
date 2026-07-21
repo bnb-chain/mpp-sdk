@@ -50,9 +50,8 @@
  * from `methodDetails.credentialTypes`, and auto-selects one by a
  * capability-and-policy filter (hard constraints filter, `mode` ranks,
  * empty → `NoAcceptableMethodError`). This is **Phase 1** of the
- * multi-rail Payment Offer Layer (`docs/adr/0003-payment-offer-layer.md`)
- * — today it covers the mpp credentials only; cross-rail (x402 / b402
- * facilitator) selection is the future phase.
+ * generic EVM Charge Module (`docs/adr/0003-payment-offer-layer.md`). B402
+ * exposes a separate mppx Method under `@bnb-chain/mpp/b402/client`.
  *
  * The SAFETY half of §11.2 (default accepted-set is
  * `['transaction', 'hash']` when the server omits

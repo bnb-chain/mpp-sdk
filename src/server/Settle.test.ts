@@ -5,8 +5,8 @@
  *   - wait timeout → SettlePendingError (slot stays inflight);
  *   - on-chain revert → status 'reverted'.
  *
- * The facilitator adapter (`B402Adapter`) and its end-to-end verify path live in
- * `src/b402/mppx/Adapter.test.ts` — core keeps zero b402 import.
+ * Provider facilitator Adapters and their end-to-end tests live outside core;
+ * core keeps zero B402 imports.
  */
 
 import { type Log, type PublicClient, type TransactionReceipt, type WalletClient } from 'viem'

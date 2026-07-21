@@ -7,13 +7,11 @@
  * credential with the existing `@bnb-chain/mpp/client` constructors, and retries
  * with `Authorization: Payment`.
  *
- * SCOPE (Phase 1): the mpp EVM Charge wire ONLY — the four spec credentials
+ * SCOPE: the generic `evm/charge` Method only — the four spec credentials
  * (`authorization` / `permit2` / `transaction` / `hash`), single-wire, so there
- * is no cross-rail idempotency problem yet. The x402/b402 standalone offer and
- * the `PaymentIntentStore` are later phases (see docs/adr/0003-payment-offer-layer.md).
- * A b402 SETTLE backend is invisible to the buyer (a merchant-side choice), so
- * Phase 1 exposes no facilitator-trust route and no `allowFacilitator` filter —
- * those arrive with the standalone x402/b402 rail in a later phase.
+ * is no cross-method idempotency problem here. B402 uses its own
+ * `@bnb-chain/mpp/b402/client` Method and mppx composition; this helper does
+ * not select across Methods.
  *
  * This module is deliberately thin — orchestration only. The pieces live in
  * sibling modules: `routes` (derive/select + types), `facts` (chain guard +

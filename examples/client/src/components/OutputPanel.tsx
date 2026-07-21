@@ -29,7 +29,7 @@ export function OutputPanel({ panels }: { panels: OutputPanelData[] }): JSX.Elem
   if (panels.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm italic text-muted-foreground">
-        Nothing yet — pick a tab, configure, then run a step (or{' '}
+        Nothing yet — select a B402 path, then run a step (or{' '}
         <strong className="not-italic text-primary">⚡ Run All</strong>).
       </div>
     )

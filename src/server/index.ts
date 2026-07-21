@@ -99,7 +99,7 @@ export {
 
 // ── Settlement adapters (pluggable `authorization` settle step) ────────────
 // Core defines only the seam + the self-host LocalSignerAdapter. Facilitator
-// backends live outside core: B402Adapter is in `@bnb-chain/mpp/b402/mppx`.
+// Provider backends live outside core; this entry point exports only the Seam.
 export {
   type Eip3009Settlement,
   LocalSignerAdapter,

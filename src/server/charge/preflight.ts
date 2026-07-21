@@ -137,6 +137,34 @@ export async function preflightChargeInternal(
       chain: viemChain,
       transport: http(transportUrl),
     })
+
+  // An explicit RPC override is an untrusted deployment boundary: viem's
+  // configured `chain` metadata does not prove the remote endpoint serves
+  // that chain. Permit2 is deployed at the same canonical address on many
+  // networks, so a mere getCode probe can pass even when the endpoint is for
+  // the wrong chain; token reads then fail only on the first paid request.
+  // Pin the remote eth_chainId at boot without echoing rpcUrl (it may contain
+  // an API key).
+  if (rpcUrl !== undefined) {
+    let rpcChainId: number
+    try {
+      rpcChainId = await publicClient.getChainId()
+    } catch (cause) {
+      throw new Errors.InvalidChallengeError({
+        reason:
+          `params.rpcUrl chainId probe failed for expected chainId ${chainId}: ` +
+          `${cause instanceof Error ? cause.message : String(cause)}`,
+      })
+    }
+    if (rpcChainId !== chainId) {
+      throw new Errors.InvalidChallengeError({
+        reason:
+          `params.rpcUrl returned chainId ${rpcChainId}, expected ${chainId} for ` +
+          `chain="${chain}". Refusing to issue challenges against a mismatched RPC.`,
+      })
+    }
+  }
+
   // Validate `confirmations` BEFORE it reaches Hash/Transaction
   // verifiers. The verifiers compare `txConfirmations < BigInt(confirmations)`
   // — if `confirmations` is `-1`, BigInt(-1) makes the check trivially
@@ -396,7 +424,7 @@ export async function preflightChargeInternal(
 
   // —— Settlement signer (AFTER Permit2 probe — otherwise we'd require signer
   //    in cases where Permit2 ended up removed from the resolved set) ——
-  // A `settleBackend` (e.g. B402Adapter) that covers `authorization` settles it
+  // A `settleBackend` that covers `authorization` settles it
   // without a local signer. permit2 always settles locally, so it still needs one.
   const backendCoversAuth = params.settleBackend?.settles.includes('authorization') ?? false
   const needsSigner =

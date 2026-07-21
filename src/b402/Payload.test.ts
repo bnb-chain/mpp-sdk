@@ -68,6 +68,16 @@ describe('buildEip3009Payment', () => {
     expect(authorization.nonce).toMatch(/^0x[0-9a-f]{64}$/)
   })
 
+  test('uses a caller-supplied Challenge nonce verbatim', async () => {
+    const nonce = `0x${'42'.repeat(32)}` as const
+    const payment = await buildEip3009Payment({
+      account: privateKeyToAccount(generatePrivateKey()),
+      nonce,
+      requirements: eip3009Requirements(),
+    })
+    expect(payment.payload.authorization.nonce).toBe(nonce)
+  })
+
   test('rejects a non-eip3009 asset-transfer method', async () => {
     const account = privateKeyToAccount(generatePrivateKey())
     const requirements = eip3009Requirements()

@@ -237,6 +237,53 @@ describe('preflightCharge guards', () => {
     ).rejects.toThrow(/chainOverride\.id.*must equal/i)
   })
 
+  test('rejects an explicit rpcUrl connected to the wrong chain', async () => {
+    const wrongChainClient = {
+      getChainId: vi.fn().mockResolvedValue(56),
+    } as unknown as PublicClient
+
+    await expect(
+      preflightChargeForTest(
+        {
+          chain: 'bsc-testnet',
+          token: 'TEST_USDT',
+          recipient: RECIPIENT,
+          rpcUrl: 'https://wrong-chain.example',
+          credentialTypes: ['transaction', 'hash'],
+          challengeBinding: {
+            mode: 'mppx-hmac',
+            secretKey: 'test-secret-must-be-at-least-32-bytes',
+          },
+        },
+        { publicClient: wrongChainClient },
+      ),
+    ).rejects.toThrow(/rpcUrl.*chainId 56.*expected 97/i)
+  })
+
+  test('accepts an explicit rpcUrl connected to the selected chain', async () => {
+    const matchingChainClient = {
+      getChainId: vi.fn().mockResolvedValue(97),
+    } as unknown as PublicClient
+
+    const prepared = await preflightChargeForTest(
+      {
+        chain: 'bsc-testnet',
+        token: 'TEST_USDT',
+        recipient: RECIPIENT,
+        rpcUrl: 'https://matching-chain.example',
+        credentialTypes: ['transaction', 'hash'],
+        challengeBinding: {
+          mode: 'mppx-hmac',
+          secretKey: 'test-secret-must-be-at-least-32-bytes',
+        },
+      },
+      { publicClient: matchingChainClient },
+    )
+
+    expect(prepared._resolved.chainId).toBe(97)
+    expect(matchingChainClient.getChainId).toHaveBeenCalledOnce()
+  })
+
   test('rejects authorization on (chain, token) where matrix.eip3009Supported=false', async () => {
     await expect(
       happy({
