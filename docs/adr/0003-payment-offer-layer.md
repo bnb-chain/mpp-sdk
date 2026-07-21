@@ -2,9 +2,10 @@
 
 - **Status:** Proposed — design COMPLETE; **Phase 1 implemented** (`src/client/pay/` — the
   `pay({ policy })` buyer surface over the mpp credentials, single-wire, covered by
-  `src/client/pay.test.ts`). Phases 2-4
-  (the standalone x402 offer, the gateway + `PaymentIntentStore`, Permit2-over-b402) remain
-  design-only. Extends [0002](0002-settle-adapter.md). The `PaymentIntentStore` was adversarially
+  `src/client/pay.test.ts`). The standalone B402 Exact merchant/buyer Modules now exist,
+  but they deliberately remain a separate x402 entry; the unified gateway +
+  `PaymentIntentStore` phases remain design-only. Extends
+  [0002](0002-settle-adapter.md). The `PaymentIntentStore` was adversarially
   hardened and its six opens resolved (see "`PaymentIntentStore` — resolved decisions").
 - **Scope:** A negotiation layer ABOVE the wire that lets one buyer integration and one
   merchant config span multiple payment rails (mpp EVM Charge + x402/b402 + future), without
@@ -351,7 +352,7 @@ nonce}`). DECISION: do NOT pursue an x402 wire extension. The `Payment-Intent` h
 ## Hard boundary (spec compliance — must hold by construction)
 
 - `methodDetails.credentialTypes` stays a subset of `{permit2, authorization, transaction, hash}`.
-- mpp `permit2` witness stays `PaymentWitness(challengeHash)`; b402 permit2 rides the x402
+- mpp `permit2` witness stays `PaymentWitness(challengeHash,externalId)`; b402 permit2 rides the x402
   `accepts[]`, never faked as an mpp `permit2`.
 - The rail-tag namespace (`'b402:eip3009'`, `'mpp:permit2'`, …) is **strictly SDK-internal** — a
   code-review assertion must guarantee no path from a rail tag into `Methods.ts`'s credential enum
@@ -378,11 +379,10 @@ nonce}`). DECISION: do NOT pursue an x402 wire extension. The `Payment-Intent` h
    cannot express divergent offers (b402 eip3009-only `$U` to a b402 payout vs mpp permit2
    USDT/USDC to a different signer). `price.token` is the default; allow per-path/per-adapter
    override and put `recipient`/`payout` on the adapter.
-3. **BLOCKER — build the x402 `ProviderAdapter` offer half.** Today `B402Adapter` only settles the
-   mpp `authorization` credential (`settles = ['authorization']`); `describeOffers()` + the x402
-   `handlePayment()` (verify+settle on the `X-PAYMENT` wire) are net-new. b402 permit2 additionally
-   needs a Permit2 `PaymentPayload` variant in `@bnb-chain/mpp/b402` (it models only the EIP-3009
-   `ExactEvmPayload` today) + a buyer-side Permit2 signer for b402's `witness.{facilitator,to}`.
+3. **PARTIALLY RESOLVED — standalone B402 Exact exists.** `createB402ExactHandler` and
+   `createB402PaymentClient` implement EIP-3009 + Permit2 Exact on the x402 wire. What remains
+   blocked here is specifically the cross-rail `ProviderAdapter` / `describeOffers()` contract and
+   its shared intent state; the standalone handler is not silently treated as that gateway.
 4. **Two distinct fail-closed checks (do NOT conflate).**
    - **Deploy-time, at `createPaymentGateway()`** — validate the MERCHANT config only: every adapter
      exists, each adapter's `token`/`recipient` resolve, and every resource can emit ≥1 valid offer.
@@ -402,9 +402,8 @@ nonce}`). DECISION: do NOT pursue an x402 wire extension. The `Payment-Intent` h
   a new standard offer, no buyer/merchant code change. Pure-mpp and pure-x402 clients still
   interoperate with the same 402.
 - **Cost / net-new work:** the shared cross-rail idempotency store (Blocker 1), the gateway layer
-  itself, the b402 `ProviderAdapter.describeOffers()`, and (for USDT/USDC over b402) a Permit2
-  `PaymentPayload` variant + buyer-side b402 Permit2 signer — a sizeable chunk, gated behind the
-  witness-spec security work.
+  itself, and the b402 `ProviderAdapter.describeOffers()` mapping remain. The B402 Exact payloads,
+  buyer signer and standalone merchant handler are already implemented independently of that work.
 - **Irreducibly facilitator-specific (Permit2):** the signed digest (spender + witness differ per
   facilitator), the signing screen a human/agent approves, and the absence of post-hoc failover.
   Keeping b402 gas sponsorship REQUIRES b402 be the signed spender. "Facilitator invisible" means

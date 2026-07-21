@@ -93,7 +93,7 @@ other's illegal states (no `verified:true`-with-logs ambiguity).
 ## Scope limits (v1)
 
 - **eip3009 only.** `B402Adapter` settles the `authorization` path only. The
-  `permit2` witness differs between mppx (`PaymentWitness(challengeHash)`) and
+  `permit2` witness differs between mppx (`PaymentWitness(challengeHash,externalId)`) and
   x402/b402 (`witness.{facilitator,to}`), so an mppx permit2 credential cannot be
   forwarded to b402; permit2 always settles locally (and still requires a
   signer). `transaction` / `hash` are payer-broadcast and need no facilitator.

@@ -12,7 +12,7 @@
 
 import { createPublicKey, generateKeyPairSync, type KeyObject } from 'node:crypto'
 
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import {
   B402Client,
@@ -92,6 +92,52 @@ describe('B402Client constructor', () => {
     for (const form of [derB64, pemB64, pem]) {
       expect(() => new B402Client({ ...creds, privateKey: form })).not.toThrow()
     }
+  })
+})
+
+describe('B402Client response boundary', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  test('wraps malformed success data in a B402Error before returning it to callers', async () => {
+    const { derB64 } = keypair()
+    const client = new B402Client({
+      baseUrl: 'https://example.test',
+      clientId: 'cid',
+      accessToken: 'tok',
+      privateKey: derB64,
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              code: '000000',
+              data: {
+                success: true,
+                transaction: `0x${'ab'.repeat(32)}`,
+                payer: 'not-an-address',
+                network: 'eip155:56',
+                amount: 1,
+              },
+            }),
+            { status: 200 },
+          ),
+      ),
+    )
+
+    await expect(
+      client.settle({
+        x402Version: 2,
+        paymentPayload: {} as never,
+        paymentRequirements: {} as never,
+      }),
+    ).rejects.toMatchObject({
+      name: 'B402Error',
+      message: expect.stringMatching(
+        /malformed success data.*payer|malformed success data.*amount/,
+      ),
+    })
   })
 })
 

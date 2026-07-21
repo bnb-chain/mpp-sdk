@@ -46,11 +46,17 @@ import {
 } from '../../server/index.js'
 import { B402Client } from '../Client.js'
 import {
+  type B402ExactHandler,
+  type B402ExactHandlerOptions,
+  type B402ExactMethod,
+  createB402ExactHandler,
+} from '../Exact.js'
+import { B402SupportedCache } from '../Supported.js'
+import {
   type BazaarMetadata,
   type PaymentPayload,
   type PaymentRequirements,
   type SupportedKind,
-  type SupportedResponse,
   X402_VERSION,
 } from '../Types.js'
 
@@ -62,22 +68,29 @@ export interface B402AdapterOptions {
    * per resource/route (one adapter per route if they differ).
    */
   readonly bazaar?: BazaarMetadata
+  /**
+   * Optional shared TTL cache for `/supported`. Defaults to an adapter-owned
+   * five-minute cache; pass one instance to share snapshots across adapters
+   * and standalone gates.
+   */
+  readonly supportedCache?: B402SupportedCache
 }
 
 export class B402Adapter implements SettleAdapter {
   // `authorization` (EIP-3009) ONLY — deliberately narrow. It does NOT bridge
-  // mppx `permit2`: the mppx Permit2 witness (`PaymentWitness(challengeHash)`)
+  // mppx `permit2`: the mppx Permit2 witness (`PaymentWitness(challengeHash,externalId)`)
   // and the b402/x402 Permit2 witness (`witness.{facilitator,to}`) are different
   // protocols, not the same credential settled two ways. mppx permit2 settles
   // locally (LocalSigner); see docs/adr/0002-settle-adapter.md.
   readonly settles = ['authorization'] as const
   readonly #client: B402Client
   readonly #bazaar: BazaarMetadata | undefined
-  #supportedCache: SupportedResponse | undefined
+  readonly #supported: B402SupportedCache
 
   constructor(client: B402Client, options: B402AdapterOptions = {}) {
     this.#client = client
     this.#bazaar = options.bazaar
+    this.#supported = options.supportedCache ?? new B402SupportedCache(client)
   }
 
   async settleAuthorization(s: Eip3009Settlement, _ctx: SettleContext): Promise<SettleReceipt> {
@@ -194,17 +207,17 @@ export class B402Adapter implements SettleAdapter {
     tokenName: string,
     tokenVersion: string,
   ): Promise<SupportedKind> {
-    // Cache the /supported response (one network call) but SELECT the kind per
-    // (network, name, version) on EVERY call — a single adapter may back multiple
-    // tokens/networks across different charge factories. Match BOTH name and
-    // version: the same token name can exist at different EIP-712 domain versions
-    // (e.g. a token upgrade), and the wrong version yields a wrong domain.
-    if (!this.#supportedCache) this.#supportedCache = await this.#client.supported()
+    // Read a bounded cached /supported snapshot but SELECT the kind per
+    // (network, name, version) on EVERY call — a single adapter may back
+    // multiple tokens/networks across different charge factories. Match BOTH
+    // name and version: a token upgrade can retain its name while changing the
+    // EIP-712 domain version.
+    const supported = await this.#supported.get()
     // Match the scheme + protocol version we actually settle as (`exact` / v2 —
     // the adapter hard-codes both below), not just the token: a `/supported`
     // entry advertising eip3009 under a different scheme/version carries an
     // `extra` we must NOT copy into an `exact`/v2 requirement.
-    const kind = this.#supportedCache.kinds.find(
+    const kind = supported.kinds.find(
       (k) =>
         k.x402Version === X402_VERSION &&
         k.scheme === 'exact' &&
@@ -241,6 +254,11 @@ export interface B402ChargeParamsOptions {
   readonly rpcUrl?: string
   /** Opt-in Bazaar discovery blob, attached to every `/settle`. */
   readonly bazaar?: BazaarMetadata
+  /**
+   * Optional shared TTL cache for `/supported`. Pass the same instance to
+   * standalone x402 gates so every b402 path observes one bounded snapshot.
+   */
+  readonly supportedCache?: B402SupportedCache
   /** Challenge binding; defaults to `{ mode: 'mppx-managed' }` (Mppx.create). */
   readonly challengeBinding?: ChallengeBindingConfig
 }
@@ -270,10 +288,60 @@ export function b402ChargeParams(options: B402ChargeParamsOptions): ServerParame
     // b402 covers the authorization settle; there is no local signer, so the
     // permit2 / transaction / hash paths are deliberately not advertised.
     credentialTypes: ['authorization'],
-    settleBackend: new B402Adapter(
-      options.client,
-      options.bazaar ? { bazaar: options.bazaar } : {},
-    ),
+    settleBackend: new B402Adapter(options.client, {
+      ...(options.bazaar ? { bazaar: options.bazaar } : {}),
+      ...(options.supportedCache ? { supportedCache: options.supportedCache } : {}),
+    }),
     ...(options.rpcUrl ? { rpcUrl: options.rpcUrl } : {}),
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Cohesive extension facade                                                  */
+/* -------------------------------------------------------------------------- */
+
+export interface B402ExtensionOptions {
+  readonly client: B402Client
+  /** B402 Exact methods exposed by `exact()`. */
+  readonly methods?: readonly B402ExactMethod[]
+  readonly supportedCache?: B402SupportedCache
+}
+
+export interface B402Extension {
+  /** MPP `authorization` settlement backend; the buyer remains on the MPP wire. */
+  authorizationSettlement(options?: Omit<B402AdapterOptions, 'supportedCache'>): B402Adapter
+  /** Standalone x402 Exact handler supporting EIP-3009 and/or Permit2 Exact. */
+  exact(
+    options: Omit<B402ExactHandlerOptions, 'client' | 'methods' | 'supportedCache'>,
+  ): B402ExactHandler
+  /** Compatibility convenience for constructing an authorization-only MPP charge. */
+  chargeParams(
+    options: Omit<B402ChargeParamsOptions, 'client' | 'supportedCache'>,
+  ): ServerParameters
+}
+
+/**
+ * Share one credentialed client and `/supported` snapshot across the MPP
+ * settlement and standalone B402 Exact paths without merging their wires.
+ */
+export function createB402Extension(options: B402ExtensionOptions): B402Extension {
+  const supportedCache = options.supportedCache ?? new B402SupportedCache(options.client)
+  const methods = options.methods ?? (['eip3009', 'permit2-exact'] as const)
+  return {
+    authorizationSettlement: (adapterOptions = {}) =>
+      new B402Adapter(options.client, { ...adapterOptions, supportedCache }),
+    exact: (handlerOptions) =>
+      createB402ExactHandler({
+        ...handlerOptions,
+        client: options.client,
+        methods,
+        supportedCache,
+      }),
+    chargeParams: (chargeOptions) =>
+      b402ChargeParams({
+        ...chargeOptions,
+        client: options.client,
+        supportedCache,
+      }),
   }
 }

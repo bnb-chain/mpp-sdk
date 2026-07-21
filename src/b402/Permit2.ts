@@ -12,16 +12,17 @@
  *   - `spender` is the Permit2 PROXY contract (`extra.spenderAddress`), not
  *     the facilitator EOA (`extra.signerAddress`).
  *   - Numeric fields sign as uint256 but travel as DECIMAL STRINGS.
- *   - `permit2-upto` uses a DIFFERENT witness struct that b402 documents as
- *     contact-the-team only — deliberately NOT modeled here (ADR-0004).
+ *   - The SDK product boundary is exact-only; upto payload and settlement
+ *     semantics are deliberately not modeled (ADR-0004).
  *
  * SECURITY MODEL (ADR-0004): a buyer cannot call `/supported` (it is
  * RSA-credentialed, merchant-only), so every spender/witness value in a 402 is
  * attacker-controllable from the buyer's seat — and a Permit2 signature to a
  * hostile spender is a direct token-theft instrument. Therefore:
  *
- *   - `trustedSpenders` is REQUIRED (no default-trust). Pass
- *     `CURATED_B402_SPENDERS` explicitly, or your own audited list.
+ *   - `trustedSpenders` is REQUIRED (no default-trust). Pass the matching
+ *     `CURATED_B402_SPENDERS[network].exact` entry explicitly, or your own
+ *     audited Permit2 Exact proxy list.
  *   - The witness is constructed HERE from `requirements.payTo` — a
  *     server-supplied witness blob is never signed verbatim.
  *   - `permitted.amount` is pinned to `requirements.amount` (exact, 1:1).
@@ -54,16 +55,12 @@ export const B402_PERMIT2_ADDRESS = '0x000000000022D473030F116dDEE9F6B43aC78BA3'
  * current value from `/supported`; buyers cannot (RSA-gated), which is exactly
  * why the allowlist is a required parameter.
  */
-export const CURATED_B402_SPENDERS: Readonly<
-  Record<string, { readonly exact: `0x${string}`; readonly upto: `0x${string}` }>
-> = {
+export const CURATED_B402_SPENDERS: Readonly<Record<string, { readonly exact: `0x${string}` }>> = {
   'eip155:56': {
     exact: '0x3038f7ac3b4D1a3fe886BdCB5cD01e9f6BDd8633',
-    upto: '0x8c819E6De3df83E0e87bBE7651c5D4e83229b239',
   },
   'eip155:97': {
     exact: '0x45481A7FaFc1e62Bb7D851645927E32a2FFA0271',
-    upto: '0xA705d91f1e9f747936Fc131C92B5366C214435B0',
   },
 }
 
@@ -105,8 +102,9 @@ export interface BuildPermit2ExactPaymentOptions {
   readonly requirements: PaymentRequirements
   /**
    * REQUIRED spender allowlist — `requirements.extra.spenderAddress` must be in
-   * it or the build refuses. Pass `Object.values(CURATED_B402_SPENDERS[network])`
-   * or your own audited list; there is intentionally no default.
+   * it or the build refuses. Pass `[CURATED_B402_SPENDERS[network].exact]` or
+   * your own audited Permit2 Exact proxy list; there is intentionally no
+   * default. Do not include the `upto` proxy in an Exact allowlist.
    */
   readonly trustedSpenders: readonly string[]
   /** Optional ResourceInfo `url` for traceability. */
@@ -137,7 +135,7 @@ export async function buildPermit2ExactPayment(
   if (requirements.extra.assetTransferMethod !== 'permit2-exact') {
     throw new Error(
       `buildPermit2ExactPayment: requirements use '${requirements.extra.assetTransferMethod}', not 'permit2-exact' ` +
-        `(permit2-upto has a different, undocumented witness — see ADR-0004)`,
+        `(only the B402 Exact product surface is supported — see ADR-0004)`,
     )
   }
   const spender = requirements.extra.spenderAddress
@@ -149,7 +147,7 @@ export async function buildPermit2ExactPayment(
   if (!Array.isArray(trustedSpenders) || trustedSpenders.length === 0) {
     throw new Error(
       'buildPermit2ExactPayment: trustedSpenders is required and must be non-empty — pass ' +
-        'CURATED_B402_SPENDERS[network] values or your own audited spender list',
+        '[CURATED_B402_SPENDERS[network].exact] or your own audited Permit2 Exact spender list',
     )
   }
   const spenderLower = spender.toLowerCase()

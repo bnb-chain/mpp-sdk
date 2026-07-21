@@ -9,15 +9,12 @@
  *   const handler = Mppx.create({
  *     methods: [await chargeAsync({ chain, token, recipient, challengeBinding })],
  *     secretKey,
- *     // No `transport` field — chargeAsync() / charge() auto-wire the
- *     // SDK-provided evmHttpTransport on the per-method transport slot
- *     // (spec §13.4.1 C2 auto-wire). Passing `transport: evmHttpTransport()`
- *     // to Mppx.create here is redundant + discouraged.
  *   })
  *
- * `evmHttpTransport` remains exported for advanced custom integrations
- * (non-Mppx.create hosts, alternate transport composition) but the
- * common path never needs it.
+ * mppx 0.8+ preserves method-specific receipt fields through its loose
+ * receipt schema. `evmHttpTransport` remains available only as an optional
+ * fail-closed guard for custom hosts that want EVM-receipt validation at the
+ * transport boundary.
  */
 
 // ── Charge factory ────────────────────────────────────────────────────────
@@ -114,5 +111,5 @@ export {
   type SettleReceipt,
 } from './Settle.js'
 
-// ── Transport (C2 path) ──────────────────────────────────────────────────
+// ── Optional fail-closed EVM receipt transport ───────────────────────────
 export { evmHttpTransport } from './Transport.js'

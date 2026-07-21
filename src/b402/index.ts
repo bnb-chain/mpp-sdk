@@ -55,3 +55,21 @@ export {
   recoverPermit2ExactPayer,
   type BuildPermit2ExactPaymentOptions,
 } from './Permit2.js'
+
+export { B402_EXACT_METHODS, type B402ExactMethod } from './Exact.js'
+
+export {
+  B402PaymentRejectedError,
+  B402PaymentSideEffectError,
+  B402Permit2ApprovalRequiredError,
+  createB402PaymentClient,
+  type B402AssetId,
+  type B402BuyerPolicy,
+  type B402PayOptions,
+  type B402PayResult,
+  type B402PaymentClient,
+  type B402PaymentClientOptions,
+  type B402Permit2AllowanceQuery,
+  type B402Permit2AllowanceReader,
+  type B402Permit2ApprovalRequest,
+} from './Buyer.js'

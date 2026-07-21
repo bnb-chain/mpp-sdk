@@ -17,7 +17,7 @@ import { type DemoState, type OutputPanel, type PanelStatus } from '@/state/type
 /*  Constants                                                                  */
 /* -------------------------------------------------------------------------- */
 
-export const DEMO_SECRET = 'demo-secret-do-not-use-in-prod'
+export const DEMO_SECRET = 'demo-secret-do-not-use-in-prod-at-least-32'
 
 /**
  * Demo-only Permit2 spender — used ONLY by the Failure-cases panel.

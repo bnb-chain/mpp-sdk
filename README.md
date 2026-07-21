@@ -20,7 +20,14 @@ All four credential paths are live end-to-end (see `examples/server` + `examples
 
 v1 limits: curated token presets only (no arbitrary BYO ERC-20), and the SDK adds one spec extension (`methodDetails.permit2Spender`) that `draft-evm-charge-00` doesn't define but Permit2 settlement requires — see [`docs/spec-compliance.md`](docs/spec-compliance.md).
 
-**Beyond the mppx charge flow**, the SDK also speaks **x402 v2**: `@bnb-chain/mpp/b402` (+ `/server`) integrates the [Binance OnchainPay (b402)](https://developers.binance.com/docs/onchainpay-x402/introduction) facilitator. Use it standalone (a parallel x402 envelope, sharing only the EIP-3009 EIP-712 primitive) **or** as an mppx settlement backend — `B402Adapter` keeps your buyers on the mppx wire and just delegates the EIP-3009 settle to b402. The browser client's `$U` **Authorization** tab pays a mode-3 `examples/server` end-to-end over b402 (mainnet — ⚠️ real funds; testnet authorization settling is currently blocked upstream, see ADR-0004), and its **x402 · Permit2** tab pays the same server's `/x402/premium` route over the standalone x402 wire with a b402 `permit2-exact` credential (see [`examples/client`](examples/client)) — see [`docs/b402.md`](docs/b402.md).
+**Beyond the mppx charge flow**, the SDK also provides a **B402 V2 Exact
+extension**: standalone x402 `eip3009` + `permit2-exact`, plus an MPP
+EIP-3009 settlement backend. `createB402Extension` shares one credentialed
+client and bounded `/supported` cache across those explicit modes;
+`createB402PaymentClient` is the browser-safe buyer entry and never hides a
+Permit2 approval transaction. The SDK does not implement a facilitator,
+business orders, or a reconciliation database. Full guide:
+[`docs/b402.md`](docs/b402.md).
 
 ## Install
 
@@ -28,7 +35,7 @@ v1 limits: curated token presets only (no arbitrary BYO ERC-20), and the SDK add
 pnpm add @bnb-chain/mpp mppx viem
 ```
 
-Peers: `mppx ^0.6.28`, `viem ^2.51.0`. Node ≥ 22 (development uses Node 22 stable).
+Peers: `mppx ^0.8.12`, `viem ^2.54.0`. Node ≥ 22 (development uses Node 22 stable).
 
 ## Quickstart
 
@@ -58,8 +65,6 @@ const handler = Mppx.create({
     }),
   ],
   secretKey: process.env.MPP_SECRET_KEY!,
-  // No `transport` here — chargeAsync() factory auto-wires evmHttpTransport
-  // on the per-method transport slot (spec §13.4.1 C2 auto-wire).
 })
 
 // Wire into your HTTP server (Hono / Express / Next.js — see mppx docs).
@@ -123,7 +128,7 @@ const request = chargeFromDecimal({ amount: '1.50', decimals: 6 })
 
 ## Spec Compliance
 
-This SDK implements [`draft-evm-charge-00`](https://paymentauth.org/draft-evm-charge-00.html) layered on `mppx@0.6.28` (commit [`5aed74b`](https://github.com/wevm/mppx/tree/5aed74bfe46315ff3f27524ea8bb72e251bf771d)). The compliance choices + the one spec extension are summarized below; full detail (incl. `permit2Spender`) lives in [`docs/spec-compliance.md`](docs/spec-compliance.md).
+This SDK implements [`draft-evm-charge-00`](https://paymentauth.org/draft-evm-charge-00.html) layered on `mppx@0.8.12` (commit [`b4334f0`](https://github.com/wevm/mppx/tree/b4334f0f0683930a1c9061d78de3a5255caaf962)). The compliance choices + the one spec extension are summarized below; full detail (incl. `permit2Spender`) lives in [`docs/spec-compliance.md`](docs/spec-compliance.md).
 
 ### 1. Challenge binding
 
@@ -135,27 +140,22 @@ This deployment uses the `challengeBinding.mode` configured on `ServerParameters
 
 ### 2. Receipt compatibility
 
-```
 draft-evm-charge-00 §7.6 requires EVM Charge receipts to include
 `method`, `challengeId`, `reference`, `status`, `timestamp`, `chainId`,
 and optionally `externalId`.
 
-Current mppx `Receipt.Schema` does not preserve `challengeId` / `chainId`.
-v1 ships a SDK-provided `evmHttpTransport` and the `charge(...)` / `chargeAsync(...)`
-factory wires it on the per-method transport slot automatically — deployments
-do NOT need to (and should not) configure `Mppx.create({ transport })` for
-this. The resulting `Payment-Receipt` header preserves the full EVM Charge
-receipt payload deterministically, independent of any future change to mppx
-default `Receipt.serialize` behavior.
-```
+mppx 0.8.12 preserves method-specific receipt fields through its loose
+`Receipt.Schema`, so `charge(...)` / `chargeAsync(...)` use the normal host
+transport. The SDK's EVM receipt builder and browser-safe codec provide the
+stronger method-specific type and runtime validation; `evmHttpTransport` is an
+optional fail-closed boundary for custom hosts.
 
-No deployment-side wiring is required — the Quickstart example deliberately
-omits `transport` from `Mppx.create`.
+No deployment-side transport wiring is required.
 
 ### 3. v1 token support
 
-```
 v1 token support:
+
 - v1 only supports curated token presets.
 - Custom ERC-20 / BYO token is not supported in v1.
 - `currency` on wire is always the resolved curated ERC-20 address.
@@ -163,6 +163,7 @@ v1 token support:
   arbitrary ERC-20 support are future work.
 
 Preset name semantics (hard rule):
+
 - `USDC` preset means Circle native USDC only.
   BSC has no Circle native USDC; the curated matrix does NOT include
   (`bsc`, `USDC`). Binance-Peg USDC must not be represented as `USDC`
@@ -182,7 +183,6 @@ Preset name semantics (hard rule):
   deployments (mock / third-party / self-deployed) that have no
   official Tether provenance; do not rely on EIP-3009, decimals,
   or mint authority assumptions from mainnet `USDT`.
-```
 
 ### 4. `permit2Spender` (spec extension)
 

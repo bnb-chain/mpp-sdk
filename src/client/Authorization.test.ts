@@ -20,7 +20,7 @@ import { eip3009Nonce } from '../protocol/TypedData.js'
 import { charge } from '../server/Charge.js'
 import { createAuthorizationCredential } from './Authorization.js'
 
-const SECRET = 'auth-client-test-secret' as const
+const SECRET = 'auth-client-test-secret-at-least-32-bytes' as const
 const CHAIN_ID = 1
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' as const
 // PERMIT2 fixture no longer needed at the route layer —

@@ -103,12 +103,12 @@ boot banner prints the live shape); `/x402/premium` is a separate route on a
 different wire entirely. (`start:plain` serves the unpaid "before" version of
 `/api/premium`.)
 
-| Resource                    | Wire (402 shape)                                                             | Accepts                                                    | Broadcast + gas paid by                                                              | Enabled by                                 | Paying client tab                    |
-| --------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------ | ------------------------------------ |
-| `GET /api/premium` (mode 1) | mppx charge — `WWW-Authenticate: Payment` header ⇄ `Authorization: Payment`  | `transaction` · `hash` (TEST_USDT)                         | the **payer's wallet**                                                               | LEVEL 0 (default)                          | **Hash** — BSC Testnet (USDT) preset |
-| `GET /api/premium` (mode 2) | same mppx wire                                                               | mode 1 + `permit2` (TEST_USDT)                             | payer for `transaction`/`hash`; **your `SETTLEMENT_PRIVATE_KEY` signer** for permit2 | LEVEL 1                                    | **Hash** / **Permit2** — same preset |
-| `GET /api/premium` (mode 3) | same mppx wire (buyers unaffected)                                           | `authorization` (EIP-3009, `$U`) ONLY — replaces modes 1/2 | the **b402 facilitator**                                                             | LEVEL 2 (`B402_*` + explicit `B402_CHAIN`) | **Authorization** — $U presets       |
-| `GET /x402/premium`         | standalone x402 — JSON 402 body ⇄ `X-PAYMENT` / `X-PAYMENT-RESPONSE` headers | b402 `permit2-exact`                                       | the **b402 spender contract**                                                        | LEVEL 3 (`X402_TOKEN_*`, needs mode 3)     | **x402 · Permit2** — any preset      |
+| Resource                    | Wire (402 shape)                                                             | Accepts                                                         | Broadcast + gas paid by                                                              | Enabled by                                 | Paying client tab                                |
+| --------------------------- | ---------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------ | ------------------------------------------------ |
+| `GET /api/premium` (mode 1) | mppx charge — `WWW-Authenticate: Payment` header ⇄ `Authorization: Payment`  | `transaction` · `hash` (TEST_USDT)                              | the **payer's wallet**                                                               | LEVEL 0 (default)                          | **Hash** — BSC Testnet (USDT) preset             |
+| `GET /api/premium` (mode 2) | same mppx wire                                                               | mode 1 + `permit2` (TEST_USDT)                                  | payer for `transaction`/`hash`; **your `SETTLEMENT_PRIVATE_KEY` signer** for permit2 | LEVEL 1                                    | **Hash** / **Permit2** — same preset             |
+| `GET /api/premium` (mode 3) | same mppx wire (buyers unaffected)                                           | `authorization` (EIP-3009, `$U`) ONLY — replaces modes 1/2      | the **b402 facilitator**                                                             | LEVEL 2 (`B402_*` + explicit `B402_CHAIN`) | **Authorization** — $U presets                   |
+| `GET /x402/premium`         | standalone x402 — JSON 402 body ⇄ `X-PAYMENT` / `X-PAYMENT-RESPONSE` headers | B402 Exact: `eip3009` when supported, otherwise `permit2-exact` | the **b402 facilitator**                                                             | LEVEL 3 (`X402_TOKEN_*`, needs mode 3)     | high-level B402 client or **x402 · Permit2** tab |
 
 Client-side pairing needs no config for any of these — the client's proxy
 already targets both wires on :3001, and each tab knows its endpoint (see
@@ -181,28 +181,37 @@ payout; the payer wallet must hold mainnet `$U` (no gas needed — b402
 broadcasts). The top-level `RPC_URL` (a testnet endpoint) is deliberately NOT
 applied to a mainnet mode-3 boot; set `B402_RPC_URL` to pin a mainnet RPC.
 
-### x402 route — b402 `permit2-exact` (LEVEL 3, needs mode 3)
+### x402 route — B402 Exact (LEVEL 3, needs mode 3)
 
 Set `X402_TOKEN_ADDRESS` + `X402_TOKEN_NAME` (see `.env.example`) and the
 server ALSO serves `/x402/premium` on the **pure x402 wire** — JSON 402 body
 with `accepts[]`, `X-PAYMENT` in, `X-PAYMENT-RESPONSE` out. The whole
-merchant recipe is ONE SDK call — `createX402Gate` from
-`@bnb-chain/mpp/b402/server` — which resolves the b402 **permit2-exact** kind
-fresh from `/supported` at boot (echoing its `extra`, spender included,
-verbatim), gates incoming `X-PAYMENT`s with the full-shape validator, pins the
-buyer-echoed offer against its own requirements, then runs `/verify` +
-`/settle` and attaches `X-PAYMENT-RESPONSE`; the route handler in `server.ts`
-only adds the content. `X402_TOKEN_NAME` must equal the kind's `extra.name`
-(the token's EIP-712 domain name, not its symbol). Pay it with:
+merchant recipe is `createB402Extension().exact()`. Its resolver returns the
+authoritative amount / asset / payout for each request, while the extension
+shares one bounded `/supported` cache with the mode-3 EIP-3009 settlement.
+The handler advertises Exact EIP-3009 and/or Permit2 Exact according to the
+token's supported kinds, validates the full incoming `X-PAYMENT`, pins every
+buyer-echoed requirement, then runs `/verify` and `/settle` and attaches
+`X-PAYMENT-RESPONSE`; the route handler only adds content.
+`X402_TOKEN_NAME` must equal the kind's `extra.name` (the token's EIP-712
+domain name, not its symbol). Pay it with either:
 
-the browser client's **x402 · Permit2** tab (it fetches this route's 402
-JSON, sends the one-time `approve(Permit2, max)` when needed, signs, and pays
-with the `X-PAYMENT` header).
+- `createB402PaymentClient` for automatic Exact method selection; or
+- the browser client's educational **x402 · Permit2** tab, which exposes the
+  one-time approval and signature as separate visible steps.
 
 Same price as `/api/premium`; buyer-side details (one-time Permit2 approve,
 the curated `trustedSpenders` allowlist) in
 [the client's README](../client/README.md) and
 [`docs/adr/0004`](../../docs/adr/0004-b402-permit2.md).
+
+The demo's resolver returns env-backed constants, but the same function can
+load an invoice/order by ID. Probe and paid retry **must resolve the same
+immutable payment record**; changing amount, asset, or payout rejects the old
+signature by design. The example also wires `onSettlementUnknown` to an
+in-memory list so the ambiguous path is visible. That list is development-only:
+production must persist the exact facilitator request securely in a durable
+database/queue and reconcile on-chain before accepting a new payment attempt.
 
 ## Going to production
 
@@ -215,3 +224,6 @@ the curated `trustedSpenders` allowlist) in
   checklist (incl. the hardening patterns: per-caller rate-limit, a gas
   budget on the settlement signer, degrade-to-payer-funded) in
   [`docs/quickstart.md`](../../docs/quickstart.md).
+- Replace the x402 example's in-memory `onSettlementUnknown` recorder with a
+  durable, encrypted reconciliation store. A lost `/settle` response is
+  `unknown`, not a definitive failure: b402 may already have broadcast it.

@@ -3,10 +3,10 @@
 Exactly **two** runnable examples under `examples/` — a merchant and a buyer
 — designed to run together:
 
-| Side                | Example                        | What it is                                                                                                                                                                                                                                                                            |
-| ------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Merchant**        | [`server`](../examples/server) | A plain API endpoint (`server-plain.ts`) and the same endpoint charging per request (`server.ts`) — the integration diff is ~10 lines. Three mppx settlement modes (payer-funded / local permit2 signer / b402 EIP-3009) plus an optional standalone x402 route (b402 permit2-exact). |
-| **Buyer (browser)** | [`client`](../examples/client) | React + shadcn/ui + wagmi wallet app driving real end-to-end flows against the server, on BOTH wires: the mppx charge wire (`hash` / `permit2` / `authorization` tabs) and the standalone x402 wire (`x402 · Permit2` tab).                                                           |
+| Side                | Example                        | What it is                                                                                                                                                                                                                                     |
+| ------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Merchant**        | [`server`](../examples/server) | A plain API endpoint (`server-plain.ts`) and the same endpoint charging per request (`server.ts`) — the integration diff is ~10 lines. Three mppx settlement modes plus an optional standalone B402 Exact route (`eip3009` / `permit2-exact`). |
+| **Buyer (browser)** | [`client`](../examples/client) | React + shadcn/ui + wagmi wallet app driving real end-to-end flows against the server, on BOTH wires: the mppx charge wire (`hash` / `permit2` / `authorization` tabs) and the standalone x402 wire (`x402 · Permit2` tab).                    |
 
 ## Running the pair
 
@@ -26,11 +26,11 @@ advanced flow — enable them one at a time.
 
 How the two sides pair, resource by resource:
 
-| Server resource            | Wire            | Server `.env` (LEVEL)             | Paying client tab (preset)                  | Client `.env`                                              |
-| -------------------------- | --------------- | --------------------------------- | ------------------------------------------- | ---------------------------------------------------------- |
-| `/api/premium` (modes 1/2) | mppx charge     | LEVEL 0 (+ LEVEL 1 for `permit2`) | **Hash** / **Permit2** — BSC Testnet (USDT) | none — defaults pair                                       |
-| `/api/premium` (mode 3)    | mppx charge     | LEVEL 2 (`B402_*` + `B402_CHAIN`) | **Authorization** — $U preset               | optional `VITE_DEFAULT_CHAIN_KEY` (or switch the dropdown) |
-| `/x402/premium`            | standalone x402 | LEVEL 3 (needs LEVEL 2)           | **x402 · Permit2** — any preset             | optional `VITE_X402_ENDPOINT`                              |
+| Server resource            | Wire                  | Server `.env` (LEVEL)             | Paying client tab (preset)                  | Client `.env`                                              |
+| -------------------------- | --------------------- | --------------------------------- | ------------------------------------------- | ---------------------------------------------------------- |
+| `/api/premium` (modes 1/2) | mppx charge           | LEVEL 0 (+ LEVEL 1 for `permit2`) | **Hash** / **Permit2** — BSC Testnet (USDT) | none — defaults pair                                       |
+| `/api/premium` (mode 3)    | mppx charge           | LEVEL 2 (`B402_*` + `B402_CHAIN`) | **Authorization** — $U preset               | optional `VITE_DEFAULT_CHAIN_KEY` (or switch the dropdown) |
+| `/x402/premium`            | standalone B402 Exact | LEVEL 3 (needs LEVEL 2)           | high-level B402 buyer or **x402 · Permit2** | optional `VITE_X402_ENDPOINT`                              |
 
 The client's Vite dev server proxies `/api/*` and `/x402/*` →
 `http://localhost:3001` (override with `VITE_CHARGE_SERVER_URL`), so the
@@ -49,7 +49,7 @@ active):
 | 0     | `RECIPIENT_ADDRESS` + `MPP_SECRET_KEY` | **Mode 1** — payer-funded `transaction` / `hash` on `bsc-testnet`/TEST_USDT. No server key, no server gas.                                                                                                                                                                                                                                     |
 | 1     | + `SETTLEMENT_PRIVATE_KEY`             | **Mode 2** — also accept `permit2`: buyers sign only; the server broadcasts `permitWitnessTransferFrom` (signer pays gas).                                                                                                                                                                                                                     |
 | 2     | + `B402_*` credentials + `B402_CHAIN`  | **Mode 3** — accept the EIP-3009 `authorization` credential ($U), settled by the [Binance b402](b402.md) facilitator (b402 broadcasts + pays gas). `B402_CHAIN` is REQUIRED: `bsc` ⚠️ = real funds and the only chain where authorization settles work today; on `bsc-testnet` they currently FAIL ([adr/0004](adr/0004-b402-permit2.md) OQ2). |
-| 3     | + `X402_TOKEN_ADDRESS/X402_TOKEN_NAME` | `/x402/premium` — a second paid route on the PURE x402 wire: b402 `permit2-exact`, the path for tokens without a usable EIP-3009 door ([adr/0004](adr/0004-b402-permit2.md)).                                                                                                                                                                  |
+| 3     | + `X402_TOKEN_ADDRESS/X402_TOKEN_NAME` | `/x402/premium` — a second paid route on the native x402 wire: B402 Exact `eip3009` when supported plus `permit2-exact`, with a merchant-owned payment resolver, shared `/supported` cache, and explicit settlement-unknown hook.                                                                                                              |
 
 Levels 0→1 stack, but **mode 3 replaces modes 1/2** on the mppx route: with
 the `B402_*` credentials set, `/api/premium` charges `$U` and accepts only
@@ -147,9 +147,12 @@ for the full guide):
 - **mppx settle backend** — server mode 3 (`B402Adapter`): buyers keep the
   mppx wire; only the settle step changes. Client side: the `authorization`
   tab on a `$U` preset.
-- **standalone x402 wire** — server LEVEL 3 (`/x402/premium`) ↔ the client's
-  `x402 · Permit2` tab: JSON 402 body, `X-PAYMENT` in, `X-PAYMENT-RESPONSE`
-  out, b402 `permit2-exact` credential.
+- **standalone B402 Exact wire** — server LEVEL 3 (`/x402/premium`) advertises
+  `eip3009` and/or `permit2-exact`; application buyers can use
+  `createB402PaymentClient`. The educational browser keeps its manual
+  `x402 · Permit2` tab. The server pins the complete offer and surfaces an
+  ambiguous `/settle` outcome as `settlement.status === 'unknown'` instead of
+  treating it as an ordinary rejection.
 
 ## What you need on-chain
 

@@ -10,8 +10,10 @@ A React app that drives `@bnb-chain/mpp` **end-to-end** against
   `Authorization: Payment` → `Payment-Receipt`) — the `Hash` / `Permit2` /
   `Authorization` tabs;
 - the **standalone x402 wire** (JSON `402` body → `X-PAYMENT` →
-  `X-PAYMENT-RESPONSE`) — the `x402 · Permit2` tab (b402 `permit2-exact`,
-  [adr/0004](../../docs/adr/0004-b402-permit2.md)).
+  `X-PAYMENT-RESPONSE`) — the server now advertises B402 Exact EIP-3009 and/or
+  Permit2 Exact. This educational UI keeps the manual `x402 · Permit2` tab so
+  every approval/signing step is visible; application code can instead use
+  `createB402PaymentClient`.
 
 Every step is real: real `402`s fetched from the local server, real MetaMask
 signatures / broadcasts, real settlement + receipts. Which tabs settle
@@ -126,7 +128,7 @@ domain doesn't match the facilitator's eip3009 kind):
 input — and a Permit2 signature to a hostile spender is a token-theft
 instrument. The SDK therefore refuses to sign for any spender outside
 `trustedSpenders`; this demo passes the SDK's dated `CURATED_B402_SPENDERS`
-table and never trusts the wire value alone
+`.exact` entry for the offered network and never trusts the wire value alone
 ([adr/0004](../../docs/adr/0004-b402-permit2.md)).
 
 ## Flow (all tabs)

@@ -134,7 +134,7 @@ export async function localVerify(
         type: 'permit2'
         permit: { nonce: string; deadline: string; permitted: Array<{ amount: string }> }
         signature: Hex
-        witness: { challengeHash: Hex }
+        witness: { challengeHash: Hex; externalId: string }
       }
       const isBatch = payload.permit.permitted.length > 1
       // Read the EIP-712 `spender` from the same field the credential
@@ -174,7 +174,10 @@ export async function localVerify(
               spender: permit2Spender,
               nonce: BigInt(payload.permit.nonce),
               deadline: BigInt(payload.permit.deadline),
-              witness: { challengeHash: payload.witness.challengeHash },
+              witness: {
+                challengeHash: payload.witness.challengeHash,
+                externalId: payload.witness.externalId,
+              },
             },
             signature: payload.signature,
           })
@@ -190,7 +193,10 @@ export async function localVerify(
               spender: permit2Spender,
               nonce: BigInt(payload.permit.nonce),
               deadline: BigInt(payload.permit.deadline),
-              witness: { challengeHash: payload.witness.challengeHash },
+              witness: {
+                challengeHash: payload.witness.challengeHash,
+                externalId: payload.witness.externalId,
+              },
             },
             signature: payload.signature,
           })

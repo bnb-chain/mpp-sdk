@@ -200,7 +200,7 @@ describe('settlementTimeoutMs plumbing — verifyPermit2', () => {
           spender: SETTLEMENT_ADDR,
           nonce: BigInt(NONCE),
           deadline: BigInt(DEADLINE),
-          witness: { challengeHash: CHALLENGE_HASH },
+          witness: { challengeHash: CHALLENGE_HASH, externalId: '' },
         },
       },
     )
@@ -221,7 +221,7 @@ describe('settlementTimeoutMs plumbing — verifyPermit2', () => {
           deadline: DEADLINE,
         },
         transferDetails: [{ to: RECIPIENT, requestedAmount: AMOUNT }],
-        witness: { challengeHash: CHALLENGE_HASH },
+        witness: { challengeHash: CHALLENGE_HASH, externalId: '' },
         signature,
       },
       source: `did:pkh:eip155:${CHAIN_ID}:${SIGNER}`,

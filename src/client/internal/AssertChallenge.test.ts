@@ -22,7 +22,7 @@ import {
   resolvePermit2Splits,
 } from './AssertChallenge.js'
 
-const SECRET = 'r6-assert-challenge-secret'
+const SECRET = 'r6-assert-challenge-secret-at-least-32'
 const CHAIN_ID = 1
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' as const
 const PERMIT2 = '0x000000000022d473030f116ddee9f6b43ac78ba3' as const

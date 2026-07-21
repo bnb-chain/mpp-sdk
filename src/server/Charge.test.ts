@@ -6,7 +6,7 @@
  *   - preflightCharge algorithm (curated resolve, splits collapse,
  *     Permit2 deployment probe, settlement signer requirement, sentinel
  *     token rejection, store production guard)
- *   - charge() factory output shape (defaults, transport auto-wire,
+ *   - charge() factory output shape (defaults, host transport delegation,
  *     request hook route-override guard, stableBinding)
  *   - verify hook routing — the accepted-types gate fires
  *     BEFORE the switch, then the switch dispatches to the live verifier
@@ -34,7 +34,7 @@ const baseParams = (overrides: Partial<ServerParameters> = {}): ServerParameters
   token: 'USDC',
   recipient: RECIPIENT,
   credentialTypes: ['transaction', 'hash'],
-  challengeBinding: { mode: 'mppx-hmac', secretKey: 'test-secret' },
+  challengeBinding: { mode: 'mppx-hmac', secretKey: 'test-secret-must-be-at-least-32-bytes' },
   ...overrides,
 })
 
@@ -286,7 +286,7 @@ describe('preflightCharge guards', () => {
         token: 'USDC',
         recipient: RECIPIENT,
         settlementAccount: SETTLEMENT,
-        challengeBinding: { mode: 'mppx-hmac', secretKey: 'test-secret' },
+        challengeBinding: { mode: 'mppx-hmac', secretKey: 'test-secret-must-be-at-least-32-bytes' },
       },
       { mockedIsContractDeployed: () => false },
     )
@@ -307,7 +307,10 @@ describe('preflightCharge guards', () => {
           token: 'TEST_USDT',
           recipient: RECIPIENT,
           credentialTypes: ['transaction', 'hash'],
-          challengeBinding: { mode: 'mppx-hmac', secretKey: 'test-secret' },
+          challengeBinding: {
+            mode: 'mppx-hmac',
+            secretKey: 'test-secret-must-be-at-least-32-bytes',
+          },
         },
         { mockedIsContractDeployed: () => true },
       ),
@@ -324,7 +327,7 @@ describe('preflightCharge guards', () => {
         token: 'TEST_USDT',
         recipient: RECIPIENT,
         credentialTypes: ['transaction', 'hash'],
-        challengeBinding: { mode: 'mppx-hmac', secretKey: 'test-secret' },
+        challengeBinding: { mode: 'mppx-hmac', secretKey: 'test-secret-must-be-at-least-32-bytes' },
       },
       { mockedIsContractDeployed: () => true, allowSentinelTokenAddress: true },
     )
@@ -341,7 +344,7 @@ describe('preflightCharge guards', () => {
         token: 'TEST_USDT',
         recipient: RECIPIENT,
         settlementAccount: SETTLEMENT,
-        challengeBinding: { mode: 'mppx-hmac', secretKey: 'test-secret' },
+        challengeBinding: { mode: 'mppx-hmac', secretKey: 'test-secret-must-be-at-least-32-bytes' },
       },
       { mockedIsContractDeployed: () => true },
     )
@@ -369,7 +372,7 @@ describe('preflightCharge guards', () => {
         recipient: RECIPIENT,
         splits: [{ recipient: '0x3333333333333333333333333333333333333333', amount: '100000' }],
         settlementAccount: SETTLEMENT,
-        challengeBinding: { mode: 'mppx-hmac', secretKey: 'test-secret' },
+        challengeBinding: { mode: 'mppx-hmac', secretKey: 'test-secret-must-be-at-least-32-bytes' },
       },
       { mockedIsContractDeployed: () => true },
     )
@@ -399,12 +402,9 @@ describe('charge(prepared) factory output', () => {
     expect(md.permit2Address).toBe('0x000000000022D473030F116dDEE9F6B43aC78BA3')
   })
 
-  test('ships evmHttpTransport as per-method transport override (spec §13.4.1 C2 auto-wire)', async () => {
+  test('uses the host mppx transport (mppx 0.8 preserves method-specific receipt fields)', async () => {
     const server = charge(await happy())
-    // evmHttpTransport names itself 'evm-http' so deployment + debugging tools
-    // can distinguish it from mppx's default Transport.http (name='http').
-    expect(server.transport).toBeTruthy()
-    expect((server.transport as { name?: string }).name).toBe('evm-http')
+    expect(server.transport).toBeUndefined()
   })
 
   test('request hook rejects route currency override (spec §14.10)', async () => {
@@ -938,6 +938,6 @@ function makeChallenge(mdOverrides: Record<string, unknown> = {}) {
       },
     } as never,
     expires: new Date(Date.now() + 60_000).toISOString(),
-    secretKey: 'test-secret',
+    secretKey: 'test-secret-must-be-at-least-32-bytes',
   })
 }

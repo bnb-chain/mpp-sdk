@@ -20,14 +20,14 @@ export const DRAFT_URL = 'https://paymentauth.org/draft-evm-charge-00.html' as c
 
 /**
  * The mppx git commit SHA whose API surface this SDK was validated against.
- * A spike (2026-05-28) confirmed this snapshot's Method / Challenge /
+ * A migration audit (2026-07-21) confirmed this snapshot's Method / Challenge /
  * Credential / Receipt / Store / Errors / zod helpers; later mppx releases
  * may diverge and SHOULD be re-validated.
  *
  * Bump only after re-running the §22 spike checklist and updating the
  * REWRITE-SPEC §22 baseline table.
  */
-export const MPPX_SHA = '5aed74bfe46315ff3f27524ea8bb72e251bf771d' as const
+export const MPPX_SHA = 'b4334f0f0683930a1c9061d78de3a5255caaf962' as const
 
 /**
  * Permit2 canonical deployment address (Uniswap Labs deterministic deployment).

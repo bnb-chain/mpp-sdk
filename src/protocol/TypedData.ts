@@ -8,10 +8,9 @@
  *
  * Two normative invariants enforced here:
  *
- *   1. `PaymentWitness` struct contains EXACTLY `{ bytes32 challengeHash }`.
- *      Do NOT add `externalId`, `description`, `splits`, or any other field.
- *      The draft binds those via the canonical challenge.id → challengeHash
- *      chain (see comment block on PaymentWitness below).
+ *   1. `PaymentWitness` contains exactly `{ bytes32 challengeHash;
+ *      string externalId; }`. `externalId` is `""` when absent from the
+ *      challenge request (draft §5.2.3).
  *
  *   2. Domain `verifyingContract` MUST come from
  *      `challenge.request.methodDetails.permit2Address` at runtime — NOT
@@ -27,13 +26,14 @@ import { encodePacked, type Address, type Hex, keccak256 } from 'viem'
 /* -------------------------------------------------------------------------- */
 
 /**
- * EIP-712 type string for Permit2 PaymentWitness wrapping. MUST match
- * draft-evm-charge-00 §5.2 character-for-character — diff this against the
- * draft text whenever the draft is bumped.
+ * EIP-712 type string for Permit2 PaymentWitness wrapping. The draft prose
+ * prints a space after the field comma; EIP-712 canonical encodeType does
+ * not. Permit2 must receive the canonical no-space form below or its on-chain
+ * type hash diverges from wallet signatures (see docs/spec-compliance.md).
  *
  * Format: `<wrapper-type> witness)<inner-types-in-alphabetical-order>`
  *   - wrapper:  `PaymentWitness witness)`
- *   - inner #1: `PaymentWitness(bytes32 challengeHash)`
+ *   - inner #1: `PaymentWitness(bytes32 challengeHash,string externalId)`
  *   - inner #2: `TokenPermissions(address token,uint256 amount)`
  *
  * The string omits the `PermitWitnessTransferFrom` / `PermitBatchWitnessTransferFrom`
@@ -41,7 +41,7 @@ import { encodePacked, type Address, type Hex, keccak256 } from 'viem'
  * data hash (see Permit2 source).
  */
 export const PERMIT2_WITNESS_TYPE_STRING =
-  'PaymentWitness witness)PaymentWitness(bytes32 challengeHash)TokenPermissions(address token,uint256 amount)'
+  'PaymentWitness witness)PaymentWitness(bytes32 challengeHash,string externalId)TokenPermissions(address token,uint256 amount)'
 
 /**
  * Compute `witness.challengeHash` for a Permit2 PaymentWitness.
@@ -51,9 +51,9 @@ export const PERMIT2_WITNESS_TYPE_STRING =
  * The same `(challengeId, realm)` pair flows through:
  *   - challenge.id binding (via stored-lookup exact-match or mppx HMAC, §8.0)
  *   - this hash baked into the user's Permit2 signature
- * → any drift in challenge.id or realm invalidates the signature, which is
- * how externalId / description / splits get bound transitively despite the
- * witness struct itself only carrying `challengeHash`.
+ *
+ * `externalId` is also carried directly in the witness; all other request
+ * fields remain bound through the challenge id.
  */
 export function computeChallengeHash(challengeId: string, realm: string): Hex {
   return keccak256(encodePacked(['string', 'string'], [challengeId, realm]))
@@ -79,7 +79,10 @@ export const permit2SingleTypes = {
     { name: 'token', type: 'address' },
     { name: 'amount', type: 'uint256' },
   ],
-  PaymentWitness: [{ name: 'challengeHash', type: 'bytes32' }],
+  PaymentWitness: [
+    { name: 'challengeHash', type: 'bytes32' },
+    { name: 'externalId', type: 'string' },
+  ],
 } as const
 
 /* -------------------------------------------------------------------------- */
@@ -105,7 +108,10 @@ export const permit2BatchTypes = {
     { name: 'token', type: 'address' },
     { name: 'amount', type: 'uint256' },
   ],
-  PaymentWitness: [{ name: 'challengeHash', type: 'bytes32' }],
+  PaymentWitness: [
+    { name: 'challengeHash', type: 'bytes32' },
+    { name: 'externalId', type: 'string' },
+  ],
 } as const
 
 /* -------------------------------------------------------------------------- */

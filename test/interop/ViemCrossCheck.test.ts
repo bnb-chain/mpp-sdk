@@ -50,6 +50,7 @@ const DEADLINE = 1_900_000_000n
 const REALM = 'https://test.example/'
 const CHALLENGE_ID = 'chal_xcheck'
 const CHALLENGE_HASH = computeChallengeHash(CHALLENGE_ID, REALM)
+const EXTERNAL_ID = 'order-cross-check'
 
 /* -------------------------------------------------------------------------- */
 /*  Path B baselines — inline definitions (NO SDK imports)                    */
@@ -73,7 +74,10 @@ const INLINE_PERMIT2_SINGLE_TYPES = {
     { name: 'token', type: 'address' },
     { name: 'amount', type: 'uint256' },
   ],
-  PaymentWitness: [{ name: 'challengeHash', type: 'bytes32' }],
+  PaymentWitness: [
+    { name: 'challengeHash', type: 'bytes32' },
+    { name: 'externalId', type: 'string' },
+  ],
 } as const
 
 const INLINE_PERMIT2_BATCH_TYPES = {
@@ -88,7 +92,10 @@ const INLINE_PERMIT2_BATCH_TYPES = {
     { name: 'token', type: 'address' },
     { name: 'amount', type: 'uint256' },
   ],
-  PaymentWitness: [{ name: 'challengeHash', type: 'bytes32' }],
+  PaymentWitness: [
+    { name: 'challengeHash', type: 'bytes32' },
+    { name: 'externalId', type: 'string' },
+  ],
 } as const
 
 const INLINE_EIP3009_DOMAIN_USDC: TypedDataDomain = {
@@ -119,7 +126,7 @@ describe('Permit2 single typed-data — SDK exports vs inline match', () => {
     spender: PERMIT2,
     nonce: NONCE,
     deadline: DEADLINE,
-    witness: { challengeHash: CHALLENGE_HASH },
+    witness: { challengeHash: CHALLENGE_HASH, externalId: EXTERNAL_ID },
   }
 
   test('hashTypedData identical via Path A (SDK) vs Path B (inline)', () => {
@@ -173,7 +180,7 @@ describe('Permit2 batch typed-data — SDK exports vs inline match', () => {
     spender: PERMIT2,
     nonce: NONCE,
     deadline: DEADLINE,
-    witness: { challengeHash: CHALLENGE_HASH },
+    witness: { challengeHash: CHALLENGE_HASH, externalId: EXTERNAL_ID },
   }
 
   test('hashTypedData identical via Path A vs Path B', () => {
@@ -299,7 +306,7 @@ describe('cross-check catches drift', () => {
       spender: PERMIT2,
       nonce: NONCE,
       deadline: DEADLINE,
-      witness: { challengeHash: CHALLENGE_HASH },
+      witness: { challengeHash: CHALLENGE_HASH, externalId: '' },
     }
     const hashSdk = hashTypedData({
       domain: permit2Domain(CHAIN_ID, PERMIT2),
@@ -311,7 +318,10 @@ describe('cross-check catches drift', () => {
       ...INLINE_PERMIT2_SINGLE_TYPES,
       // Rename `challengeHash` → `paymentHash`. This is a representative
       // drift bug; the hash MUST change.
-      PaymentWitness: [{ name: 'paymentHash', type: 'bytes32' }],
+      PaymentWitness: [
+        { name: 'paymentHash', type: 'bytes32' },
+        { name: 'externalId', type: 'string' },
+      ],
     } as const
     const hashDrift = hashTypedData({
       domain: INLINE_PERMIT2_DOMAIN,
@@ -319,7 +329,7 @@ describe('cross-check catches drift', () => {
       primaryType: 'PermitWitnessTransferFrom',
       message: {
         ...message,
-        witness: { paymentHash: CHALLENGE_HASH },
+        witness: { paymentHash: CHALLENGE_HASH, externalId: EXTERNAL_ID },
       },
     })
     expect(hashSdk).not.toBe(hashDrift)

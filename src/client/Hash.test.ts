@@ -16,7 +16,7 @@ import { preflightChargeForTest } from '../../test/helpers/server/preflightCharg
 import { charge } from '../server/Charge.js'
 import { createHashCredential } from './Hash.js'
 
-const SECRET = 'client-test-secret' as const
+const SECRET = 'client-test-secret-at-least-32-bytes' as const
 const CHAIN_ID = 1
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' as const
 // PERMIT2 fixture no longer needed at the route layer —
