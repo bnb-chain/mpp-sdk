@@ -79,6 +79,34 @@ describe('settleB402', () => {
     ).resolves.toMatchObject({ errorReason: 'insufficient_allowance', success: false })
   })
 
+  test('classifies a failed settlement with a transaction hash as unknown', async () => {
+    const events: unknown[] = []
+    await expect(
+      settleB402({
+        client: {
+          settle: async () => ({
+            errorReason: 'invalid_transaction_state',
+            network: requirements.network,
+            payer: PAYER,
+            success: false,
+            transaction: TX_HASH,
+          }),
+        },
+        expectation,
+        onSettlementUnknown(event) {
+          events.push(event)
+        },
+        request,
+      }),
+    ).rejects.toBeInstanceOf(B402SettlementUnknownError)
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      reason: expect.stringMatching(/failure.*transaction/i),
+      request,
+      status: 'unknown',
+    })
+  })
+
   test.each([
     ['transaction', { transaction: '0x1234' }],
     ['amount', { amount: '1' }],

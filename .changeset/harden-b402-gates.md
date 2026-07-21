@@ -7,7 +7,10 @@ browser-safe buyer Implementation, and merchant Implementation for B402
 EIP-3009 and Permit2 Exact. Both proofs bind their nonce to the MPP Challenge;
 the merchant reconstructs provider requests from authoritative values, validates
 provider responses at runtime, and exposes typed unknown-settlement handoff
-without owning application order storage.
+without owning application order storage. Failed facilitator responses carrying
+transaction evidence are classified as unknown until the host reconciles their
+on-chain outcome; only failures with an empty transaction are definitive
+pre-broadcast rejections.
 
 Add `createB402Facilitator()` for standard mppx EIP-3009 x402 integration and a
 TTL-bounded `/supported` cache. The asynchronous merchant factory validates

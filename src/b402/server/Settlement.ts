@@ -41,7 +41,8 @@ export class B402SettlementUnknownError extends Error {
 
 /**
  * Calls the irreversible B402 endpoint and classifies only provable success.
- * A transport/parser failure or malformed success is ambiguous, never unpaid.
+ * A transport/parser failure, malformed success, or failed response carrying
+ * transaction evidence is ambiguous, never unpaid.
  */
 export async function settleB402(parameters: {
   readonly client: Pick<B402FacilitatorClient, 'settle'>
@@ -59,6 +60,15 @@ export async function settleB402(parameters: {
     })
   }
 
+  // B402 defines an empty transaction as "nothing was broadcast". Once the
+  // facilitator returns any transaction evidence, the application must
+  // reconcile it before allowing another payment attempt, even when B402
+  // reports success=false.
+  if (!result.success && result.transaction !== '') {
+    return throwUnknown(parameters, {
+      reason: `B402 reported failure with transaction ${JSON.stringify(result.transaction)}; confirm its on-chain outcome before retrying`,
+    })
+  }
   if (!result.success) return result
 
   const invalid = invalidSuccessReason(result, parameters.expectation)
