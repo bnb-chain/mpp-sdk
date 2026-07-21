@@ -1,9 +1,9 @@
 name: release
 
 # Changesets-driven release pipeline (mirrors mppx commit 5aed74b
-# `.github/workflows/main.yml`, adapted to this repo's `v1` base branch).
+# `.github/workflows/main.yml`, adapted to this repo's release branches).
 #
-# On every push to v1:
+# On every push to main (and the legacy v1 release branch):
 #   1. `verify` re-runs the full CI gate (lint/types/tests/build) via
 #      workflow_call — a release can never outrun a red branch.
 #   2. `changesets` either:
@@ -22,6 +22,14 @@ name: release
 on:
   push:
     branches: [v1, main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump'
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+        required: true
 
 permissions: {}
 
@@ -41,7 +49,11 @@ jobs:
   changesets:
     name: version PR or npm publish
     # Guard forks: publishing only ever runs from the canonical repo.
-    if: github.repository == 'bnb-chain/mpp-sdk'
+    # Manual recovery runs are accepted from main only; choosing another ref
+    # in the workflow UI must never create a release from a feature branch.
+    if: >-
+      github.repository == 'bnb-chain/mpp-sdk' &&
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -57,6 +69,33 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/install-dependencies
+
+      # A manual dispatch is a recovery seam for a consumed/missing changeset.
+      # It still creates a reviewable version PR; publishing happens only after
+      # that PR is merged and the normal push workflow runs.
+      - name: Create manual release changeset
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          RELEASE_BUMP: ${{ inputs.bump }}
+        run: |
+          if git ls-files '.changeset/*.md' | grep -qv '^.changeset/README.md$'; then
+            echo '::error title=Pending changeset::Merge the existing changeset through the normal release flow instead of adding a manual bump.'
+            exit 1
+          fi
+
+          case "$RELEASE_BUMP" in
+            patch|minor|major) ;;
+            *) echo '::error title=Invalid bump::Expected patch, minor, or major.'; exit 1 ;;
+          esac
+
+          printf '%s\n' \
+            '---' \
+            "'@bnb-chain/mpp': $RELEASE_BUMP" \
+            '---' \
+            '' \
+            'Manual release recovery.' \
+            > .changeset/manual-release.md
 
       # Node 22 bundles npm 10.x, but `changeset publish` shells out to
       # `npm publish`, and OIDC trusted publishing requires npm >= 11.5.1.

@@ -22,7 +22,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The version-regression guard reads package.json from the PR base.
+          fetch-depth: 0
       - uses: ./.github/actions/install-dependencies
+      - name: Test release guards
+        run: node --test .github/scripts/check-version-regression.test.mjs
+      - name: Reject package version regressions
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node .github/scripts/check-version-regression.mjs "$BASE_SHA"
       - name: Lint + fmt check
         run: pnpm check:ci
 
