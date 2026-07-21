@@ -1,7 +1,7 @@
 {
   "name": "@bnb-chain/mpp",
   "description": "MPP payment methods and provider extensions for BNB Chain and EVM applications.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "license": "MIT",
   "repository": {
