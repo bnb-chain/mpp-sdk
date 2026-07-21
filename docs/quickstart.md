@@ -74,7 +74,7 @@ The runnable server below additionally uses `hono` + `@hono/node-server`
 (any HTTP framework works) and `tsx` to run TypeScript directly —
 `pnpm add hono @hono/node-server && pnpm add -D tsx`.
 
-Peers: `mppx ^0.6.28`, `viem ^2.51.0`. **Node ≥ 22.**
+Peers: `mppx ^0.8.12`, `viem ^2.54.0`. **Node ≥ 22.**
 
 Four entry points:
 
@@ -162,7 +162,6 @@ const charge = await chargeAsync({
 const handler = Mppx.create({
   methods: [charge],
   secretKey: process.env.MPP_SECRET_KEY!, // HMAC challenge-binding key
-  // No `transport` — chargeAsync auto-wires evmHttpTransport (receipt codec).
 })
 
 const app = new Hono()

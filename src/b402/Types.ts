@@ -10,18 +10,17 @@
  * `buildEip3009Payment`) and `Permit2EvmPayload` (permit2-exact, built by
  * `buildPermit2ExactPayment`; ADR-0004). Browser-safe (types only).
  *
- * `permit2-upto` appears in the `AssetTransferMethod` union so `/supported`
- * kinds that advertise it still PARSE, but its payload is deliberately NOT
- * modeled: b402 documents its (different) witness struct as contact-the-team
- * only. The mppx bridge (`B402Adapter`) additionally stays eip3009-only — a
- * b402 Permit2 signature can never double as an mppx `permit2` credential.
+ * Unsupported facilitator capabilities are filtered at the runtime response
+ * boundary and do not leak into these payment types. The mppx bridge
+ * (`B402Adapter`) additionally stays eip3009-only — a b402 Permit2 signature
+ * can never double as an mppx `permit2` credential.
  */
 
 /** x402 protocol version. b402 V2 rejects any value other than 2. */
 export const X402_VERSION = 2
 
-export type Scheme = 'exact' | 'upto'
-export type AssetTransferMethod = 'eip3009' | 'permit2-exact' | 'permit2-upto'
+export type Scheme = 'exact'
+export type AssetTransferMethod = 'eip3009' | 'permit2-exact'
 
 /**
  * Scheme-specific details. For eip3009 this carries the token's EIP-712
@@ -84,8 +83,7 @@ export interface ExactEvmPayload {
  * "Permit2 Signing Guide" wire shape. All numeric fields are DECIMAL STRINGS on
  * the wire (they sign as uint256 in the EIP-712 typed data). The witness is
  * exactly `Witness { to, validAfter }` — field order and struct name are
- * load-bearing for the typehash. (`permit2-upto` uses a DIFFERENT witness
- * struct and is not modeled — b402 documents it as contact-the-team only.)
+ * load-bearing for the typehash.
  */
 export interface Permit2Authorization {
   readonly permitted: { readonly token: `0x${string}`; readonly amount: string }

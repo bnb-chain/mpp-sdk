@@ -49,7 +49,6 @@ import type {
   ServerParameters,
 } from './charge/types.js'
 import { makeVerifyRouter } from './charge/verifyRouter.js'
-import { evmHttpTransport } from './Transport.js'
 
 /* -------------------------------------------------------------------------- */
 /*  Public type surface — re-exported so @bnb-chain/mpp/server is unchanged.  */
@@ -122,13 +121,6 @@ export function charge(
   const resolvedCredentialTypesKey = JSON.stringify([...resolvedCredentialTypes])
 
   return Method.toServer(chargeMethod, {
-    // —— transport (spec §13.4.1 C2 auto-wire): every EVM Charge method ships
-    //    its own evmHttpTransport so the Payment-Receipt header is encoded
-    //    by serializeEvmReceipt (preserves draft §7.6 challengeId + chainId).
-    //    Per-method `transport` overrides Mppx.create's default — deployments
-    //    don't need to remember to pass it in Mppx.create({ transport }).
-    transport: evmHttpTransport(),
-
     // —— defaults: ALL REQUIRED methodDetails fields must be present here.
     //    mppx createMethodFn parses `{ ...defaults, ...rest }` directly via
     //    schema.request.parse (src/server/Mppx.ts L1231 path), bypassing

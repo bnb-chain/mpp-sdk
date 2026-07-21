@@ -315,7 +315,7 @@ const VALID_PERMIT2_PAYLOAD = {
     deadline: '1700000000',
   },
   transferDetails: [{ to: RECIPIENT, requestedAmount: '1000000' }],
-  witness: { challengeHash: BYTES32 },
+  witness: { challengeHash: BYTES32, externalId: '' },
   signature: SIG_65_BYTE,
 } as const
 

@@ -13,21 +13,15 @@
  *
  * Plus optional `externalId` echoed from the credential payload.
  *
- * The mppx core `Receipt.Schema` covers `method`/`reference`/`status`/
- * `timestamp`/`externalId` but does NOT model `challengeId` or `chainId`.
- * Calling `Receipt.from(...)` on an EVM Charge receipt would strip those
- * two fields silently — see spec §13.2 invariant: verifiers MUST call
- * `buildEvmReceipt(...)` directly and MUST NOT route through `Receipt.from`.
+ * mppx 0.8.12 uses a loose `Receipt.Schema`, so `Receipt.from(...)` now
+ * preserves `challengeId` and `chainId` at runtime. This SDK still owns the
+ * typed EVM receipt builder and fail-closed decoder because mppx's generic
+ * `Receipt.Receipt` type cannot express method-specific required fields.
  *
  * On the wire, the receipt becomes the `Payment-Receipt` header value:
- *   - v1 ships path **C2** (spec §13.4.1): the `charge()` / `chargeAsync()`
- *     factory auto-wires `evmHttpTransport` on the per-method transport
- *     slot, so the custom transport calls `serializeEvmReceipt` directly
- *     and all draft §7.6 fields make it onto the wire regardless of mppx's
- *     default `Receipt.serialize` behaviour. Deployments do NOT need
- *     (and should NOT pass) `transport` to `Mppx.create({...})`.
- *   - Path C1 (transparent passthrough through default Transport.http)
- *     stays as v1.1 candidate (spec §20.3) once CI auto-detect is in place.
+ *   - `charge()` returns a normal mppx method and uses the host transport.
+ *   - `evmHttpTransport` is an optional stricter boundary for custom hosts;
+ *     it is not auto-wired.
  */
 
 /**
@@ -104,9 +98,9 @@ export interface EvmReceiptInput {
 }
 
 /**
- * Branded type guarantees `EvmReceipt` instances came through `buildEvmReceipt`
- * — verifiers that try to call `Receipt.from(...)` (which strips the extras)
- * are caught at compile time.
+ * Branded type guarantees `EvmReceipt` instances came through
+ * `buildEvmReceipt`, so generic receipts cannot accidentally satisfy the
+ * verifier return type without all method-specific fields.
  */
 export type EvmReceipt = EvmReceiptInput & {
   readonly __brand: 'EvmReceipt'
@@ -119,8 +113,8 @@ export type EvmReceipt = EvmReceiptInput & {
 /**
  * Construct an EvmReceipt with all draft §7.6 fields preserved.
  *
- * Verifiers MUST call this — NOT `Receipt.from(...)` — to build the receipt
- * they return from the Method verify hook (spec §13.2).
+ * Verifiers call this to enforce the full method-specific shape before the
+ * receipt reaches mppx's generic transport.
  */
 export function buildEvmReceipt(input: EvmReceiptInput): EvmReceipt {
   // Sanity: enforce method='evm' / status='success' here too in case the
@@ -218,11 +212,8 @@ const EVM_RECEIPT_REQUIRED_FIELDS = [
  * Used by:
  *   1. `deserializeEvmReceipt` — inbound parse guard so bad `Payment-Receipt`
  *      headers throw before reaching application code.
- *   2. `evmHttpTransport().respondReceipt` (src/server/Transport.ts) — outbound
- *      guard so a verifier that accidentally returned a non-EVM receipt throws
- *      before the missing-field response goes out on the wire (rather than
- *      falling back to mppx's default `Receipt.serialize`, which would strip
- *      `challengeId` / `chainId` silently).
+ *   2. Optional `evmHttpTransport().respondReceipt` — outbound guard for
+ *      custom hosts that want strict method-specific validation.
  *
  * Fail-closed by design. Does not coerce, does not normalize.
  */

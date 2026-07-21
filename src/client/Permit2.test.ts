@@ -21,7 +21,7 @@ import { preflightChargeForTest } from '../../test/helpers/server/preflightCharg
 import { charge } from '../server/Charge.js'
 import { createPermit2Credential } from './Permit2.js'
 
-const SECRET = 'permit2-client-test-secret' as const
+const SECRET = 'permit2-client-test-secret-at-least-32-bytes' as const
 const CHAIN_ID = 1
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' as const
 const PERMIT2 = '0x000000000022d473030f116ddee9f6b43ac78ba3' as const
@@ -181,7 +181,7 @@ describe('createPermit2Credential — unit', () => {
       type: string
       permit: { permitted: { token: string; amount: string }[]; nonce: string; deadline: string }
       transferDetails: { to: string; requestedAmount: string }[]
-      witness: { challengeHash: string }
+      witness: { challengeHash: string; externalId: string }
       signature: string
     }
     expect(payload.type).toBe('permit2')
@@ -191,7 +191,30 @@ describe('createPermit2Credential — unit', () => {
     expect(payload.transferDetails).toHaveLength(1)
     expect(payload.transferDetails[0]!.to.toLowerCase()).toBe(RECIPIENT)
     expect(payload.transferDetails[0]!.requestedAmount).toBe(AMOUNT)
+    expect(payload.witness.externalId).toBe('')
     expect(parsed.source).toBe(`did:pkh:eip155:${CHAIN_ID}:${ACCOUNT.address}`)
+  })
+
+  test('copies challenge.request.externalId into PaymentWitness', async () => {
+    const receipt = happyReceipt([transferLog({ to: RECIPIENT, value: BigInt(AMOUNT) })])
+    const handler = await buildHandler(receipt)
+    const challenge = await handler.challenge.evm.charge({ amount: AMOUNT, externalId: 'order-42' })
+
+    const serialized = await createPermit2Credential({
+      challenge,
+      account: ACCOUNT,
+      chainId: CHAIN_ID,
+      permit2Address: PERMIT2,
+      currency: USDC,
+      recipient: RECIPIENT,
+      amount: AMOUNT,
+      nonce: NONCE,
+      deadline: String(Math.floor(Date.now() / 1000) + 600),
+    })
+    const payload = Credential.deserialize(serialized).payload as {
+      witness: { externalId: string }
+    }
+    expect(payload.witness.externalId).toBe('order-42')
   })
 
   test('batch-permit output shape (with splits)', async () => {
@@ -283,7 +306,8 @@ describe('createPermit2Credential — round-trip with server verifier', () => {
   test('single-permit handler.verifyCredential round-trip', async () => {
     const receipt = happyReceipt([transferLog({ to: RECIPIENT, value: BigInt(AMOUNT) })])
     const handler = await buildHandler(receipt)
-    const challenge = await handler.challenge.evm.charge(fullRequest)
+    const request = { amount: AMOUNT, externalId: 'order-roundtrip' } as const
+    const challenge = await handler.challenge.evm.charge(request)
 
     const serialized = await createPermit2Credential({
       challenge,
@@ -297,12 +321,13 @@ describe('createPermit2Credential — round-trip with server verifier', () => {
       deadline: String(Math.floor(Date.now() / 1000) + 600),
     })
 
-    const out = await handler.verifyCredential(serialized, { request: fullRequest })
+    const out = await handler.verifyCredential(serialized, { request })
     expect(out).toMatchObject({
       method: 'evm',
       status: 'success',
       challengeId: challenge.id,
       chainId: CHAIN_ID,
+      externalId: 'order-roundtrip',
     })
   })
 

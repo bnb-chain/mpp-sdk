@@ -12,10 +12,10 @@ points sharing one wire contract:
   `pay(url, { wallet, policy })`, the high-level buyer entry that auto-selects
   a route by capability + policy (Phase 1 of the Payment Offer Layer,
   [adr/0003](adr/0003-payment-offer-layer.md); mpp-only today)
-- `@bnb-chain/mpp/b402` (+ `/server`, `/mppx`) — the Binance OnchainPay (x402
-  v2) facilitator integration: `b402` (wire) + `b402/server` (RSA-signed client)
-  stay core-free; `b402/mppx` bridges b402 into the charge flow as a
-  `SettleAdapter` ([b402 section](#b402-x402-facilitator) · [b402.md](b402.md))
+- `@bnb-chain/mpp/b402` (+ `/server`, `/mppx`) — the B402 V2 Exact extension:
+  browser-safe buyer client for `eip3009` / `permit2-exact`, a merchant Exact
+  handler + RSA facilitator client, and an optional MPP authorization
+  settlement bridge ([b402 section](#b402-x402-facilitator) · [b402.md](b402.md))
 
 The **single source of truth for the wire shape** is `src/Methods.ts`
 (`chargeMethod` = a `Method.from({...})` instance). Server and client both
@@ -198,7 +198,8 @@ so the caller can reconcile the exact artifact. The caller's own `request`
 (method / headers / body) is reused on both round-trips — `Authorization` there
 is reserved for the credential and rejected up front. This is Phase 1 of
 [adr/0003](adr/0003-payment-offer-layer.md) — mpp rails only; the cross-rail
-(x402 / b402) selection is the future phase.
+(x402 / b402) selection is intentionally outside `pay()`; standalone B402 uses
+`createB402PaymentClient`, so the two HTTP wires stay explicit.
 
 ### Receipt codec — `src/server/Receipt.ts`
 
@@ -206,10 +207,10 @@ is reserved for the credential and rejected up front. This is Phase 1 of
 implement the `draft §7.6` receipt (`method` / `challengeId` / `reference`
 / `status` / `timestamp` / `chainId` / optional `externalId`). The codec
 is browser-safe (no Node `Buffer`) so the demo can round-trip it
-client-side. mppx's default `Receipt.Schema` drops `challengeId` /
-`chainId`, so the SDK ships its own `evmHttpTransport`
-(`src/server/Transport.ts`) that `charge()` auto-wires on the per-method
-transport slot — deployments never configure `Mppx.create({ transport })`.
+client-side. mppx 0.8.12's loose `Receipt.Schema` preserves `challengeId` /
+`chainId`, so `charge()` uses the host's normal transport. The optional
+`evmHttpTransport` (`src/server/Transport.ts`) adds a stricter fail-closed
+EVM receipt assertion for custom hosts.
 
 ## Challenge binding modes
 
@@ -233,9 +234,41 @@ embedded challenge is trusted (`src/server/ChallengeBinding.ts`):
 touch the charge factory, verify router, replay store, challenge binding, or
 receipt codec. The **only** shared seam is `src/protocol/TypedData.ts` (the
 EIP-3009 `eip3009Types` / `eip3009Domain` primitive) — `src/b402/` imports it,
-and nothing in the core imports `src/b402/`. The server-side `B402Client`
-(RSA-signed `/supported` · `/verify` · `/settle`) is Node-only; the rest of the
-module is browser-safe so a wallet can sign in the browser. Full guide:
+and nothing in the core imports `src/b402/`.
+
+The module has two server-side paths with different HTTP envelopes:
+
+- **mpp EIP-3009:** `B402Adapter` is a `SettleAdapter`. The core verifies the
+  mpp `authorization` credential, then the adapter reconstructs an x402
+  EIP-3009 payload and delegates only `/settle`. `B402Adapter` does not accept
+  mpp Permit2 credentials because their spender and witness differ from b402's.
+- **standalone B402 Exact:** `createB402ExactHandler` supports `eip3009` and
+  `permit2-exact` behind one merchant-owned payment resolver. It advertises the
+  intersection supported by `/supported`, validates the full attacker-controlled
+  payload, pins every requirement field, reconstructs the forwarded payload
+  from server-owned values, then calls `/verify` and `/settle`. The old fixed /
+  dynamic Permit2 Gate names are compatibility wrappers over this Module.
+- **standalone buyer:** `createB402PaymentClient` performs probe, exact-method
+  selection, signing and paid retry. EIP-3009 is sign-only. Permit2 allowance
+  is checked before signing; insufficient allowance raises an explicit approval
+  request and never broadcasts silently.
+
+`B402Client` (RSA-signed `/supported` · `/verify` · `/settle`) is Node-only.
+Every successful HTTP response crosses a runtime parser in `Response.ts` before
+business logic can trust it. `B402SupportedCache` provides a five-minute
+TTL-bounded, single-flight `/supported` snapshot; pass the same instance to
+`createB402Extension` shares the same cache between the MPP settlement and
+standalone Exact paths so signer/spender rotations are
+observed consistently without a facilitator call on every payment.
+
+A `/verify` failure is side-effect-free. A `/settle` transport failure or an
+incomplete/mismatched success is different: the transfer may already have
+been broadcast. Exact handlers return a structured `B402SettlementUnknown` and invoke
+`onSettlementUnknown` with the exact facilitator request for durable,
+encrypted reconciliation. They never collapse that state into an ordinary
+unpaid rejection. The browser-safe barrel contains only wire types/codecs,
+credential builders, and the buyer orchestrator; it never exposes the merchant
+RSA client. Full guide:
 [b402.md](b402.md).
 
 ## Source map

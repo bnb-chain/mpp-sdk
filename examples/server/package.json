@@ -13,9 +13,9 @@
   "dependencies": {
     "@bnb-chain/mpp": "workspace:*",
     "@hono/node-server": "^1.13.0",
-    "hono": "^4.6.0",
-    "mppx": "^0.6.28",
-    "viem": "^2.51.0"
+    "hono": "^4.12.25",
+    "mppx": "^0.8.12",
+    "viem": "^2.54.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

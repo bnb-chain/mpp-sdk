@@ -135,6 +135,9 @@ export async function createPermit2Credential(
   const challengeId = opts.challenge.id
   const realm = opts.challenge.realm
   const challengeHash = computeChallengeHash(challengeId, realm)
+  // draft §5.2.3: externalId is part of PaymentWitness and MUST be the
+  // empty string when the challenge request omits it.
+  const externalId = parsed.externalId ?? ''
 
   const total = BigInt(opts.amount)
   const splits = resolvedSplits
@@ -234,7 +237,7 @@ export async function createPermit2Credential(
         spender,
         nonce,
         deadline,
-        witness: { challengeHash },
+        witness: { challengeHash, externalId },
       },
     })
   } else {
@@ -247,7 +250,7 @@ export async function createPermit2Credential(
         spender,
         nonce,
         deadline,
-        witness: { challengeHash },
+        witness: { challengeHash, externalId },
       },
     })
   }
@@ -269,7 +272,7 @@ export async function createPermit2Credential(
         to: recipients[i]!,
         requestedAmount: requestedAmount.toString(),
       })),
-      witness: { challengeHash },
+      witness: { challengeHash, externalId },
       signature,
     },
     // draft §6.1 REQUIRED: source MUST match recovered signer.

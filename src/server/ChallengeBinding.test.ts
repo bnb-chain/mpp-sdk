@@ -21,7 +21,7 @@ import { describe, expect, test } from 'vitest'
 import { type ChallengeBindingConfig, makeVerifyChallengeBinding } from './ChallengeBinding.js'
 import { type ChallengeStore, rememberChallenge } from './ChallengeStore.js'
 
-const SECRET = 'test-secret-do-not-use-in-prod' as const
+const SECRET = 'test-secret-do-not-use-in-prod-at-least-32' as const
 
 const MINIMAL_REQUEST = {
   amount: '1000000',

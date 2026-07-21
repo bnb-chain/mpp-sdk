@@ -18,6 +18,7 @@
 
 import { createPrivateKey, createSign, createVerify, type KeyObject } from 'node:crypto'
 
+import { parseSettleResult, parseSupportedResponse, parseVerifyResult } from './Response.js'
 import type {
   PaymentPayload,
   PaymentRequirements,
@@ -38,15 +39,11 @@ export interface B402Credentials {
   readonly privateKey: string
 }
 
-/** A `/verify` or `/settle` request body. `settleAmount` is reserved for the
- *  `permit2-upto` scheme, which the SDK does not build a payload for
- *  (undocumented witness — ADR-0004; kept on the wire type for forward
- *  compatibility). eip3009 and permit2-exact payloads both ride this shape. */
+/** A `/verify` or `/settle` request body for exact eip3009 or permit2-exact. */
 export interface FacilitatorRequest {
   readonly x402Version: number
   readonly paymentPayload: PaymentPayload
   readonly paymentRequirements: PaymentRequirements
-  readonly settleAmount?: string
 }
 
 /** Raised on transport / auth / envelope errors (not on `isValid:false`). */
@@ -169,20 +166,20 @@ export class B402Client {
 
   /** POST /papi/v2/b402/supported — payment kinds + signer addresses (cache it). */
   supported(): Promise<SupportedResponse> {
-    return this.#post<SupportedResponse>('/papi/v2/b402/supported', {})
+    return this.#post('/papi/v2/b402/supported', {}, parseSupportedResponse)
   }
 
   /** POST /papi/v2/b402/verify — off-chain signature check. No gas, repeatable. */
   verify(request: FacilitatorRequest): Promise<VerifyResult> {
-    return this.#post<VerifyResult>('/papi/v2/b402/verify', request)
+    return this.#post('/papi/v2/b402/verify', request, parseVerifyResult)
   }
 
   /** POST /papi/v2/b402/settle — irreversible on-chain transfer. Verify first. */
   settle(request: FacilitatorRequest): Promise<SettleResult> {
-    return this.#post<SettleResult>('/papi/v2/b402/settle', request)
+    return this.#post('/papi/v2/b402/settle', request, parseSettleResult)
   }
 
-  async #post<T>(path: string, payload: unknown): Promise<T> {
+  async #post<T>(path: string, payload: unknown, parse: (value: unknown) => T): Promise<T> {
     // Sign the EXACT bytes we send: serialize once, sign body+timestamp, ship body.
     const body = JSON.stringify(payload)
     const timestamp = Date.now().toString()
@@ -212,7 +209,7 @@ export class B402Client {
       )
     }
 
-    let envelope: { code?: string; message?: string; data?: T }
+    let envelope: { code?: string; message?: string; data?: unknown }
     try {
       envelope = JSON.parse(text) as typeof envelope
     } catch {
@@ -232,6 +229,14 @@ export class B402Client {
         response.status,
       )
     }
-    return envelope.data
+    try {
+      return parse(envelope.data)
+    } catch (cause) {
+      throw new B402Error(
+        `b402 ${path}: malformed success data — ${cause instanceof Error ? cause.message : String(cause)}`,
+        envelope.code,
+        response.status,
+      )
+    }
   }
 }

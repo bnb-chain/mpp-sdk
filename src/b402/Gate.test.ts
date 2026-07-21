@@ -1,5 +1,5 @@
 /**
- * createX402Gate — the one-call standalone-x402 merchant recipe.
+ * createPermit2ExactX402Gate — the one-call standalone-x402 merchant recipe.
  *
  *   1. creation resolves the permit2-exact kind from /supported (echoes extra
  *      verbatim) and FAILS AT BOOT on a missing kind
@@ -14,7 +14,12 @@ import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
 import { describe, expect, test } from 'vitest'
 
 import type { FacilitatorRequest } from './Client.js'
-import { createX402Gate, type X402GateClient } from './Gate.js'
+import {
+  createDynamicPermit2ExactX402Gate,
+  createPermit2ExactX402Gate,
+  createX402Gate,
+  type X402GateClient,
+} from './Gate.js'
 import { decodeXPaymentResponse, encodeXPayment } from './Payload.js'
 import { CURATED_B402_SPENDERS, buildPermit2ExactPayment } from './Permit2.js'
 import type { PaymentRequiredBody, SettleResult, SupportedResponse, VerifyResult } from './Types.js'
@@ -34,18 +39,12 @@ const KIND_EXTRA = {
 
 const SUPPORTED: SupportedResponse = {
   kinds: [
-    // Decoys the resolver must skip: wrong method / wrong scheme / wrong name.
+    // Decoys the resolver must skip: wrong method / wrong name.
     {
       x402Version: 2,
       scheme: 'exact',
       network: NETWORK,
       extra: { ...KIND_EXTRA, assetTransferMethod: 'eip3009' },
-    },
-    {
-      x402Version: 2,
-      scheme: 'upto',
-      network: NETWORK,
-      extra: { ...KIND_EXTRA, assetTransferMethod: 'permit2-upto' },
     },
     {
       x402Version: 2,
@@ -60,6 +59,7 @@ const SUPPORTED: SupportedResponse = {
 }
 
 interface FakeCalls {
+  supported: number
   verify: FacilitatorRequest[]
   settle: FacilitatorRequest[]
 }
@@ -68,20 +68,27 @@ function fakeClient(over: { verify?: VerifyResult; settle?: SettleResult }): {
   client: X402GateClient
   calls: FakeCalls
 } {
-  const calls: FakeCalls = { verify: [], settle: [] }
+  const calls: FakeCalls = { supported: 0, verify: [], settle: [] }
   const client: X402GateClient = {
-    supported: () => Promise.resolve(SUPPORTED),
+    supported: () => {
+      calls.supported += 1
+      return Promise.resolve(SUPPORTED)
+    },
     verify: (r) => {
       calls.verify.push(r)
-      return Promise.resolve(over.verify ?? { isValid: true, payer: '0xpayer' })
+      const payer = (r.paymentPayload.payload as { permit2Authorization: { from: string } })
+        .permit2Authorization.from
+      return Promise.resolve(over.verify ?? { isValid: true, payer })
     },
     settle: (r) => {
       calls.settle.push(r)
+      const payer = (r.paymentPayload.payload as { permit2Authorization: { from: string } })
+        .permit2Authorization.from
       return Promise.resolve(
         over.settle ?? {
           success: true,
           transaction: `0x${'ab'.repeat(32)}`,
-          payer: '0xpayer',
+          payer,
           network: NETWORK,
           amount: '5000000',
         },
@@ -112,10 +119,19 @@ async function signedHeader(requirements: PaymentRequiredBody['accepts'][number]
   return encodeXPayment(payment)
 }
 
-describe('createX402Gate — creation', () => {
+describe('createPermit2ExactX402Gate — creation', () => {
+  test('the explicit Permit2 name and the compatibility alias build the same gate shape', async () => {
+    const { client } = fakeClient({})
+    const [explicit, compatibility] = await Promise.all([
+      createPermit2ExactX402Gate(gateOptions(client)),
+      createX402Gate(gateOptions(client)),
+    ])
+    expect(explicit.requirements).toEqual(compatibility.requirements)
+  })
+
   test('resolves the permit2-exact kind and echoes its extra verbatim', async () => {
     const { client } = fakeClient({})
-    const gate = await createX402Gate(gateOptions(client))
+    const gate = await createPermit2ExactX402Gate(gateOptions(client))
     expect(gate.requirements.extra).toEqual(KIND_EXTRA)
     expect(gate.requirements.scheme).toBe('exact')
     expect(gate.requirements.asset).toBe(ASSET)
@@ -124,28 +140,31 @@ describe('createX402Gate — creation', () => {
   test('fails AT BOOT when /supported has no matching kind (config error)', async () => {
     const { client } = fakeClient({})
     await expect(
-      createX402Gate({ ...gateOptions(client), asset: { address: ASSET, name: 'USDT' } }),
+      createPermit2ExactX402Gate({
+        ...gateOptions(client),
+        asset: { address: ASSET, name: 'USDT' },
+      }),
     ).rejects.toThrow(/no exact\/permit2-exact kind named 'USDT'/)
-    await expect(createX402Gate({ ...gateOptions(client), network: 'eip155:1' })).rejects.toThrow(
-      /eip155:1/,
-    )
+    await expect(
+      createPermit2ExactX402Gate({ ...gateOptions(client), network: 'eip155:1' }),
+    ).rejects.toThrow(/eip155:1/)
   })
 
   test('rejects a non-integer amount at creation', async () => {
     const { client } = fakeClient({})
-    await expect(createX402Gate({ ...gateOptions(client), amount: '0.01' })).rejects.toThrow(
-      /atomic units/,
-    )
-    await expect(createX402Gate({ ...gateOptions(client), amount: '0' })).rejects.toThrow(
-      /atomic units/,
-    )
+    await expect(
+      createPermit2ExactX402Gate({ ...gateOptions(client), amount: '0.01' }),
+    ).rejects.toThrow(/atomic units/)
+    await expect(
+      createPermit2ExactX402Gate({ ...gateOptions(client), amount: '0' }),
+    ).rejects.toThrow(/atomic units/)
   })
 })
 
-describe('createX402Gate — request handling', () => {
+describe('createPermit2ExactX402Gate — request handling', () => {
   test('no X-PAYMENT → 402 with the accepts[] menu', async () => {
     const { client, calls } = fakeClient({})
-    const gate = await createX402Gate(gateOptions(client))
+    const gate = await createPermit2ExactX402Gate(gateOptions(client))
     const result = await gate(new Request('http://x/premium'))
     expect(result.paid).toBe(false)
     if (result.paid) throw new Error('unreachable')
@@ -158,7 +177,7 @@ describe('createX402Gate — request handling', () => {
 
   test('malformed X-PAYMENT → 400 BEFORE any facilitator call', async () => {
     const { client, calls } = fakeClient({})
-    const gate = await createX402Gate(gateOptions(client))
+    const gate = await createPermit2ExactX402Gate(gateOptions(client))
     for (const header of ['%%%not-base64%%%', btoa('{"x402Version":2}')]) {
       const result = await gate(
         new Request('http://x/premium', { headers: { 'X-PAYMENT': header } }),
@@ -173,7 +192,7 @@ describe('createX402Gate — request handling', () => {
 
   test("a well-formed payload for DIFFERENT requirements → 400 (pinned to the gate's offer)", async () => {
     const { client, calls } = fakeClient({})
-    const gate = await createX402Gate(gateOptions(client))
+    const gate = await createPermit2ExactX402Gate(gateOptions(client))
     // Signed against a different payTo — internally consistent, wrong offer.
     const header = await signedHeader({
       ...gate.requirements,
@@ -186,11 +205,56 @@ describe('createX402Gate — request handling', () => {
     expect(calls.verify).toHaveLength(0)
   })
 
+  test('SECURITY: every server-owned requirement field is pinned before facilitator calls', async () => {
+    const mutations: Array<(requirements: PaymentRequiredBody['accepts'][number]) => void> = [
+      (r) => {
+        ;(r as { maxTimeoutSeconds: number }).maxTimeoutSeconds += 1
+      },
+      (r) => {
+        ;(r.extra as { name: string }).name = 'Attacker Token'
+      },
+      (r) => {
+        ;(r.extra as { version: string }).version = '999'
+      },
+      (r) => {
+        ;(r.extra as { signerAddress: string }).signerAddress =
+          '0x9999999999999999999999999999999999999999'
+      },
+    ]
+
+    for (const mutate of mutations) {
+      const { client, calls } = fakeClient({})
+      const gate = await createPermit2ExactX402Gate(gateOptions(client))
+      const account = privateKeyToAccount(generatePrivateKey())
+      const payment = await buildPermit2ExactPayment({
+        account,
+        requirements: gate.requirements,
+        trustedSpenders: [SPENDER],
+      })
+      // The builder intentionally references the provided requirements object;
+      // model a real HTTP attacker by cloning across the JSON boundary before
+      // mutating, so the gate's server-owned object remains unchanged.
+      const hostile = structuredClone(payment)
+      mutate(hostile.accepted)
+
+      const result = await gate(
+        new Request('http://x/premium', {
+          headers: { 'X-PAYMENT': encodeXPayment(hostile) },
+        }),
+      )
+      expect(result.paid).toBe(false)
+      if (result.paid) throw new Error('unreachable')
+      expect(result.response.status).toBe(400)
+      expect(calls.verify).toHaveLength(0)
+      expect(calls.settle).toHaveLength(0)
+    }
+  })
+
   test('verify rejection → 402 replaying the menu, settle NOT called', async () => {
     const { client, calls } = fakeClient({
       verify: { isValid: false, payer: '', invalidReason: 'signature_invalid' },
     })
-    const gate = await createX402Gate(gateOptions(client))
+    const gate = await createPermit2ExactX402Gate(gateOptions(client))
     const header = await signedHeader(gate.requirements)
     const result = await gate(new Request('http://x/premium', { headers: { 'X-PAYMENT': header } }))
     expect(result.paid).toBe(false)
@@ -200,6 +264,41 @@ describe('createX402Gate — request handling', () => {
     expect(body.error).toMatch(/signature_invalid/)
     expect(body.accepts).toEqual([gate.requirements])
     expect(calls.settle).toHaveLength(0)
+  })
+
+  test('verify success for a DIFFERENT payer → 502 and settle NOT called', async () => {
+    const { client, calls } = fakeClient({
+      verify: {
+        isValid: true,
+        payer: '0x9999999999999999999999999999999999999999',
+      },
+    })
+    const gate = await createPermit2ExactX402Gate(gateOptions(client))
+    const header = await signedHeader(gate.requirements)
+    const result = await gate(new Request('http://x/premium', { headers: { 'X-PAYMENT': header } }))
+    expect(result.paid).toBe(false)
+    if (result.paid) throw new Error('unreachable')
+    expect(result.response.status).toBe(502)
+    expect(calls.settle).toHaveLength(0)
+  })
+
+  test('settle success for a DIFFERENT payer → UNKNOWN and does NOT unlock content', async () => {
+    const { client } = fakeClient({
+      settle: {
+        success: true,
+        transaction: `0x${'ab'.repeat(32)}`,
+        payer: '0x9999999999999999999999999999999999999999',
+        network: NETWORK,
+        amount: '5000000',
+      },
+    })
+    const gate = await createPermit2ExactX402Gate(gateOptions(client))
+    const header = await signedHeader(gate.requirements)
+    const result = await gate(new Request('http://x/premium', { headers: { 'X-PAYMENT': header } }))
+    expect(result.paid).toBe(false)
+    if (result.paid) throw new Error('unreachable')
+    expect(result.response.status).toBe(502)
+    expect(result.settlement?.status).toBe('unknown')
   })
 
   test('settle failure → 402 carrying the errorReason', async () => {
@@ -212,7 +311,7 @@ describe('createX402Gate — request handling', () => {
         errorReason: 'payee_not_registered',
       },
     })
-    const gate = await createX402Gate(gateOptions(client))
+    const gate = await createPermit2ExactX402Gate(gateOptions(client))
     const header = await signedHeader(gate.requirements)
     const result = await gate(new Request('http://x/premium', { headers: { 'X-PAYMENT': header } }))
     expect(result.paid).toBe(false)
@@ -254,7 +353,7 @@ describe('createX402Gate — request handling', () => {
       },
     ] satisfies SettleResult[]) {
       const { client } = fakeClient({ settle })
-      const gate = await createX402Gate(gateOptions(client))
+      const gate = await createPermit2ExactX402Gate(gateOptions(client))
       const header = await signedHeader(gate.requirements)
       const result = await gate(
         new Request('http://x/premium', { headers: { 'X-PAYMENT': header } }),
@@ -273,7 +372,7 @@ describe('createX402Gate — request handling', () => {
     // verbatim would let a paying attacker plant extensions.bazaar in b402's
     // discovery index as merchant-attested metadata.
     const { client, calls } = fakeClient({})
-    const gate = await createX402Gate(gateOptions(client))
+    const gate = await createPermit2ExactX402Gate(gateOptions(client))
     const account = privateKeyToAccount(generatePrivateKey())
     const payment = await buildPermit2ExactPayment({
       account,
@@ -298,7 +397,7 @@ describe('createX402Gate — request handling', () => {
   test("options.bazaar rides /settle (and ONLY /settle) as the MERCHANT's extensions", async () => {
     const { client, calls } = fakeClient({})
     const bazaar = { info: { input: {} }, schema: { type: 'object' }, description: 'mine' }
-    const gate = await createX402Gate({ ...gateOptions(client), bazaar })
+    const gate = await createPermit2ExactX402Gate({ ...gateOptions(client), bazaar })
     const header = await signedHeader(gate.requirements)
     const result = await gate(new Request('http://x/premium', { headers: { 'X-PAYMENT': header } }))
     expect(result.paid).toBe(true)
@@ -312,7 +411,7 @@ describe('createX402Gate — request handling', () => {
       ...client,
       verify: () => Promise.reject(new Error('ECONNRESET')),
     }
-    const gate = await createX402Gate({ ...gateOptions(client), client: throwing })
+    const gate = await createPermit2ExactX402Gate({ ...gateOptions(client), client: throwing })
     const header = await signedHeader(gate.requirements)
     const result = await gate(new Request('http://x/premium', { headers: { 'X-PAYMENT': header } }))
     expect(result.paid).toBe(false)
@@ -330,7 +429,7 @@ describe('createX402Gate — request handling', () => {
       ...client,
       settle: () => Promise.reject(new Error('fetch timeout')),
     }
-    const gate = await createX402Gate({ ...gateOptions(client), client: throwing })
+    const gate = await createPermit2ExactX402Gate({ ...gateOptions(client), client: throwing })
     const header = await signedHeader(gate.requirements)
     const result = await gate(new Request('http://x/premium', { headers: { 'X-PAYMENT': header } }))
     expect(result.paid).toBe(false)
@@ -339,11 +438,42 @@ describe('createX402Gate — request handling', () => {
     expect(((await result.response.json()) as { error: string }).error).toMatch(
       /settlement state UNKNOWN/,
     )
+    expect(result.settlement).toMatchObject({
+      status: 'unknown',
+      phase: 'settle',
+      requirements: gate.requirements,
+    })
+  })
+
+  test('settle UNKNOWN invokes the optional reconciliation hook with the exact signed request', async () => {
+    const { client } = fakeClient({})
+    const throwing: X402GateClient = {
+      ...client,
+      settle: () => Promise.reject(new Error('fetch timeout')),
+    }
+    const unknown: unknown[] = []
+    const gate = await createPermit2ExactX402Gate({
+      ...gateOptions(client),
+      client: throwing,
+      onSettlementUnknown: (context) => {
+        unknown.push(context)
+      },
+    })
+    const header = await signedHeader(gate.requirements)
+    const result = await gate(new Request('http://x/premium', { headers: { 'X-PAYMENT': header } }))
+    expect(result.paid).toBe(false)
+    expect(unknown).toHaveLength(1)
+    expect(unknown[0]).toMatchObject({
+      status: 'unknown',
+      phase: 'settle',
+      requirements: gate.requirements,
+      request: { paymentRequirements: gate.requirements },
+    })
   })
 
   test('happy path → paid:true; withPaymentResponse attaches a decodable X-PAYMENT-RESPONSE', async () => {
     const { client, calls } = fakeClient({})
-    const gate = await createX402Gate(gateOptions(client))
+    const gate = await createPermit2ExactX402Gate(gateOptions(client))
     const header = await signedHeader(gate.requirements)
     const result = await gate(new Request('http://x/premium', { headers: { 'X-PAYMENT': header } }))
     expect(result.paid).toBe(true)
@@ -352,6 +482,8 @@ describe('createX402Gate — request handling', () => {
     // verify + settle both received OUR requirements, not buyer-echoed ones.
     expect(calls.verify[0]?.paymentRequirements).toEqual(gate.requirements)
     expect(calls.settle[0]?.paymentRequirements).toEqual(gate.requirements)
+    expect(calls.verify[0]?.paymentPayload.accepted).toEqual(gate.requirements)
+    expect(calls.settle[0]?.paymentPayload.accepted).toEqual(gate.requirements)
 
     const content = new Response(JSON.stringify({ ok: true }), {
       status: 200,
@@ -363,5 +495,60 @@ describe('createX402Gate — request handling', () => {
     expect(settled?.success).toBe(true)
     expect(settled?.transaction).toBe(result.settlement.transaction)
     expect((await final.json()) as { ok: boolean }).toEqual({ ok: true })
+  })
+})
+
+describe('createDynamicPermit2ExactX402Gate', () => {
+  test('resolves per-request amounts while sharing one /supported cache', async () => {
+    const { client, calls } = fakeClient({})
+    const gate = createDynamicPermit2ExactX402Gate({
+      client,
+      resolvePayment: async (request) => ({
+        network: NETWORK,
+        asset: { address: ASSET, name: 'USDT Token' },
+        payTo: PAY_TO,
+        amount: new URL(request.url).searchParams.get('amount') ?? '5000000',
+      }),
+    })
+
+    const url = 'http://x/premium?amount=5000000'
+    const probe = await gate(new Request(url))
+    expect(probe.paid).toBe(false)
+    if (probe.paid) throw new Error('unreachable')
+    const requirements = ((await probe.response.json()) as PaymentRequiredBody).accepts[0]!
+    expect(requirements.amount).toBe('5000000')
+
+    const paid = await gate(
+      new Request(url, { headers: { 'X-PAYMENT': await signedHeader(requirements) } }),
+    )
+    expect(paid.paid).toBe(true)
+    expect(calls.supported).toBe(1)
+  })
+
+  test('pins a paid retry to requirements resolved for that request', async () => {
+    const { client, calls } = fakeClient({})
+    const gate = createDynamicPermit2ExactX402Gate({
+      client,
+      resolvePayment: async (request) => ({
+        network: NETWORK,
+        asset: { address: ASSET, name: 'USDT Token' },
+        payTo: PAY_TO,
+        amount: new URL(request.url).searchParams.get('amount') ?? '5000000',
+      }),
+    })
+
+    const probe = await gate(new Request('http://x/premium?amount=5000000'))
+    if (probe.paid) throw new Error('unreachable')
+    const requirements = ((await probe.response.json()) as PaymentRequiredBody).accepts[0]!
+    const result = await gate(
+      new Request('http://x/premium?amount=6000000', {
+        headers: { 'X-PAYMENT': await signedHeader(requirements) },
+      }),
+    )
+    expect(result.paid).toBe(false)
+    if (result.paid) throw new Error('unreachable')
+    expect(result.response.status).toBe(400)
+    expect(calls.verify).toHaveLength(0)
+    expect(calls.settle).toHaveLength(0)
   })
 })

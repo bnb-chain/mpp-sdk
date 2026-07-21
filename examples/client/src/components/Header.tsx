@@ -15,7 +15,7 @@ export function Header(): JSX.Element {
               <span className="font-medium text-muted-foreground"> · Interactive Demo</span>
             </div>
             <div className="font-mono text-[10px] text-muted-foreground">
-              draft-evm-charge-00 on mppx@0.6.28
+              draft-evm-charge-00 on mppx@0.8.12
             </div>
           </div>
         </a>

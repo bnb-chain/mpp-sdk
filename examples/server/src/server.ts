@@ -28,8 +28,8 @@
  */
 
 import { chargeFromDecimal } from '@bnb-chain/mpp'
-import { b402ChargeParams } from '@bnb-chain/mpp/b402/mppx'
-import { B402Client, createX402Gate } from '@bnb-chain/mpp/b402/server'
+import { createB402Extension } from '@bnb-chain/mpp/b402/mppx'
+import { B402Client, type X402SettlementUnknown } from '@bnb-chain/mpp/b402/server'
 // ── MPP: imports ────────────────────────────────────────────────────────
 import { chargeAsync, type ServerParameters } from '@bnb-chain/mpp/server'
 import { serve } from '@hono/node-server'
@@ -57,6 +57,12 @@ const settlementKey = process.env.SETTLEMENT_PRIVATE_KEY
 // settlement semantics behind a typo'd variable name.
 const b402Client = B402Client.fromEnv()
 const useB402 = b402Client !== undefined
+const b402 = b402Client
+  ? createB402Extension({
+      client: b402Client,
+      methods: ['eip3009', 'permit2-exact'],
+    })
+  : undefined
 
 // Mode-3 chain — EXPLICIT, no default. 'bsc' (MAINNET — real funds; curated
 // $U 0xcE24…6666, domain verified on-chain) is the verified-working eip3009
@@ -72,14 +78,14 @@ if (useB402 && b402Chain !== 'bsc' && (b402Chain as string) !== 'bsc-testnet') {
       `Set B402_CHAIN=bsc for the verified-working eip3009 path (⚠️ MAINNET — real funds), or ` +
       `B402_CHAIN=bsc-testnet knowing authorization settles currently fail there ` +
       `(facilitator domain-name mismatch, docs/adr/0004 open question 2; ` +
-      `the /x402 permit2-exact route DOES work on testnet).`,
+      `the /x402 B402 Exact route can still advertise permit2-exact on testnet).`,
   )
 }
 if (useB402 && b402Chain === 'bsc-testnet') {
   console.warn(
     '[merchant] ⚠️ B402_CHAIN=bsc-testnet: the b402 testnet eip3009 kind mismatches every known ' +
       'testnet $U domain — authorization settles are expected to FAIL (docs/adr/0004 OQ2). ' +
-      'The /x402 permit2-exact route is the working testnet path.',
+      'The /x402 B402 Exact route uses permit2-exact as the working testnet path.',
   )
 }
 // RPC isolation: the top-level RPC_URL is a TESTNET endpoint in this demo's
@@ -87,15 +93,13 @@ if (useB402 && b402Chain === 'bsc-testnet') {
 // Mainnet uses B402_RPC_URL or the curated default.
 const b402Rpc =
   process.env.B402_RPC_URL ?? (b402Chain === 'bsc-testnet' ? process.env.RPC_URL : undefined)
-
-const params: ServerParameters = b402Client
+const params: ServerParameters = b402
   ? {
       // Mode 3 — settle the EIP-3009 authorization via b402 ($U). `recipient`
       // MUST be your b402 payout registered for THIS chain. b402ChargeParams
       // wires credentialTypes ['authorization'] + the B402Adapter settle
       // backend; buyers stay on the same mppx wire (docs/adr/0002).
-      ...b402ChargeParams({
-        client: b402Client,
+      ...b402.chargeParams({
         chain: b402Chain,
         recipient,
         // Opt-in b402 "Bazaar" discovery metadata for /api/premium. Persisted
@@ -164,41 +168,58 @@ app.get('/api/premium', async (c) => {
 // /x402/premium on the pure x402 wire — the Permit2 path for tokens without a
 // usable EIP-3009 door (docs/adr/0004-b402-permit2.md). Same price as
 // /api/premium; the buyer pairing is the client's "x402 · Permit2" tab.
-// createX402Gate does the whole merchant recipe (402 menu → X-PAYMENT
-// validation → verify → settle → X-PAYMENT-RESPONSE); we only add content.
+// createB402Extension().exact() does the whole merchant recipe (402 menu →
+// X-PAYMENT validation → verify → settle → X-PAYMENT-RESPONSE); we only resolve
+// the server-owned payment record and add content.
 const x402Enabled = Boolean(b402Client && process.env.X402_TOKEN_ADDRESS)
-if (b402Client && process.env.X402_TOKEN_ADDRESS) {
-  const gate = await createX402Gate({
-    client: b402Client,
-    network: b402Chain === 'bsc' ? 'eip155:56' : 'eip155:97',
-    asset: {
-      address: process.env.X402_TOKEN_ADDRESS as `0x${string}`,
-      // Must equal the b402 /supported kind's extra.name (the token's EIP-712
-      // domain name, NOT its symbol) — createX402Gate throws at boot otherwise.
-      name: requireEnv('X402_TOKEN_NAME'),
-    },
-    payTo: recipient,
-    amount: PRICE,
-    resource: {
-      url: '/x402/premium',
-      description: 'BNB Chain stablecoin market snapshot (premium, x402/permit2)',
-      mimeType: 'application/json',
+if (b402 && process.env.X402_TOKEN_ADDRESS) {
+  const x402TokenAddress = process.env.X402_TOKEN_ADDRESS as `0x${string}`
+  const x402TokenName = requireEnv('X402_TOKEN_NAME')
+  // DEVELOPMENT ONLY: this survives concurrent requests but not a restart.
+  // Production must write the exact context to a durable database/queue,
+  // encrypted at rest, and reconcile it against on-chain Transfer logs.
+  const unknownSettlements: X402SettlementUnknown[] = []
+  const exact = b402.exact({
+    resolvePayment: () => ({
+      network: b402Chain === 'bsc' ? 'eip155:56' : 'eip155:97',
+      asset: {
+        address: x402TokenAddress,
+        // Must equal the b402 /supported kind's extra.name (the token's
+        // EIP-712 domain name, NOT its symbol).
+        name: x402TokenName,
+      },
+      payTo: recipient,
+      amount: PRICE,
+      resource: {
+        url: '/x402/premium',
+        description: 'BNB Chain stablecoin market snapshot (premium, x402/permit2)',
+        mimeType: 'application/json',
+      },
+    }),
+    onSettlementUnknown: (context) => {
+      unknownSettlements.push(context)
+      console.error(
+        `[merchant] x402 settlement UNKNOWN (${context.requirements.network}, ` +
+          `${context.requirements.amount} atomic units): ${context.reason}; ` +
+          `recorded ${unknownSettlements.length} unresolved payment(s) in memory`,
+      )
     },
   })
   app.get('/x402/premium', async (c) => {
-    const result = await gate(c.req.raw)
+    const result = await exact(c.req.raw)
     if (!result.paid) return result.response // 402 menu, or a 400/402 rejection
     return result.withPaymentResponse(
       c.json({
-        title: 'BNB Chain stablecoin market snapshot (x402 / permit2-exact)',
+        title: `BNB Chain stablecoin market snapshot (x402 / ${result.method})`,
         settledTx: result.settlement.transaction,
         generatedAt: new Date().toISOString(),
       }),
     )
   })
   console.log(
-    `[merchant] x402 route: /x402/premium — permit2-exact ${process.env.X402_TOKEN_NAME} ` +
-      `on ${gate.requirements.network} (spender ${gate.requirements.extra.spenderAddress})`,
+    `[merchant] x402 route: /x402/premium — B402 Exact (eip3009 / permit2-exact) ${x402TokenName} ` +
+      `on ${b402Chain === 'bsc' ? 'eip155:56' : 'eip155:97'} ` +
+      `(dynamic payment resolver; shared /supported TTL cache)`,
   )
 }
 

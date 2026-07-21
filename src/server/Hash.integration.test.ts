@@ -9,8 +9,7 @@
  *   - The handler accepts the credential (HMAC + Expires + verifyHash + the
  *     stub Transfer log all line up)
  *   - The returned Receipt contains every draft §7.6 Table 13 REQUIRED field,
- *     including `challengeId` and `chainId` (the two mppx Receipt.Schema
- *     does not model — this is the C2 invariant)
+ *     including method-specific `challengeId` and `chainId`
  *
  * `verifyCredential` returns the Receipt directly (not a Response); the
  * `Payment-Receipt` header round-trip is exercised separately in
@@ -36,7 +35,7 @@ import { describe, expect, test } from 'vitest'
 import { preflightChargeForTest } from '../../test/helpers/server/preflightChargeForTest.js'
 import { charge } from './Charge.js'
 
-const SECRET = 'integration-test-secret' as const
+const SECRET = 'integration-test-secret-at-least-32-bytes' as const
 const RECIPIENT = '0x2222222222222222222222222222222222222222' as const
 const PAYER = '0x4444444444444444444444444444444444444444' as const
 const TX = `0x${'cd'.repeat(32)}` as const

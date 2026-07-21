@@ -104,7 +104,7 @@ describe('buildPermit2ExactPayment', () => {
     await expect(
       buildPermit2ExactPayment({
         account,
-        requirements: permit2Requirements({ scheme: 'upto' }),
+        requirements: permit2Requirements({ scheme: 'upto' as never }),
         trustedSpenders: TRUSTED,
       }),
     ).rejects.toThrow(/only 'exact'/)
@@ -115,7 +115,7 @@ describe('buildPermit2ExactPayment', () => {
         requirements: {
           ...upto,
           extra: { ...upto.extra, assetTransferMethod: 'permit2-upto' },
-        },
+        } as unknown as typeof upto,
         trustedSpenders: TRUSTED,
       }),
     ).rejects.toThrow(/not 'permit2-exact'/)

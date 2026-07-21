@@ -697,7 +697,7 @@ export function App(): JSX.Element {
         <footer className="space-y-1 border-t border-border pt-8 text-xs text-muted-foreground">
           <div>
             <span className="font-semibold text-foreground">@bnb-chain/mpp</span> ·{' '}
-            <span>draft-evm-charge-00 on mppx@0.6.28</span>
+            <span>draft-evm-charge-00 on mppx@0.8.12</span>
             {chainMatchesWallet === false && (
               <span className="ml-2 text-amber-400">
                 (wallet chain doesn't match selected preset)

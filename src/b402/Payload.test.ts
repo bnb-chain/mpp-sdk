@@ -81,9 +81,12 @@ describe('buildEip3009Payment', () => {
   test('rejects a non-exact scheme (only exact is modeled)', async () => {
     const account = privateKeyToAccount(generatePrivateKey())
     const upto = { ...eip3009Requirements(), scheme: 'upto' as const }
-    await expect(buildEip3009Payment({ account, requirements: upto })).rejects.toThrow(
-      /scheme 'upto'|only 'exact'/,
-    )
+    await expect(
+      buildEip3009Payment({
+        account,
+        requirements: upto as unknown as ReturnType<typeof eip3009Requirements>,
+      }),
+    ).rejects.toThrow(/scheme 'upto'|only 'exact'/)
   })
 })
 

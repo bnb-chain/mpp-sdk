@@ -46,7 +46,7 @@ export type CredentialType = (typeof credentialTypes)[number]
  * ⚠️ Do NOT use mppx `z.amount()`. Its internal regex is `/^\d+(\.\d+)?$/`,
  *    which allows decimal strings like "1.5" — that violates draft-evm-charge-00
  *    §4.1's base-units integer requirement. See mppx src/zod.ts amount()
- *    helper (commit 5aed74b).
+ *    helper (mppx 0.8.12, commit b4334f0).
  */
 const positiveBaseUnitAmount = z
   .string()
@@ -56,7 +56,7 @@ const hexString = z.string().check(z.regex(/^0x[0-9a-fA-F]+$/, 'expected 0x-pref
 
 /**
  * 0x-prefixed 32-byte hex string. mppx `z.hash()` is equivalent (confirmed
- * against commit 5aed74b src/zod.ts), but we keep a local definition so the
+ * against mppx 0.8.12 commit b4334f0 src/zod.ts), but we keep a local definition so the
  * wire shape doesn't drift with future mppx releases.
  */
 const bytes32 = z.string().check(z.regex(/^0x[0-9a-fA-F]{64}$/, 'expected 0x-prefixed 32-byte hex'))
@@ -67,7 +67,7 @@ const txHash = bytes32
 /**
  * 0x-prefixed 20-byte EVM address. mppx `z.address()` is equivalent
  * (0x + 40 hex, case-insensitive accepted, no EIP-55 enforcement —
- * confirmed against commit 5aed74b src/zod.ts).
+ * confirmed against mppx 0.8.12 commit b4334f0 src/zod.ts).
  *
  * We keep a local definition so:
  *   - draft-evm-charge-00's "decoded 20-byte compare" semantics are explicit
@@ -88,7 +88,7 @@ const evmAddress = z
  *
  * ⚠️ Do NOT use mppx `z.signature()`. Its internal regex is `^0x[0-9a-fA-F]+$`
  *    — any hex length passes, including "0xabcdef" (confirmed against
- *    commit 5aed74b src/zod.ts). That's too loose for EVM Charge, where
+ *    mppx 0.8.12 commit b4334f0 src/zod.ts). That's too loose for EVM Charge, where
  *    permit2 / EIP-3009 signatures MUST be 64 or 65 bytes.
  */
 const evmSignature = z
@@ -217,7 +217,7 @@ const credentialPayload = z.discriminatedUnion('type', [
     transferDetails: z
       .array(z.object({ to: evmAddress, requestedAmount: positiveBaseUnitAmount }))
       .check(z.minLength(1)),
-    witness: z.object({ challengeHash: bytes32 }),
+    witness: z.object({ challengeHash: bytes32, externalId: z.string() }),
     signature: evmSignature,
   }),
   // —— authorization (EIP-3009 transferWithAuthorization) ——

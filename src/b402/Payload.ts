@@ -187,6 +187,10 @@ function isMatch(v: unknown, re: RegExp): boolean {
   return typeof v === 'string' && re.test(v)
 }
 
+function sameAddress(a: unknown, b: unknown): boolean {
+  return typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase()
+}
+
 /**
  * Narrow an untrusted decoded value to a well-formed `exact` / `eip3009` /
  * x402-v2 `PaymentPayload`. `decodeXPayment` only JSON-parses + casts, so code
@@ -229,14 +233,23 @@ export function isEip3009PaymentPayload(value: unknown): value is Eip3009Payment
   if (!isMatch(payload['signature'], HEX_SIGNATURE)) return false
   const auth = payload['authorization']
   if (!isRecord(auth)) return false
-  return (
-    isMatch(auth['from'], HEX_ADDRESS) &&
-    isMatch(auth['to'], HEX_ADDRESS) &&
-    isMatch(auth['value'], DECIMAL) &&
-    isMatch(auth['validAfter'], DECIMAL) &&
-    isMatch(auth['validBefore'], DECIMAL) &&
-    isMatch(auth['nonce'], HEX_BYTES32)
-  )
+  if (
+    !(
+      isMatch(auth['from'], HEX_ADDRESS) &&
+      isMatch(auth['to'], HEX_ADDRESS) &&
+      isMatch(auth['value'], DECIMAL) &&
+      isMatch(auth['validAfter'], DECIMAL) &&
+      isMatch(auth['validBefore'], DECIMAL) &&
+      isMatch(auth['nonce'], HEX_BYTES32)
+    )
+  ) {
+    return false
+  }
+
+  // A syntactically valid authorization for a different recipient or amount
+  // cannot satisfy this offer. Reject it before any facilitator call, matching
+  // the permit2-exact validator's cross-field pinning.
+  return sameAddress(auth['to'], accepted['payTo']) && auth['value'] === accepted['amount']
 }
 
 /** A fresh, unguessable 32-byte b402/x402 nonce (random, not challenge-bound). */

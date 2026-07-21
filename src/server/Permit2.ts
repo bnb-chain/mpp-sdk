@@ -17,7 +17,8 @@
  *     7. transferDetails[0].requestedAmount === amount - sum(splits[].amount)
  *     8. each split i: transferDetails[i+1].to === splits[i].recipient AND
  *                      transferDetails[i+1].requestedAmount === splits[i].amount
- *     9. witness.challengeHash === computeChallengeHash(challenge.id, challenge.realm)
+ *     9. witness === { challengeHash, externalId }, with absent request
+ *        externalId normalized to the empty string
  *    10. viem.verifyTypedData(...) → recoveredSigner (primaryType per single/batch)
  *    11. credential.source is REQUIRED and MUST equal
  *        `did:pkh:eip155:${chainId}:${recoveredSigner}` (draft §6.1 normative)
@@ -125,7 +126,7 @@ interface PermitPayload {
     readonly to: Address
     readonly requestedAmount: string
   }>
-  readonly witness: { readonly challengeHash: Hex }
+  readonly witness: { readonly challengeHash: Hex; readonly externalId: string }
   readonly signature: Hex
 }
 
@@ -289,11 +290,14 @@ const PERMIT2_NONCE_BITMAP_ABI = [
 ] as const
 
 /**
- * EIP-712 typeHash for `PaymentWitness(bytes32 challengeHash)`. Used to
+ * EIP-712 typeHash for
+ * `PaymentWitness(bytes32 challengeHash,string externalId)`. Used to
  * compute the `bytes32 witness` parameter to Permit2 — Permit2 contract
  * expects the hashStruct of the witness data, not the raw struct.
  */
-const PAYMENT_WITNESS_TYPEHASH = keccak256(toBytes('PaymentWitness(bytes32 challengeHash)'))
+const PAYMENT_WITNESS_TYPEHASH = keccak256(
+  toBytes('PaymentWitness(bytes32 challengeHash,string externalId)'),
+)
 
 /* -------------------------------------------------------------------------- */
 /*  verifyPermit2                                                             */
@@ -441,6 +445,13 @@ export async function verifyPermit2({
       reason: `witness.challengeHash mismatch — expected ${expectedChallengeHash}, got ${witness.challengeHash}`,
     })
   }
+  const expectedExternalId = externalId ?? ''
+  if (witness.externalId !== expectedExternalId) {
+    throw new Errors.VerificationFailedError({
+      ...(challengeId && { id: challengeId }),
+      reason: `witness.externalId mismatch — expected ${JSON.stringify(expectedExternalId)}, got ${JSON.stringify(witness.externalId)}`,
+    })
+  }
 
   // ── Step 10: EIP-712 verify + recover signer ──────────────────────────
   const domain = permit2Domain(chainId, permit2Address)
@@ -466,7 +477,7 @@ export async function verifyPermit2({
         spender: permit2Spender,
         nonce: BigInt(permit.nonce),
         deadline: BigInt(permit.deadline),
-        witness: { challengeHash: witness.challengeHash },
+        witness: { challengeHash: witness.challengeHash, externalId: witness.externalId },
       }
       recoveredSigner = await recoverTypedDataAddress({
         domain,
@@ -484,7 +495,7 @@ export async function verifyPermit2({
         spender: permit2Spender,
         nonce: BigInt(permit.nonce),
         deadline: BigInt(permit.deadline),
-        witness: { challengeHash: witness.challengeHash },
+        witness: { challengeHash: witness.challengeHash, externalId: witness.externalId },
       }
       recoveredSigner = await recoverTypedDataAddress({
         domain,
@@ -576,8 +587,8 @@ export async function verifyPermit2({
     // Compute witness bytes32 (Permit2 wants the hashStruct, not the raw).
     const witnessHash = keccak256(
       encodeAbiParameters(
-        [{ type: 'bytes32' }, { type: 'bytes32' }],
-        [PAYMENT_WITNESS_TYPEHASH, witness.challengeHash],
+        [{ type: 'bytes32' }, { type: 'bytes32' }, { type: 'bytes32' }],
+        [PAYMENT_WITNESS_TYPEHASH, witness.challengeHash, keccak256(toBytes(witness.externalId))],
       ),
     )
 

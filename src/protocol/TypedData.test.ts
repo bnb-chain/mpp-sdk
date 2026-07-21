@@ -38,19 +38,22 @@ import {
 /* -------------------------------------------------------------------------- */
 
 describe('PERMIT2_WITNESS_TYPE_STRING (draft-evm-charge-00 §5.2)', () => {
-  test('byte-for-byte spec string', () => {
+  test('byte-for-byte canonical Permit2 string', () => {
     expect(PERMIT2_WITNESS_TYPE_STRING).toBe(
-      'PaymentWitness witness)PaymentWitness(bytes32 challengeHash)TokenPermissions(address token,uint256 amount)',
+      'PaymentWitness witness)PaymentWitness(bytes32 challengeHash,string externalId)TokenPermissions(address token,uint256 amount)',
     )
   })
 })
 
-describe('PaymentWitness invariant: only { challengeHash }', () => {
-  test('permit2SingleTypes.PaymentWitness has exactly one field', () => {
-    expect(permit2SingleTypes.PaymentWitness).toEqual([{ name: 'challengeHash', type: 'bytes32' }])
+describe('PaymentWitness invariant: { challengeHash, externalId }', () => {
+  test('permit2SingleTypes.PaymentWitness has exactly the draft fields', () => {
+    expect(permit2SingleTypes.PaymentWitness).toEqual([
+      { name: 'challengeHash', type: 'bytes32' },
+      { name: 'externalId', type: 'string' },
+    ])
   })
 
-  test('permit2BatchTypes.PaymentWitness has exactly one field (matches single)', () => {
+  test('permit2BatchTypes.PaymentWitness matches single', () => {
     expect(permit2BatchTypes.PaymentWitness).toEqual(permit2SingleTypes.PaymentWitness)
   })
 })
@@ -140,6 +143,7 @@ const PAYER = '0x1111111111111111111111111111111111111111' as const
 const USDC_ETH = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' as const
 
 const challengeHash = computeChallengeHash(CHALLENGE_ID, REALM)
+const externalId = 'order-42'
 
 describe('Permit2 single hashTypedData fixture', () => {
   test('matches captured hash (drift detector)', () => {
@@ -152,11 +156,11 @@ describe('Permit2 single hashTypedData fixture', () => {
         spender: RECIPIENT,
         nonce: 42n,
         deadline: 1_800_000_000n,
-        witness: { challengeHash },
+        witness: { challengeHash, externalId },
       },
     })
-    // Captured 2026-05-28 with viem.hashTypedData.
-    expect(hash).toBe('0xbecc86e1ed953196b5bfa880a5d2429f85a488788e9796f417cc3cec7da37c11')
+    // Captured 2026-07-21 with viem.hashTypedData after the draft added externalId.
+    expect(hash).toBe('0x325842e905bdd537d37670157cbadc5856c0802de94bd2f3bfe91fc9b4ba5d82')
   })
 })
 
@@ -174,11 +178,11 @@ describe('Permit2 batch hashTypedData fixture', () => {
         spender: RECIPIENT,
         nonce: 43n,
         deadline: 1_800_000_000n,
-        witness: { challengeHash },
+        witness: { challengeHash, externalId },
       },
     })
-    // Captured 2026-05-28 with viem.hashTypedData.
-    expect(hash).toBe('0x207ea0c8ea5009756549374e047c20c067cdfd0840e7c03b309e531e3432fd62')
+    // Captured 2026-07-21 with viem.hashTypedData after the draft added externalId.
+    expect(hash).toBe('0x8bcce7f881dbac0b08ba8581cb5416dd96cdc2eb05de080cdfa72fd276084501')
   })
 })
 

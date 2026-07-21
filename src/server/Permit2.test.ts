@@ -210,7 +210,7 @@ async function signSinglePermit(): Promise<`0x${string}`> {
         spender: SETTLEMENT_ADDR,
         nonce: BigInt(NONCE),
         deadline: BigInt(DEADLINE),
-        witness: { challengeHash: CHALLENGE_HASH },
+        witness: { challengeHash: CHALLENGE_HASH, externalId: '' },
       },
     },
   )
@@ -233,7 +233,7 @@ async function signBatchPermit(): Promise<`0x${string}`> {
         spender: SETTLEMENT_ADDR,
         nonce: BigInt(NONCE),
         deadline: BigInt(DEADLINE),
-        witness: { challengeHash: CHALLENGE_HASH },
+        witness: { challengeHash: CHALLENGE_HASH, externalId: '' },
       },
     },
   )
@@ -244,6 +244,7 @@ function buildCredentialSingle(
   overrides: {
     deadline?: string
     witnessHash?: `0x${string}`
+    witnessExternalId?: string
     permittedToken?: `0x${string}`
     permittedAmount?: string
     transferTo?: `0x${string}`
@@ -278,7 +279,10 @@ function buildCredentialSingle(
           requestedAmount: overrides.transferAmount ?? AMOUNT,
         },
       ],
-      witness: { challengeHash: overrides.witnessHash ?? CHALLENGE_HASH },
+      witness: {
+        challengeHash: overrides.witnessHash ?? CHALLENGE_HASH,
+        externalId: overrides.witnessExternalId ?? '',
+      },
       signature,
     },
     source: overrides.source ?? `did:pkh:eip155:${CHAIN_ID}:${SIGNER}`,
@@ -320,7 +324,7 @@ function buildCredentialBatch(
           requestedAmount: overrides.splitTransferAmount ?? SPLIT_AMOUNT,
         },
       ],
-      witness: { challengeHash: CHALLENGE_HASH },
+      witness: { challengeHash: CHALLENGE_HASH, externalId: '' },
       signature,
     },
     source: `did:pkh:eip155:${CHAIN_ID}:${SIGNER}`,
@@ -734,6 +738,21 @@ describe('verifyPermit2 local validation (no slot reservation)', () => {
     ).rejects.toThrow(/witness.challengeHash mismatch/)
   })
 
+  test('witness.externalId must equal request.externalId (absent normalizes to empty)', async () => {
+    const sig = await signSinglePermit()
+    const ctx = buildCtx({
+      publicClient: stubPublicClient(),
+      settlementSigner: stubWalletClient(),
+    })
+    await expect(
+      verifyPermit2({
+        credential: buildCredentialSingle(sig, { witnessExternalId: 'attacker-order' }),
+        request: singleRequest,
+        ctx,
+      }),
+    ).rejects.toThrow(/witness.externalId mismatch/)
+  })
+
   test('missing credential.source → throws (draft §6.1 REQUIRED)', async () => {
     const sig = await signSinglePermit()
     const ctx = buildCtx({
@@ -758,7 +777,7 @@ describe('verifyPermit2 local validation (no slot reservation)', () => {
           deadline: DEADLINE,
         },
         transferDetails: [{ to: RECIPIENT, requestedAmount: AMOUNT }],
-        witness: { challengeHash: CHALLENGE_HASH },
+        witness: { challengeHash: CHALLENGE_HASH, externalId: '' },
         signature: sig,
       },
     } as unknown as Permit2VerifierArgs['credential']
@@ -1015,7 +1034,7 @@ describe('verifyPermit2 reads permit2Address from WIRE request', () => {
           spender: SETTLEMENT_ADDR,
           nonce: BigInt(NONCE),
           deadline: BigInt(DEADLINE),
-          witness: { challengeHash: CHALLENGE_HASH },
+          witness: { challengeHash: CHALLENGE_HASH, externalId: '' },
         },
       },
     )
@@ -1048,7 +1067,7 @@ describe('verifyPermit2 reads permit2Address from WIRE request', () => {
             deadline: DEADLINE,
           },
           transferDetails: [{ to: RECIPIENT, requestedAmount: AMOUNT }],
-          witness: { challengeHash: CHALLENGE_HASH },
+          witness: { challengeHash: CHALLENGE_HASH, externalId: '' },
           signature: sig,
         },
         source: `did:pkh:eip155:${CHAIN_ID}:${SIGNER}`,

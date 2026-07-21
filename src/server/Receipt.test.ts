@@ -10,6 +10,7 @@
  *     evmHttpTransport.respondReceipt outbound — see Transport.test.ts)
  */
 
+import { Receipt } from 'mppx'
 import { describe, expect, test } from 'vitest'
 
 import {
@@ -97,7 +98,17 @@ describe('buildEvmReceipt', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('serialize / deserialize round-trip', () => {
-  test('preserves challengeId + chainId (the two mppx Receipt.Schema drops)', () => {
+  test('mppx 0.8 loose Receipt.Schema preserves method-specific fields', () => {
+    const parsed = Receipt.from({ ...minimal() })
+    const back = Receipt.deserialize(Receipt.serialize(parsed)) as typeof parsed & {
+      challengeId: string
+      chainId: number
+    }
+    expect(back.challengeId).toBe('chal_abc')
+    expect(back.chainId).toBe(97)
+  })
+
+  test('preserves challengeId + chainId method-specific fields', () => {
     const r = minimal()
     const wire = serializeEvmReceipt(r)
     const back = deserializeEvmReceipt(wire)

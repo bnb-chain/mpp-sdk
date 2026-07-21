@@ -2,8 +2,8 @@
 
 `@bnb-chain/mpp` implements
 [`draft-evm-charge-00`](https://paymentauth.org/draft-evm-charge-00.html)
-on top of [`mppx@0.6.28`](https://github.com/wevm/mppx) (commit
-[`5aed74b`](https://github.com/wevm/mppx/tree/5aed74bfe46315ff3f27524ea8bb72e251bf771d)).
+on top of [`mppx@0.8.12`](https://github.com/wevm/mppx) (commit
+[`b4334f0`](https://github.com/wevm/mppx/tree/b4334f0f0683930a1c9061d78de3a5255caaf962)).
 
 This document lists where the SDK extends or makes choices the draft
 leaves open. There is exactly **one wire extension** (`permit2Spender`).
@@ -89,14 +89,13 @@ snapshot, no server secret).
 
 ### Receipt compatibility (`draft §7.6`)
 
-The receipt must carry `method` / `challengeId` / `reference` / `status`
-/ `timestamp` / `chainId` (+ optional `externalId`). mppx's default
-`Receipt.Schema` drops `challengeId` / `chainId`, so the SDK ships its own
-`evmHttpTransport` (auto-wired by `charge()` on the per-method transport
-slot) whose `Payment-Receipt` encoding is `serializeEvmReceipt` — a
-deterministic, browser-safe codec independent of future mppx
-`Receipt.serialize` changes. Deployments do NOT configure
-`Mppx.create({ transport })`.
+The receipt carries `method` / `challengeId` / `reference` / `status` /
+`timestamp` / `chainId` (+ optional `externalId`). mppx 0.8.12 uses a
+loose `Receipt.Schema`, so its standard transport preserves method-specific
+fields and `charge()` no longer overrides the host transport. The SDK keeps
+`buildEvmReceipt` and its browser-safe codec for the stronger EVM-specific
+type and runtime validation. `evmHttpTransport` is optional for custom hosts
+that want a fail-closed assertion at the transport boundary.
 
 ### v1 token support
 
@@ -175,27 +174,22 @@ ignored (`assertDidPkhSourceMatches` in
 cannot decode cannot be compared against the recovered signer, and
 silently skipping the check would downgrade the §6.1 binding.
 
-### Spec contradiction in §5.2.3: `externalId` vs. the witness struct
+### §5.2.3 witness type-string whitespace erratum
 
-Draft §5.2.3 contains two normative statements that cannot both be
-satisfied:
+The July 2026 draft now normatively defines
+`PaymentWitness { bytes32 challengeHash; string externalId; }` and requires
+the empty string when `externalId` is absent. The SDK implements that wire
+shape on the client, server, schema, frozen vectors, and Permit2 hashStruct.
 
-1. "When externalId is present in the challenge request, the client
-   MUST include it in the EIP-712 witness struct."
-2. "Implementations MUST use the exact type string above" — and that
-   type string, `PaymentWitness(bytes32 challengeHash)`, has **no
-   `externalId` field**.
-
-The SDK follows the exact type string (#2): `src/protocol/TypedData.ts`
-pins `PERMIT2_WITNESS_TYPE_STRING` to the §5.2.3 literal and the
-`PaymentWitness` struct to exactly `{ bytes32 challengeHash }`.
-`externalId` is still cryptographically bound — transitively:
-`challengeHash = keccak256(challenge.id ‖ challenge.realm)`, and
-`challenge.id` binds the full serialized request (including
-`externalId`) via challenge binding. This contradiction is
-errata-worthy against `draft-evm-charge-00`: statement #1 should read
-"bound via the witness challengeHash", not "included in the witness
-struct".
+The prose's quoted `witnessTypeString` contains a space after the comma:
+`PaymentWitness(bytes32 challengeHash, string externalId)`. EIP-712
+`encodeType`, including viem and Solidity implementations, canonicalizes
+adjacent fields without that space:
+`PaymentWitness(bytes32 challengeHash,string externalId)`. Passing the prose
+literal to Permit2 would make its on-chain type hash differ from the wallet's
+EIP-712 signature. `PERMIT2_WITNESS_TYPE_STRING` therefore uses the canonical
+no-space form. This is a narrow interoperability correction to the draft
+literal, covered by frozen typed-data and viem cross-check vectors.
 
 ### `hashFromPolicy: 'strict_from'` is a consistency check, not submitter authentication
 

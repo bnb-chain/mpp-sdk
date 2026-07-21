@@ -376,7 +376,7 @@ async function signSinglePermit(): Promise<`0x${string}`> {
         spender: P2_SETTLEMENT_ADDR,
         nonce: BigInt(P2_NONCE),
         deadline: BigInt(P2_DEADLINE),
-        witness: { challengeHash: P2_CHALLENGE_HASH },
+        witness: { challengeHash: P2_CHALLENGE_HASH, externalId: '' },
       },
     },
   )
@@ -400,7 +400,7 @@ function buildPermit2Credential(signature: `0x${string}`): Permit2VerifierArgs['
         deadline: P2_DEADLINE,
       },
       transferDetails: [{ to: RECIPIENT, requestedAmount: AMOUNT }],
-      witness: { challengeHash: P2_CHALLENGE_HASH },
+      witness: { challengeHash: P2_CHALLENGE_HASH, externalId: '' },
       signature,
     },
     source: `did:pkh:eip155:${CHAIN_ID}:${P2_SIGNER}`,
