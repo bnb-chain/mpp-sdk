@@ -29,9 +29,9 @@
  *   - The deadline is capped (a long-dated permit is an off-protocol spend
  *     authorization).
  *
- * This is x402-wire only. It does NOT bridge mppx `permit2` credentials to
- * b402 — the two protocols sign different spenders and different witness
- * structs, so one signature cannot serve both (ADR-0002/0003/0004).
+ * This is the B402 provider proof, carried inside `b402/charge`; it is NOT the
+ * standard mppx `evm/charge` Permit2 credential. The two Methods sign different
+ * spenders and witness structs, so one signature cannot serve both.
  */
 
 import { type Hex, type LocalAccount, recoverTypedDataAddress } from 'viem'
@@ -113,6 +113,13 @@ export interface BuildPermit2ExactPaymentOptions {
   readonly validAfter?: string | bigint
   /** Unix seconds; default `now + 3600`. Capped — see module JSDoc. */
   readonly deadline?: string | bigint
+  /**
+   * Optional caller-supplied unordered nonce. Native B402/x402 callers
+   * normally leave this unset for a random nonce; the MPP `b402/charge`
+   * client supplies the Challenge hash so the permit cannot be replayed under
+   * another server-issued Challenge with otherwise identical economics.
+   */
+  readonly nonce?: string | bigint
 }
 
 /**
@@ -179,7 +186,10 @@ export async function buildPermit2ExactPayment(
     )
   }
 
-  const nonce = BigInt(randomB402Nonce())
+  const nonce = options.nonce !== undefined ? BigInt(options.nonce) : BigInt(randomB402Nonce())
+  if (nonce < 0n || nonce >= 1n << 256n) {
+    throw new Error('buildPermit2ExactPayment: nonce must fit uint256')
+  }
 
   const signature = await account.signTypedData({
     domain: b402Permit2Domain(chainId),

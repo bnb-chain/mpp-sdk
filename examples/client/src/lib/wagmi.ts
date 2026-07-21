@@ -4,14 +4,7 @@ import { http, createConfig } from 'wagmi'
 import { bsc, bscTestnet } from 'wagmi/chains'
 
 /**
- * Wagmi config — BSC Testnet (chainId 97) + BSC mainnet (chainId 56):
- *
- * - `hash` broadcasts a real TEST_USDT transfer; `permit2` signs against it
- *   (both testnet, against examples/server).
- * - `authorization` signs the EIP-3009 `transferWithAuthorization` for `$U`
- *   (the b402 web-wallet path — testnet OR mainnet preset). The demo never
- *   broadcasts the authorization itself — a b402-settling server
- *   (examples/server mode 3) does. ⚠️ The mainnet preset moves REAL $U.
+ * Wagmi config for the BSC networks advertised by the B402 demo server.
  *
  * RainbowKit's `injected` connector covers MetaMask and other compatible
  * extensions automatically.
@@ -24,7 +17,7 @@ const connectors = connectorsForWallets(
     },
   ],
   {
-    appName: '@bnb-chain/mpp · Interactive Demo',
+    appName: '@bnb-chain/mpp · B402 Demo',
     projectId: 'mpp-demo', // local-only demo; no WalletConnect projectId required
   },
 )

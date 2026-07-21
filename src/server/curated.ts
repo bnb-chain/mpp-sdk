@@ -576,8 +576,8 @@ const TOKEN_MATRIX: Readonly<
       // all revert, domain unreadable on-chain).
       // ⚠️ b402 CAVEAT: the testnet facilitator's /supported eip3009 kind
       //   advertises extra.name "U", which does NOT match this contract's
-      //   EIP-712 name ("United Stables") — so B402Adapter.#resolveKind finds no
-      //   matching testnet kind and the b402 settle path fails safe (mainnet is
+      //   EIP-712 name ("United Stables") — so the B402 EIP-3009 provider
+      //   Adapter finds no matching testnet kind and fails safe (mainnet is
       //   the verified-working b402 eip3009 chain). Tracked as ADR-0004 open
       //   question 2; the local-signer settle path is unaffected.
       address: '0xc70b8741b8b07a6d61e54fd4b20f22fa648e5565',

@@ -1,5 +1,9 @@
 # ADR 0003 — Payment Offer Layer (multi-rail negotiation)
 
+> The standalone B402 wire and gateway portions of this design are superseded
+> by [ADR-0005](0005-b402-provider-extension.md). The generic `pay()` work
+> described here remains historical context for the EVM Charge Module.
+
 - **Status:** Proposed — design COMPLETE; **Phase 1 implemented** (`src/client/pay/` — the
   `pay({ policy })` buyer surface over the mpp credentials, single-wire, covered by
   `src/client/pay.test.ts`). The standalone B402 Exact merchant/buyer Modules now exist,

@@ -1,14 +1,14 @@
 /**
- * Browser-safe b402 payment helpers: build + sign an EIP-3009 `X-PAYMENT`
- * payload, and encode/decode the header. The EIP-712 typed data reuses this
+ * Browser-safe B402 provider primitives: build + sign an EIP-3009 payment
+ * payload and encode/decode the underlying x402 headers. EIP-712 typed data reuses this
  * SDK's normative `src/protocol/TypedData.ts` (`eip3009Types` / `eip3009Domain`)
  * — the same primitive the mppx `authorization` credential signs, so a single
  * implementation backs both the mppx charge flow and a b402/x402 facilitator.
  *
  * Only viem + Web Crypto are used here, so this runs in the browser (sign via a
  * connected wallet) and in Node alike. The b402-specific bit is the nonce:
- * x402/b402 uses a free random 32-byte nonce (mppx instead binds
- * `nonce = challengeHash`).
+ * standalone x402 can use a random 32-byte nonce; the MPP client supplies
+ * `nonce = challengeHash` to bind the proof to one Challenge.
  */
 
 import { type Hex, type LocalAccount, recoverTypedDataAddress, toHex } from 'viem'
@@ -41,6 +41,12 @@ export interface BuildEip3009PaymentOptions {
    * (the merchant's settlement window).
    */
   readonly validBefore?: string | bigint
+  /**
+   * Optional caller-supplied nonce. Native B402/x402 callers normally leave
+   * this unset for a random nonce; the MPP `b402/charge` client supplies the
+   * Challenge hash so the authorization is bound to that MPP Challenge.
+   */
+  readonly nonce?: Hex
 }
 
 /**
@@ -74,7 +80,7 @@ export async function buildEip3009Payment(
     options.validBefore !== undefined
       ? BigInt(options.validBefore)
       : nowSec + BigInt(requirements.maxTimeoutSeconds)
-  const nonce = randomB402Nonce()
+  const nonce = options.nonce ?? randomB402Nonce()
 
   const signature = await account.signTypedData({
     domain: eip3009Domain({

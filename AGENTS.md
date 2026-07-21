@@ -5,9 +5,9 @@ landing in this repo.
 
 ## Source of truth
 
-- **Wire shape**: `src/Methods.ts` (`chargeMethod`). Server
-  (`@bnb-chain/mpp/server`) and client (`@bnb-chain/mpp/client`) both
-  import this one Method instance — a wire change can't be made one-sided.
+- **Wire shapes**: `src/Methods.ts` (generic `evm/charge`) and
+  `src/b402/Methods.ts` (`b402/charge`). Each server/client pair imports its
+  one shared Method instance — a wire change can't be made one-sided.
 - **Public docs**: [`docs/`](docs/) — `architecture.md`,
   `spec-compliance.md`, `replay-store.md`, `examples.md`, and
   `adr/` (architecture decision records).
@@ -30,8 +30,8 @@ landing in this repo.
 - **Packages**: top-level barrel `@bnb-chain/mpp` (`chargeFromDecimal` +
   receipt codec), `@bnb-chain/mpp/server` (factory + verifiers),
   `@bnb-chain/mpp/client` (credential constructors), `@bnb-chain/mpp/b402`
-  (+ `/server`, `/mppx`) — the Binance OnchainPay (x402 v2) facilitator
-  integration, parallel to the mppx charge flow (see
+  (+ `/client`, `/server`) — the Binance OnchainPay provider extension
+  integrated as MPP payment methods (see
   [`docs/b402.md`](docs/b402.md)).
 
 ## Current implementation status
@@ -52,17 +52,17 @@ end-to-end:
   contract) carries a sentinel zero address (rejected by `preflightCharge`)
   pending a real verified opBNB testnet contract before any live-test
   broadcast.
-- **b402**: EIP-3009 settlement through `B402Adapter`; standalone B402 Exact
-  (`eip3009` + `permit2-exact`) through `createB402Extension().exact()`;
-  browser-safe high-level buyer client; runtime facilitator response parsing;
-  shared TTL `/supported` cache; structured settlement-unknown results.
-  `permit2-upto` remains intentionally unsupported.
+- **B402**: MPP-native `b402/charge` with `eip3009` + `permit2-exact`, plus
+  `createB402Facilitator()` for the standard mppx EIP-3009 x402 Seam. Runtime
+  response parsing, a shared TTL `/supported` cache, and typed unknown-settlement
+  handoff are included. Standalone Gate/buyer orchestration and
+  `permit2-upto` are intentionally unsupported.
 
 ## When touching wire contracts
 
 Re-read the relevant spec section before changing any of:
 
-- `src/Methods.ts` (the wire schema)
+- `src/Methods.ts` or `src/b402/Methods.ts` (wire schemas)
 - `src/protocol/TypedData.ts` (EIP-712 Permit2 + EIP-3009 type strings)
 - `src/server/Receipt.ts` (the `draft §7.6` receipt fields)
 
@@ -128,33 +128,25 @@ src/
 │   │                           (ADR-0003 Phase 1; hard-filter → mode-rank → fail-closed)
 │   └── index.ts                `@bnb-chain/mpp/client` barrel — the four credential
 │                               constructors + the high-level pay().
-└── b402/                       x402 v2 facilitator integration (parallel to charge;
-    │                           only shared seam = protocol/TypedData.ts)
-    ├── Types.ts                x402 v2 wire types (browser-safe)
-    ├── Payload.ts              buildEip3009Payment / X-PAYMENT(-RESPONSE) codecs /
-    │                           recoverEip3009Payer / nonce (browser-safe)
+└── b402/                       B402 provider extension (shared Method + adapters)
+    ├── Methods.ts              `b402/charge` request + credential wire contract
+    ├── Types.ts                x402 v2 provider wire types (browser-safe)
+    ├── Payload.ts              EIP-3009 provider builder / codec / payer recovery
     ├── Permit2.ts              permit2-exact builder / validator / payer recovery
-    ├── Buyer.ts                high-level B402 Exact buyer (probe/select/sign/retry;
-    │                           Permit2 approval is explicit)
-    ├── Client.ts               B402Client — RSA "Tesla" signed /supported·/verify·/settle (Node)
-    ├── Response.ts             runtime parsers for facilitator success bodies
+    ├── Client.ts               RSA-signed /supported·/verify·/settle transport (Node)
+    ├── Response.ts             facilitator response runtime parsers
     ├── Supported.ts            TTL + single-flight /supported cache
-    ├── Exact.ts                shared eip3009 + permit2-exact merchant handler/invariants
-    ├── Gate.ts                 compatibility wrappers for legacy Permit2 Exact Gate APIs
-    ├── index.ts                `@bnb-chain/mpp/b402` barrel (browser-safe, core-free)
-    ├── server/index.ts         `@bnb-chain/mpp/b402/server` barrel (Node-only APIs)
-    └── mppx/index.ts           `@bnb-chain/mpp/b402/mppx` — createB402Extension +
-                                B402Adapter (the b402 subpath that imports core)
+    ├── client/                 `b402/charge` wallet + policy + allowance Interface
+    ├── server/                 payment Method, settlement invariants, standard Adapter
+    └── index.ts                shared browser-safe barrel
 test/                           vitest config + setup; live/ = testnet e2e scaffolds
 ├── helpers/server/             test seams kept OUT of the published src tarball
 │                               (preflightChargeForTest, terminalFailureStore)
 └── interop/                    viem cross-check vectors
-examples/                       exactly two: server (Hono merchant — mppx modes
-                                1-3 + optional /x402 B402 Exact route) and
-                                client (React browser wallet — both wires).
-                                b402 is folded into these: server mode 3
-                                (B402Adapter) + standalone B402 Exact;
-                                client $U authorization + x402 tabs — see docs/examples.md
+examples/                       exactly two: server (minimal Hono merchant) and
+                                client (React wallet), demonstrating only the
+                                MPP-native B402 EIP-3009 + Permit2 Exact paths
+                                — see docs/examples.md
 docs/                           public docs (architecture, spec-compliance, replay-store, examples, adr/)
 ```
 

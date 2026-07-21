@@ -75,6 +75,18 @@ describe('buildPermit2ExactPayment', () => {
     expect(payload.signature).toMatch(/^0x[0-9a-f]{130}$/) // strictly 65 bytes
   })
 
+  test('uses a caller-supplied Challenge nonce as uint256', async () => {
+    const payment = await buildPermit2ExactPayment({
+      account: privateKeyToAccount(generatePrivateKey()),
+      nonce: `0x${'24'.repeat(32)}`,
+      requirements: permit2Requirements(),
+      trustedSpenders: TRUSTED,
+    })
+    expect(payment.payload.permit2Authorization.nonce).toBe(
+      BigInt(`0x${'24'.repeat(32)}`).toString(),
+    )
+  })
+
   test('SECURITY: refuses an empty/missing trustedSpenders list', async () => {
     const account = privateKeyToAccount(generatePrivateKey())
     await expect(

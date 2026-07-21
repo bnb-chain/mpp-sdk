@@ -1,5 +1,4 @@
-# server — the merchant side of the demo pair (Hono, draft-evm-charge-00 +
-# optional b402/x402).
+# Minimal B402 merchant demo (Hono + mppx).
 #
 # IMPORTANT: build context MUST be the repo ROOT, not this directory — the
 # example depends on the workspace package @bnb-chain/mpp, which the root
@@ -7,17 +6,8 @@
 #
 #   docker build -f examples/server/Dockerfile -t mpp-server .
 #
-# Runtime env (set in your deploy platform, NOT baked in) — see .env.example
-# for the full commented matrix:
-#   RECIPIENT_ADDRESS, MPP_SECRET_KEY          required (mode 1 works with just these)
-#   RPC_URL                                     recommended — the bundled public
-#                                               endpoint rate-limits in containers
-#   SETTLEMENT_PRIVATE_KEY                      optional → mode 2 (local permit2 settle)
-#   B402_BASE_URL/_CLIENT_ID/_ACCESS_TOKEN/_PRIVATE_KEY
-#                                               optional → mode 3 (b402 EIP-3009 settle)
-#   B402_CHAIN, B402_RPC_URL, PRICE_DECIMAL     mode-3 tuning ('bsc' = ⚠️ REAL funds)
-#   X402_TOKEN_ADDRESS, X402_TOKEN_NAME         optional → adds the /x402/premium
-#                                               permit2-exact route (needs mode 3)
+# Runtime env is documented in .env.example. B402 credentials and payment
+# configuration are required; secrets must be injected by the deploy platform.
 FROM node:22-slim
 
 # corepack ships the pnpm pinned in package.json's "packageManager" field.
@@ -39,12 +29,6 @@ RUN pnpm build
 # The server runs its TypeScript sources directly via tsx — identical to the
 # `start` script, minus the prestart rebuild (the SDK is already built above).
 WORKDIR /app/examples/server
-# Do NOT set NODE_ENV=production: the SDK then REQUIRES a durable atomic store
-# (spec §9), but this example uses an in-process Store.memory() — fine for a
-# single-instance demo (replay state is lost on restart), rejected under
-# production. Leaving NODE_ENV unset → memory store with a one-time warning.
-# For a real durable deployment, wire a Redis-backed store (docs/replay-store.md)
-# and THEN set NODE_ENV=production.
 ENV PORT=3001
 EXPOSE 3001
 CMD ["node", "--import", "tsx", "--no-warnings", "src/server.ts"]

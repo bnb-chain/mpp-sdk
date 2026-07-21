@@ -58,11 +58,10 @@ export interface ServerParameters {
 
   /**
    * Override the EIP-3009 `authorization` settle step. Default:
-   * `LocalSignerAdapter(settlementSigner)` (this deployment broadcasts). Set a
-   * `B402Adapter` to delegate authorization settlement to the Binance b402
-   * facilitator — then no `settlementAccount` is needed for the authorization
-   * path (b402 broadcasts + pays gas; `recipient` must be your registered b402
-   * payout). `permit2` always settles locally and still needs a signer.
+   * `LocalSignerAdapter(settlementSigner)` (this deployment broadcasts). Set an
+   * external Adapter to delegate authorization settlement; then no
+   * `settlementAccount` is needed for that path. `permit2` always settles
+   * locally and still needs a signer.
    */
   readonly settleBackend?: SettleAdapter
 

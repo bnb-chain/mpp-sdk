@@ -1,14 +1,27 @@
 /**
- * `@bnb-chain/mpp/b402` — browser-safe core for paying / modeling the Binance
- * OnchainPay (b402) x402 v2 facilitator.
+ * `@bnb-chain/mpp/b402` — browser-safe shared Method and provider primitives
+ * for Binance OnchainPay (B402).
  *
- * Exposes the x402 v2 wire types, the `X-PAYMENT` codec, `buildEip3009Payment`
+ * Exposes the `b402/charge` contract, x402 v2 provider types, low-level codecs,
+ * `buildEip3009Payment`
  * (sign an EIP-3009 transfer via a wallet / viem account), and
  * `buildPermit2ExactPayment` (sign a b402 `permit2-exact` PermitWitnessTransferFrom
  * — the path for tokens without a usable EIP-3009 door; see ADR-0004).
  * The server-side credentialed client (`B402Client`, Node `node:crypto`) lives
  * under `@bnb-chain/mpp/b402/server`.
  */
+
+export {
+  B402_CHARGE_PROTOCOL_VERSION,
+  b402ChargeTransferMethods,
+  chargeMethod,
+  type B402ChargeCredentialPayload,
+  type B402ChargeMethodDetails,
+  type B402ChargeRequest,
+  type B402ChargeTransferMethod,
+  type B402Eip3009CredentialPayload,
+  type B402Permit2CredentialPayload,
+} from './Methods.js'
 
 export {
   X402_VERSION,
@@ -55,21 +68,3 @@ export {
   recoverPermit2ExactPayer,
   type BuildPermit2ExactPaymentOptions,
 } from './Permit2.js'
-
-export { B402_EXACT_METHODS, type B402ExactMethod } from './Exact.js'
-
-export {
-  B402PaymentRejectedError,
-  B402PaymentSideEffectError,
-  B402Permit2ApprovalRequiredError,
-  createB402PaymentClient,
-  type B402AssetId,
-  type B402BuyerPolicy,
-  type B402PayOptions,
-  type B402PayResult,
-  type B402PaymentClient,
-  type B402PaymentClientOptions,
-  type B402Permit2AllowanceQuery,
-  type B402Permit2AllowanceReader,
-  type B402Permit2ApprovalRequest,
-} from './Buyer.js'

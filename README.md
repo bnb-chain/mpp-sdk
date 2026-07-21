@@ -16,17 +16,23 @@ Brings the BNB Chain ecosystem (BSC, opBNB) plus the wider EVM landscape (Ethere
 | **Receipt**           | `draft §7.6` `Payment-Receipt` via a browser-safe codec (`buildEvmReceipt` / `serializeEvmReceipt`)                                                                                                                                 |
 | **Replay protection** | 3-state atomic store (inflight / consumed / rejected); durable backend required in production                                                                                                                                       |
 
-All four credential paths are live end-to-end (see `examples/server` + `examples/client`). For the full picture see [`docs/`](docs/) — architecture, spec compliance / extensions, replay store, and example walkthroughs. Release notes are managed with [Changesets](https://github.com/changesets/changesets) (`.changeset/`); `CHANGELOG.md` is generated at publish time — see [`docs/releasing.md`](docs/releasing.md) for the release pipeline.
+All four generic credential paths are covered by the SDK test suite. The
+bundled `examples/server` + `examples/client` pair is deliberately narrower:
+it demonstrates only B402 EIP-3009 and Permit2 Exact over `b402/charge`. For
+the full picture see [`docs/`](docs/) — architecture, spec compliance /
+extensions, replay store, and example walkthroughs. Release notes are managed
+with [Changesets](https://github.com/changesets/changesets) (`.changeset/`);
+`CHANGELOG.md` is generated at publish time — see
+[`docs/releasing.md`](docs/releasing.md) for the release pipeline.
 
 v1 limits: curated token presets only (no arbitrary BYO ERC-20), and the SDK adds one spec extension (`methodDetails.permit2Spender`) that `draft-evm-charge-00` doesn't define but Permit2 settlement requires — see [`docs/spec-compliance.md`](docs/spec-compliance.md).
 
-**Beyond the mppx charge flow**, the SDK also provides a **B402 V2 Exact
-extension**: standalone x402 `eip3009` + `permit2-exact`, plus an MPP
-EIP-3009 settlement backend. `createB402Extension` shares one credentialed
-client and bounded `/supported` cache across those explicit modes;
-`createB402PaymentClient` is the browser-safe buyer entry and never hides a
-Permit2 approval transaction. The SDK does not implement a facilitator,
-business orders, or a reconciliation database. Full guide:
+**Alongside the generic EVM Charge method**, the SDK provides a B402 provider
+extension. Its MPP-native `b402/charge` Method supports B402 EIP-3009 and
+Permit2 Exact; `createB402Facilitator()` plugs B402 EIP-3009 settlement into
+the standard `mppx` `evm/charge` x402 Seam. The SDK does not implement a
+facilitator, merchant orders, an approval UI, or a reconciliation database.
+Permit2 Upto is intentionally unsupported. Full guide:
 [`docs/b402.md`](docs/b402.md).
 
 ## Install
@@ -194,16 +200,16 @@ The SDK ships a curated matrix — every `(chain, token)` pair lands alongside i
 
 The table below lists the **EIP-3009-enabled** anchors (where the `authorization` path is live). Broader issuer-native stablecoin coverage (probe-gated, `authorization` off) is summarized under [Expanded coverage](#expanded-coverage).
 
-| Chain       | Token            | Contract                                                                                           | Decimals | EIP-3009                                                         |
-| ----------- | ---------------- | -------------------------------------------------------------------------------------------------- | -------- | ---------------------------------------------------------------- |
-| ethereum    | USDC             | [`0xa0b8...eb48`](https://etherscan.io/address/0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48)         | 6        | yes (Circle native, domain `USD Coin` / `2`)                     |
-| ethereum    | USDT             | [`0xdac1...1ec7`](https://etherscan.io/address/0xdac17f958d2ee523a2206206994597c13d831ec7)         | 6        | no                                                               |
-| base        | USDC             | [`0x8335...2913`](https://basescan.org/address/0x833589fcd6edb6e08f4c7c32d4f71b54bda02913)         | 6        | yes (Circle native, domain `USD Coin` / `2`)                     |
-| bsc         | BINANCE_PEG_USDT | [`0x55d3...7955`](https://bscscan.com/address/0x55d398326f99059ff775485246999027b3197955)          | 18       | no                                                               |
-| bsc         | FDUSD            | [`0xc5f0...6409`](https://bscscan.com/address/0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409)          | 18       | yes (First Digital Labs, domain `First Digital USD` / `1`)       |
-| bsc         | U                | [`0xcE24...6666`](https://bscscan.com/address/0xcE24439F2D9C6a2289F741120FE202248B666666)          | 18       | yes (United Stables `$U`, domain `United Stables` / `1`)         |
-| sepolia     | USDC             | [`0x1c7D...7238`](https://sepolia.etherscan.io/address/0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238) | 6        | yes (Circle native, domain `USDC` / `2`) — testnet               |
-| bsc-testnet | TEST_USDT        | [`0x3376...4dDd`](https://testnet.bscscan.com/address/0x337610d27c682E347C9cD60BD4b3b107C9d34dDd)  | 18       | no — testnet-only (PancakeSwap test USDT), see `examples/server` |
+| Chain       | Token            | Contract                                                                                           | Decimals | EIP-3009                                                   |
+| ----------- | ---------------- | -------------------------------------------------------------------------------------------------- | -------- | ---------------------------------------------------------- |
+| ethereum    | USDC             | [`0xa0b8...eb48`](https://etherscan.io/address/0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48)         | 6        | yes (Circle native, domain `USD Coin` / `2`)               |
+| ethereum    | USDT             | [`0xdac1...1ec7`](https://etherscan.io/address/0xdac17f958d2ee523a2206206994597c13d831ec7)         | 6        | no                                                         |
+| base        | USDC             | [`0x8335...2913`](https://basescan.org/address/0x833589fcd6edb6e08f4c7c32d4f71b54bda02913)         | 6        | yes (Circle native, domain `USD Coin` / `2`)               |
+| bsc         | BINANCE_PEG_USDT | [`0x55d3...7955`](https://bscscan.com/address/0x55d398326f99059ff775485246999027b3197955)          | 18       | no                                                         |
+| bsc         | FDUSD            | [`0xc5f0...6409`](https://bscscan.com/address/0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409)          | 18       | yes (First Digital Labs, domain `First Digital USD` / `1`) |
+| bsc         | U                | [`0xcE24...6666`](https://bscscan.com/address/0xcE24439F2D9C6a2289F741120FE202248B666666)          | 18       | yes (United Stables `$U`, domain `United Stables` / `1`)   |
+| sepolia     | USDC             | [`0x1c7D...7238`](https://sepolia.etherscan.io/address/0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238) | 6        | yes (Circle native, domain `USDC` / `2`) — testnet         |
+| bsc-testnet | TEST_USDT        | [`0x3376...4dDd`](https://testnet.bscscan.com/address/0x337610d27c682E347C9cD60BD4b3b107C9d34dDd)  | 18       | no — testnet-only (PancakeSwap test USDT)                  |
 
 ### Expanded coverage
 

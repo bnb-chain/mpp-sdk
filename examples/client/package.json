@@ -1,8 +1,8 @@
 {
   "name": "@bnb-chain/mpp-example-client",
   "private": true,
-  "version": "0.0.3",
-  "description": "The buyer side of the @bnb-chain/mpp demo pair — a browser wallet UI (React 18 + shadcn/ui + wagmi v2 + RainbowKit) that pays the example server over both wires: mppx charge (hash / permit2 / EIP-3009 authorization) and standalone x402 (b402 permit2-exact).",
+  "version": "0.0.2",
+  "description": "Browser wallet example for B402 EIP-3009 and Permit2 Exact payments over MPP.",
   "type": "module",
   "scripts": {
     "predev": "pnpm -C ../.. build",
@@ -14,14 +14,7 @@
   },
   "dependencies": {
     "@bnb-chain/mpp": "workspace:*",
-    "@radix-ui/react-label": "^2.1.0",
-    "@radix-ui/react-scroll-area": "^1.1.0",
-    "@radix-ui/react-select": "^2.1.0",
-    "@radix-ui/react-separator": "^1.1.0",
     "@radix-ui/react-slot": "^1.1.0",
-    "@radix-ui/react-switch": "^1.1.0",
-    "@radix-ui/react-tabs": "^1.1.0",
-    "@radix-ui/react-tooltip": "^1.1.0",
     "@rainbow-me/rainbowkit": "^2.1.0",
     "@tanstack/react-query": "^5.51.0",
     "class-variance-authority": "^0.7.0",

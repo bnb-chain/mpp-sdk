@@ -7,8 +7,8 @@
  *   - `LocalSignerAdapter` (here) — this deployment's settlement signer
  *     broadcasts (you self-host the facilitator role; the SDK's original
  *     behaviour).
- *   - facilitator adapters (e.g. `B402Adapter` in `@bnb-chain/mpp/b402/mppx`)
- *     — delegate to a third party that broadcasts + pays gas. Those live OUTSIDE
+ *   - external facilitator adapters — delegate to a third party that broadcasts
+ *     + pays gas. Provider-specific implementations live OUTSIDE
  *     core: this module defines only the settlement seam, never a specific
  *     facilitator.
  *
@@ -145,8 +145,8 @@ export class SettleRejectedError extends Error {
  * preflight/verifier wiring only routes a credential to an adapter that
  * declares it.
  *
- * Facilitator backends (e.g. `B402Adapter`) live in `@bnb-chain/mpp/b402/mppx`,
- * not in core — core knows the seam, not the facilitator.
+ * Provider-specific backends live outside core: core knows the Seam, not the
+ * facilitator.
  */
 export interface SettleAdapter {
   /** Credential types this adapter settles (v1: `'authorization'`). */
