@@ -1,137 +1,106 @@
 # Architecture
 
-`@bnb-chain/mpp` is a collection of MPP payment methods and provider
-extensions built on `mppx`.
+This workspace publishes three packages with one-way dependencies.
 
-## Public Modules
+| Module                | Responsibility                                                                  |
+| --------------------- | ------------------------------------------------------------------------------- |
+| `@bnb-chain/mpp`      | Generic `evm/charge` Method, four credentials, replay and settlement machinery. |
+| `@bnb-chain/b402`     | B402 Provider Module and official x402 client/server Adapters.                  |
+| `@bnb-chain/mpp-b402` | Thin MPP `b402/charge` Adapter backed by `@bnb-chain/b402`.                     |
 
-| Module                       | Responsibility                                                                         |
-| ---------------------------- | -------------------------------------------------------------------------------------- |
-| `@bnb-chain/mpp`             | Shared EVM Charge Method, amount helper, and EVM receipt codec.                        |
-| `@bnb-chain/mpp/client`      | Four `evm/charge` credential Implementations and high-level `pay()`.                   |
-| `@bnb-chain/mpp/server`      | EVM Charge factory, local/on-chain verifiers, replay protection, and settlement Seams. |
-| `@bnb-chain/mpp/b402`        | Shared `b402/charge` contract and browser-safe B402 primitives.                        |
-| `@bnb-chain/mpp/b402/client` | B402 wallet Implementation for EIP-3009 and Permit2 Exact.                             |
-| `@bnb-chain/mpp/b402/server` | B402 merchant Method, authenticated provider client, and EIP-3009 facilitator Adapter. |
+```mermaid
+flowchart LR
+  XC["official x402 client/server"] --> BP["@bnb-chain/b402"]
+  MB["@bnb-chain/mpp-b402"] --> BP
+  MB --> MX["mppx"]
+  MP["@bnb-chain/mpp"] --> MX
+  BP --> BF["Binance-hosted B402 facilitator"]
+```
 
-The generic EVM Module and the B402 provider Module are peers. Adding B402
-does not replace or weaken the original EVM Charge functionality.
+`@bnb-chain/mpp` has no B402 imports. `@bnb-chain/b402` has no MPP or mppx
+imports. This makes the Provider Interface the real Seam: the official x402 SDK
+and the MPP Method are two independent Adapters.
 
 ## Generic EVM Charge
 
-`src/Methods.ts` is the single wire contract for `evm/charge`. Server and
-client import the same Method instance.
+`src/Methods.ts` remains the single wire contract for `evm/charge`.
 
 ```mermaid
 flowchart LR
-  A["Merchant route"] --> B["@bnb-chain/mpp/server charge"]
+  A["Merchant route"] --> B["@bnb-chain/mpp/server"]
   B --> C["mppx Challenge / HMAC"]
   C --> D["@bnb-chain/mpp/client"]
   D --> E["hash | transaction | permit2 | authorization"]
-  E --> F["server verifier + replay CAS"]
-  F --> G["local chain settlement/correlation"]
+  E --> F["verifier + replay CAS"]
+  F --> G["local settlement or transaction confirmation"]
   G --> H["MPP Payment-Receipt"]
 ```
 
-The replay store is independent of Challenge storage. HMAC Challenge binding
-does not remove the requirement for a durable atomic replay store in
-production. See [replay-store.md](replay-store.md).
+The replay store and Challenge store remain separate. See
+[replay-store.md](replay-store.md).
 
-## B402 provider extension
+## B402 Provider Module
 
-`src/b402/Methods.ts` is the single wire contract for the MPP-native
-`b402/charge` method. It exposes two transfer methods under one MPP lifecycle:
+`packages/b402` owns the behavior that must be identical for every caller:
 
-- `eip3009`;
-- `permit2-exact`.
+- B402 EIP-3009 and Permit2 Exact typed data;
+- Tesla RSA transport for `/supported`, `/verify`, and `/settle`;
+- TTL/single-flight supported snapshot caching;
+- runtime response parsing and payer/amount/network/transaction checks;
+- unknown-settlement classification;
+- official x402 `FacilitatorClient`, `SchemeNetworkClient`, and
+  `SchemeNetworkServer` Implementations.
+
+The Module is deep: callers learn one Provider Interface while its
+Implementation retains the signing, trust and settlement invariants. Deleting
+it would duplicate those invariants in both x402 and MPP, so the split improves
+both Leverage and Locality.
 
 ```mermaid
 flowchart LR
-  subgraph Buyer
-    BC["@bnb-chain/mpp/b402/client"]
-  end
-  subgraph MPP
-    CH["b402/charge Challenge"]
-    CR["Credential"]
-    RC["Payment-Receipt"]
-  end
-  subgraph Merchant
-    BS["@bnb-chain/mpp/b402/server"]
-    UH["onSettlementUnknown"]
-  end
-  subgraph Provider
-    SUP["/supported"]
-    VER["/verify"]
-    SET["/settle"]
-  end
-
-  BS --> SUP
-  SUP --> CH
-  CH --> BC
-  BC --> CR
-  CR --> BS
-  BS --> VER
-  VER --> SET
-  SET --> RC
-  SET -. "ambiguous" .-> UH
+  C["x402 client"] --> CS["B402ExactClientScheme"]
+  RS["x402 resource server"] --> SS["B402ExactServerScheme"]
+  SS --> FC["B402FacilitatorClient"]
+  CS --> P["B402 proof primitives"]
+  FC --> T["B402Client RSA transport"]
+  T --> F["hosted facilitator"]
 ```
 
-The Module is deliberately deep: callers configure a wallet or merchant
-client once, while the Implementation hides provider snapshot resolution,
-Challenge nonce binding, payload reconstruction, local signature recovery,
-runtime response parsing, and settlement classification.
+The official x402 SDK owns HTTP headers, retry and resource lifecycle. This
+workspace does not restore a custom Gate or buyer fetch loop.
 
-### Trust boundary
+## MPP B402 Adapter
 
-The merchant configuration owns amount, token, network, recipient, token
-domain, optional Bazaar metadata, and enabled transfer methods. `/supported`
-owns only the current B402 signer/proxy snapshot. Both sets of values are
-bound into the Challenge.
+`packages/mpp-b402/src/Methods.ts` is the single MPP wire contract for
+`b402/charge`. Both transfer methods bind their nonce to the MPP Challenge.
 
-The merchant Method factory is asynchronous: it resolves and validates an
-initial snapshot before route construction, satisfying mppx's synchronous
-canonical-route requirement. Fresh Challenges use the TTL cache; a paid retry
-reuses the snapshot already bound into its original Challenge.
+```mermaid
+flowchart LR
+  MC["@bnb-chain/mpp-b402/client"] --> CH["b402/charge Challenge"]
+  CH --> CR["MPP Credential"]
+  CR --> MS["@bnb-chain/mpp-b402/server"]
+  MS --> BP["@bnb-chain/b402"]
+  BP --> RC["MPP Payment-Receipt"]
+```
 
-The server never forwards a buyer-supplied `accepted`, resource, or extension
-object. It creates a new provider request from the verified Challenge and
-credential proof. Permit2 buyers must also provide a `trustedSpenders`
-allowlist; an HTTP Challenge is not a trust root.
+The MPP Adapter owns Challenge binding, Credential serialization and Receipt
+mapping. It delegates Provider proof validation, snapshots and settlement
+classification to `@bnb-chain/b402`.
 
-### Settlement state
+## Trust and settlement
 
-The shared settlement Implementation accepts a success only when transaction
-hash, amount, network, and payer match the expected payment. A transport/parser
-failure after `/settle` starts, or a malformed success, raises
-`B402SettlementUnknownError` and calls `onSettlementUnknown`.
+The merchant owns amount, asset, network, payout, enabled transfer method and
+optional Bazaar metadata. `/supported` owns the current signer/proxy snapshot.
+The buyer never treats an HTTP-provided Permit2 spender as a trust root;
+`trustedSpenders` is mandatory for Permit2 Exact.
 
-The SDK does not contain an order table or reconciliation store. The callback
-is the Seam into the merchant's existing durable workflow. Persisting its
-signed request is optional; when chosen, the host must protect it as sensitive
-data until the authorization expires.
+Buyer `accepted`, resource and extensions are not forwarded verbatim. The
+Provider Module reconstructs requests from merchant requirements and signed
+proof fields. Bazaar metadata is injected only from merchant configuration.
 
-The success Receipt carries method-specific `challengeId`, `network`, `payer`,
-and `transferMethod` fields (plus configured `externalId`). They give the host
-stable reconciliation inputs, but paid-content/order fulfillment idempotency
-remains an application responsibility.
+After `/settle` begins, transport/parser failures, malformed successes, and
+failed responses carrying transaction evidence are unknown outcomes. The
+typed callback is a Seam into the merchant's durable workflow; this workspace
+does not own order storage or reconciliation policy.
 
-### Standard facilitator compatibility
-
-`createB402Facilitator()` implements the standard `mppx` x402 facilitator
-Interface for EIP-3009. This lets an existing `evm/charge` Integration use
-B402 without adopting the provider-specific method.
-
-B402 Permit2 Exact is not representable by that Interface and stays on
-`b402/charge`. No translation is attempted between incompatible witnesses.
-
-## Provider locality
-
-B402 code stays below `src/b402/`. A later provider should initially use its
-own `/provider`, `/provider/client`, and `/provider/server` Modules. A generic
-provider abstraction should be extracted only after a second Implementation
-proves a stable shared Seam; this avoids coupling provider-specific signing,
-trust, and settlement semantics prematurely.
-
-The decision is recorded in
-[ADR-0005](adr/0005-b402-provider-extension.md). The complete integration
-guide is [b402.md](b402.md).
+See [ADR-0006](adr/0006-b402-package-split.md) and [b402.md](b402.md).

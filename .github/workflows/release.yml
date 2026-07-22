@@ -24,6 +24,12 @@ on:
     branches: [v1, main]
   workflow_dispatch:
     inputs:
+      package:
+        description: 'Package to bump'
+        type: choice
+        options: ['all', '@bnb-chain/mpp', '@bnb-chain/b402', '@bnb-chain/mpp-b402']
+        default: 'all'
+        required: true
       bump:
         description: 'Version bump'
         type: choice
@@ -78,6 +84,7 @@ jobs:
         shell: bash
         env:
           RELEASE_BUMP: ${{ inputs.bump }}
+          RELEASE_PACKAGE: ${{ inputs.package }}
         run: |
           if git ls-files '.changeset/*.md' | grep -qv '^.changeset/README.md$'; then
             echo '::error title=Pending changeset::Merge the existing changeset through the normal release flow instead of adding a manual bump.'
@@ -89,13 +96,23 @@ jobs:
             *) echo '::error title=Invalid bump::Expected patch, minor, or major.'; exit 1 ;;
           esac
 
-          printf '%s\n' \
-            '---' \
-            "'@bnb-chain/mpp': $RELEASE_BUMP" \
-            '---' \
-            '' \
-            'Manual release recovery.' \
-            > .changeset/manual-release.md
+          case "$RELEASE_PACKAGE" in
+            all) RELEASE_PACKAGES=('@bnb-chain/mpp' '@bnb-chain/b402' '@bnb-chain/mpp-b402') ;;
+            '@bnb-chain/mpp'|'@bnb-chain/b402'|'@bnb-chain/mpp-b402')
+              RELEASE_PACKAGES=("$RELEASE_PACKAGE")
+              ;;
+            *) echo '::error title=Invalid package::Unknown release package.'; exit 1 ;;
+          esac
+
+          {
+            echo '---'
+            for package_name in "${RELEASE_PACKAGES[@]}"; do
+              echo "'$package_name': $RELEASE_BUMP"
+            done
+            echo '---'
+            echo
+            echo 'Manual release recovery.'
+          } > .changeset/manual-release.md
 
       # Node 22 bundles npm 10.x, but `changeset publish` shells out to
       # `npm publish`, and OIDC trusted publishing requires npm >= 11.5.1.

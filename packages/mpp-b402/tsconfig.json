@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "paths": {
+      "@bnb-chain/b402": ["../b402/src/index.ts"],
+      "@bnb-chain/b402/client": ["../b402/src/client/index.ts"],
+      "@bnb-chain/b402/server": ["../b402/src/server/index.ts"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test-d.ts"]
+}

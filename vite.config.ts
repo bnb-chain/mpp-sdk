@@ -3,6 +3,12 @@ import path from 'node:path'
 import { defineConfig } from 'vp'
 
 const alias = {
+  '@bnb-chain/b402/server': path.resolve(import.meta.dirname, 'packages/b402/src/server'),
+  '@bnb-chain/b402/client': path.resolve(import.meta.dirname, 'packages/b402/src/client'),
+  '@bnb-chain/b402': path.resolve(import.meta.dirname, 'packages/b402/src'),
+  '@bnb-chain/mpp-b402/server': path.resolve(import.meta.dirname, 'packages/mpp-b402/src/server'),
+  '@bnb-chain/mpp-b402/client': path.resolve(import.meta.dirname, 'packages/mpp-b402/src/client'),
+  '@bnb-chain/mpp-b402': path.resolve(import.meta.dirname, 'packages/mpp-b402/src'),
   '@bnb-chain/mpp/server': path.resolve(import.meta.dirname, 'src/server'),
   '@bnb-chain/mpp/client': path.resolve(import.meta.dirname, 'src/client'),
   '@bnb-chain/mpp': path.resolve(import.meta.dirname, 'src'),
@@ -36,7 +42,7 @@ export default defineConfig({
   },
   test: {
     coverage: {
-      include: ['src/**'],
+      include: ['src/**', 'packages/*/src/**'],
       exclude: ['test/**', '**/*.test-d.ts'],
       thresholds: { statements: 70, branches: 70, functions: 70 },
     },
@@ -46,9 +52,11 @@ export default defineConfig({
         test: {
           name: 'unit',
           alias,
-          include: ['src/**/*.test.ts'],
+          include: ['src/**/*.test.ts', 'packages/*/src/**/*.test.ts'],
           exclude: ['**/node_modules/**', 'src/**/*.live.test.ts'],
-          typecheck: { include: ['src/**/*.test-d.ts'] },
+          typecheck: {
+            include: ['src/**/*.test-d.ts', 'packages/*/src/**/*.test-d.ts'],
+          },
           globals: true,
           retry: 3,
           setupFiles: ['./test/setup.ts'],

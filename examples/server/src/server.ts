@@ -1,10 +1,7 @@
 /** Minimal merchant exposing the two MPP-native B402 settlement paths. */
 
-import {
-  B402Client,
-  b402 as b402Server,
-  type B402SettlementUnknownEvent,
-} from '@bnb-chain/mpp/b402/server'
+import { B402Client, type B402SettlementUnknownEvent } from '@bnb-chain/b402/server'
+import { b402 as b402Server } from '@bnb-chain/mpp-b402/server'
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import { Mppx } from 'mppx/server'

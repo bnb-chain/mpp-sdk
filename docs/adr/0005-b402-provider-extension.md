@@ -1,6 +1,7 @@
 # ADR-0005: Model B402 as an MPP provider extension
 
-- Status: Accepted
+- Status: Superseded by [ADR-0006](0006-b402-package-split.md) for package locality;
+  the MPP Method and safety decisions remain valid.
 - Date: 2026-07-21
 - Supersedes: the B402-specific decisions in ADR-0002, ADR-0003, and ADR-0004
 

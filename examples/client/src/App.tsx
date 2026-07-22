@@ -1,4 +1,4 @@
-import { type B402ChargeRequest } from '@bnb-chain/mpp/b402'
+import { type B402ChargeRequest } from '@bnb-chain/mpp-b402'
 import { ArrowRight, FileSignature, ShieldCheck } from 'lucide-react'
 import * as React from 'react'
 import { useCallback, useState } from 'react'

@@ -27,13 +27,11 @@ with [Changesets](https://github.com/changesets/changesets) (`.changeset/`);
 
 v1 limits: curated token presets only (no arbitrary BYO ERC-20), and the SDK adds one spec extension (`methodDetails.permit2Spender`) that `draft-evm-charge-00` doesn't define but Permit2 settlement requires — see [`docs/spec-compliance.md`](docs/spec-compliance.md).
 
-**Alongside the generic EVM Charge method**, the SDK provides a B402 provider
-extension. Its MPP-native `b402/charge` Method supports B402 EIP-3009 and
-Permit2 Exact; `createB402Facilitator()` plugs B402 EIP-3009 settlement into
-the standard `mppx` `evm/charge` x402 Seam. The SDK does not implement a
-facilitator, merchant orders, an approval UI, or a reconciliation database.
-Permit2 Upto is intentionally unsupported. Full guide:
-[`docs/b402.md`](docs/b402.md).
+Two sibling packages provide B402 without coupling it to generic EVM Charge:
+`@bnb-chain/b402` works directly with the official x402 SDK, while
+`@bnb-chain/mpp-b402` exposes the MPP-native `b402/charge` Method. Both support
+B402 EIP-3009 and Permit2 Exact. Permit2 Upto is intentionally unsupported.
+See [`docs/b402.md`](docs/b402.md).
 
 ## Install
 
@@ -42,6 +40,18 @@ pnpm add @bnb-chain/mpp mppx viem
 ```
 
 Peers: `mppx ^0.8.12`, `viem ^2.54.0`. Node ≥ 22 (development uses Node 22 stable).
+
+For B402 over MPP:
+
+```bash
+pnpm add @bnb-chain/b402 @bnb-chain/mpp-b402 mppx viem
+```
+
+For direct official x402:
+
+```bash
+pnpm add @bnb-chain/b402 @x402/core @x402/fetch viem
+```
 
 ## Quickstart
 

@@ -1,4 +1,4 @@
-import { type B402ChargeTransferMethod } from '@bnb-chain/mpp/b402'
+import { type B402ChargeTransferMethod } from '@bnb-chain/mpp-b402'
 import { type Challenge } from 'mppx'
 import { type Address, type Hex } from 'viem'
 

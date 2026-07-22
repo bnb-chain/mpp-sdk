@@ -13,7 +13,8 @@
     "check:types": "tsgo --noEmit"
   },
   "dependencies": {
-    "@bnb-chain/mpp": "workspace:*",
+    "@bnb-chain/b402": "workspace:*",
+    "@bnb-chain/mpp-b402": "workspace:*",
     "@radix-ui/react-slot": "^1.1.0",
     "@rainbow-me/rainbowkit": "^2.1.0",
     "@tanstack/react-query": "^5.51.0",

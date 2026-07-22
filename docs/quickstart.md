@@ -32,17 +32,17 @@ The runnable server below additionally uses `hono` + `@hono/node-server`
 
 Peers: `mppx ^0.8.12`, `viem ^2.54.0`. **Node ≥ 22.**
 
-Four entry points:
+Generic EVM Charge has three entry points:
 
-| Import                                         | Use it for                                                                                                                                                                                         |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@bnb-chain/mpp/server`                        | The server factory (`chargeAsync` / `preflightCharge`), composed with `Mppx.create()`.                                                                                                             |
-| `@bnb-chain/mpp/client`                        | The four credential constructors (`createHashCredential`, `createPermit2Credential`, …) **plus `pay(url, { wallet, policy })`** — the high-level buyer that auto-selects a route from your policy. |
-| `@bnb-chain/mpp`                               | Universal helpers — `chargeFromDecimal` (decimal → base units) and the `Payment-Receipt` codec.                                                                                                    |
-| `@bnb-chain/mpp/b402` (+ `/client`, `/server`) | B402 provider extension — MPP-native EIP-3009 + Permit2 Exact, or an EIP-3009 facilitator Adapter for standard `mppx` EVM Charge. See [`docs/b402.md`](b402.md).                                   |
+| Import                  | Use it for                                                                                                                                                                                         |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@bnb-chain/mpp/server` | The server factory (`chargeAsync` / `preflightCharge`), composed with `Mppx.create()`.                                                                                                             |
+| `@bnb-chain/mpp/client` | The four credential constructors (`createHashCredential`, `createPermit2Credential`, …) **plus `pay(url, { wallet, policy })`** — the high-level buyer that auto-selects a route from your policy. |
+| `@bnb-chain/mpp`        | Universal helpers — `chargeFromDecimal` (decimal → base units) and the `Payment-Receipt` codec.                                                                                                    |
 
-> B402 is a peer payment-method/provider Module; it does not replace the
-> generic EVM Charge API in this guide. See [`docs/b402.md`](b402.md).
+> B402 is published separately as `@bnb-chain/b402` and
+> `@bnb-chain/mpp-b402`; it does not replace or add dependencies to the generic
+> EVM Charge Module in this guide. See [`docs/b402.md`](b402.md).
 
 ## Concepts in 30 seconds
 

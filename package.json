@@ -1,6 +1,6 @@
 {
   "name": "@bnb-chain/mpp",
-  "description": "MPP payment methods and provider extensions for BNB Chain and EVM applications.",
+  "description": "MPP payment methods for BNB Chain and EVM applications.",
   "version": "0.4.0",
   "type": "module",
   "license": "MIT",
@@ -32,31 +32,16 @@
       "types": "./dist/client/index.d.ts",
       "src": "./src/client/index.ts",
       "default": "./dist/client/index.js"
-    },
-    "./b402": {
-      "types": "./dist/b402/index.d.ts",
-      "src": "./src/b402/index.ts",
-      "default": "./dist/b402/index.js"
-    },
-    "./b402/client": {
-      "types": "./dist/b402/client/index.d.ts",
-      "src": "./src/b402/client/index.ts",
-      "default": "./dist/b402/client/index.js"
-    },
-    "./b402/server": {
-      "types": "./dist/b402/server/index.d.ts",
-      "src": "./src/b402/server/index.ts",
-      "default": "./dist/b402/server/index.js"
     }
   },
   "scripts": {
-    "build": "zile",
+    "build": "zile && pnpm --filter @bnb-chain/b402 build && pnpm --filter @bnb-chain/mpp-b402 build",
     "changeset:publish": "zile publish:prepare && changeset publish && zile publish:post",
     "changeset:version": "changeset version && vp fmt .",
     "check": "vp lint --fix && vp fmt --write .",
     "check:ci": "vp lint && vp fmt --check .",
     "check:examples": "pnpm build && pnpm -r --filter \"./examples/*\" check:types",
-    "check:types": "tsgo -b && tsgo --noEmit -p tsconfig.test.json && pnpm check:examples",
+    "check:types": "tsgo -b && tsgo --noEmit -p tsconfig.test.json && pnpm --filter @bnb-chain/b402 check:types && pnpm --filter @bnb-chain/mpp-b402 check:types && pnpm check:examples",
     "deps": "pnpx taze -r --no-ignore-other-workspaces --ignore-paths node_modules",
     "deps:ci": "pnpx actions-up",
     "dev": "zile dev",
