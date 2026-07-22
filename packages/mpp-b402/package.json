@@ -1,7 +1,7 @@
 {
   "name": "@bnb-chain/mpp-b402",
   "description": "MPP custom payment method adapter for Binance OnchainPay B402.",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "license": "MIT",
   "repository": {

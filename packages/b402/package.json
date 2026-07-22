@@ -1,7 +1,7 @@
 {
   "name": "@bnb-chain/b402",
   "description": "Binance OnchainPay B402 provider implementation for x402 clients and resource servers.",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "license": "MIT",
   "repository": {
