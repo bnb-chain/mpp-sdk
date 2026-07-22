@@ -4,6 +4,12 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 
+const PUBLISHABLE_PACKAGES = [
+  'package.json',
+  'packages/b402/package.json',
+  'packages/mpp-b402/package.json',
+]
+
 const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 
 /**
@@ -39,21 +45,30 @@ function packageVersion(contents, source) {
 function checkVersionRegression(baseRevision) {
   if (!baseRevision) throw new Error('Usage: check-version-regression.mjs <base-revision>')
 
-  const current = packageVersion(readFileSync('package.json', 'utf8'), 'package.json')
-  const baseline = packageVersion(
-    execFileSync('git', ['show', `${baseRevision}:package.json`], { encoding: 'utf8' }),
-    `${baseRevision}:package.json`,
-  )
+  for (const packagePath of PUBLISHABLE_PACKAGES) {
+    const current = packageVersion(readFileSync(packagePath, 'utf8'), packagePath)
+    let baselineContents
+    try {
+      baselineContents = execFileSync('git', ['show', `${baseRevision}:${packagePath}`], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+    } catch {
+      console.log(`Package ${packagePath} is new relative to ${baseRevision}; no regression check.`)
+      continue
+    }
+    const baseline = packageVersion(baselineContents, `${baseRevision}:${packagePath}`)
 
-  if (compareStableVersions(current, baseline) < 0) {
-    console.error(
-      `::error title=Package version regression::package.json regressed from ${baseline} to ${current}. Feature branches must never lower an already released version.`,
-    )
-    process.exitCode = 1
-    return
+    if (compareStableVersions(current, baseline) < 0) {
+      console.error(
+        `::error title=Package version regression::${packagePath} regressed from ${baseline} to ${current}. Feature branches must never lower an already released version.`,
+      )
+      process.exitCode = 1
+      continue
+    }
+
+    console.log(`${packagePath} version ${current} does not regress base version ${baseline}.`)
   }
-
-  console.log(`Package version ${current} does not regress base version ${baseline}.`)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

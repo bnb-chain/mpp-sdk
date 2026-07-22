@@ -4,6 +4,9 @@ The repository ships one merchant application and one browser buyer. The pair
 is intentionally narrow: it demonstrates only the two MPP-native
 `b402/charge` transfer methods.
 
+The examples import Provider behavior from `@bnb-chain/b402` and the MPP
+Method from `@bnb-chain/mpp-b402`; they do not depend on `@bnb-chain/mpp`.
+
 ## Merchant
 
 | Route               | MPP method    | B402 settlement |

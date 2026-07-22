@@ -1,6 +1,6 @@
 # Releasing
 
-How `@bnb-chain/mpp` versions and ships to npm. Day-to-day you only do
+How the three workspace packages version and ship to npm. Day-to-day you only do
 two things: add a changeset with your PR, and merge the version PR when
 you want a release to go out. Everything else is automated by
 [`.github/workflows/release.yml`](../.github/workflows/release.yml).
@@ -26,8 +26,8 @@ button.
 ## Manual recovery bump
 
 When a changeset was accidentally consumed without publishing a new npm
-version, run **Actions → release → Run workflow** on `main` and choose `patch`,
-`minor`, or `major`. The dispatch creates a synthetic changeset and opens the
+version, run **Actions → release → Run workflow** on `main`, choose the package
+(or `all`), then choose `patch`, `minor`, or `major`. The dispatch creates a synthetic changeset and opens the
 same reviewable version PR as the normal flow. It never publishes directly;
 merge the generated version PR to publish.
 
@@ -63,7 +63,9 @@ default to restricted without it.)
 
 ### 3. npm Trusted Publishing (after the package exists)
 
-On npmjs.com → `@bnb-chain/mpp` → **Settings → Trusted Publisher**:
+Repeat this configuration on npmjs.com for `@bnb-chain/mpp`,
+`@bnb-chain/b402`, and `@bnb-chain/mpp-b402`, then open
+**Settings → Trusted Publisher**:
 
 - Publisher: **GitHub Actions**
 - Organization: `bnb-chain` · Repository: `mpp-sdk`
@@ -74,7 +76,7 @@ npm ≥ 11.5.1 on the runner — the workflow upgrades npm itself), and
 every publish carries a provenance attestation.
 
 **Token fallback**: if Trusted Publishing can't be used, create a
-granular npm access token with read/write on `@bnb-chain/mpp`, store it
+granular npm access token with read/write on all three packages, store it
 as the `NPM_TOKEN` repo secret, and uncomment the two `env` lines at the
 bottom of `release.yml`.
 

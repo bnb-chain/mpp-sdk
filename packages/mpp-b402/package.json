@@ -1,0 +1,64 @@
+{
+  "name": "@bnb-chain/mpp-b402",
+  "description": "MPP custom payment method adapter for Binance OnchainPay B402.",
+  "version": "0.0.0",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bnb-chain/mpp-sdk.git",
+    "directory": "packages/mpp-b402"
+  },
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "CHANGELOG.md",
+    "README.md",
+    "dist",
+    "src"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "src": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "src": "./src/client/index.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "src": "./src/server/index.ts",
+      "default": "./dist/server/index.js"
+    }
+  },
+  "scripts": {
+    "build": "zile --project tsconfig.build.json",
+    "check:types": "tsgo --noEmit && tsgo --noEmit -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@bnb-chain/b402": "workspace:^"
+  },
+  "peerDependencies": {
+    "mppx": "^0.8.12",
+    "viem": "^2.54.0"
+  },
+  "devDependencies": {
+    "mppx": "^0.8.12",
+    "viem": "^2.54.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "mpp",
+    "mppx",
+    "b402",
+    "bnb-chain",
+    "payments"
+  ]
+}

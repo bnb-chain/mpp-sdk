@@ -1,0 +1,20 @@
+---
+'@bnb-chain/mpp': minor
+'@bnb-chain/b402': minor
+'@bnb-chain/mpp-b402': minor
+---
+
+Extract B402 into `@bnb-chain/b402`, a provider Module that can be used directly
+with the official x402 SDK. Add x402 client/resource-server Scheme Adapters for
+EIP-3009 and Permit2 Exact, an authenticated FacilitatorClient Adapter, shared
+provider snapshot caching, runtime response validation, and typed
+unknown-settlement handoff.
+
+Publish the MPP `b402/charge` Method separately as `@bnb-chain/mpp-b402`. Both
+proofs bind their nonce to the MPP Challenge. Permit2 approval remains an
+explicit application action and spender allowlisting is required on both x402
+and MPP clients.
+
+Remove the B402 subpaths from `@bnb-chain/mpp`; its generic EVM Charge
+functionality is unchanged. No standalone Gate or buyer HTTP orchestrator is
+introduced. Permit2 Upto remains unsupported.

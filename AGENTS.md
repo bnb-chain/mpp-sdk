@@ -6,8 +6,8 @@ landing in this repo.
 ## Source of truth
 
 - **Wire shapes**: `src/Methods.ts` (generic `evm/charge`) and
-  `src/b402/Methods.ts` (`b402/charge`). Each server/client pair imports its
-  one shared Method instance — a wire change can't be made one-sided.
+  `packages/mpp-b402/src/Methods.ts` (`b402/charge`). Each server/client pair
+  imports its one shared Method instance — a wire change can't be made one-sided.
 - **Public docs**: [`docs/`](docs/) — `architecture.md`,
   `spec-compliance.md`, `replay-store.md`, `examples.md`, and
   `adr/` (architecture decision records).
@@ -27,12 +27,11 @@ landing in this repo.
 - **Toolchain (mirrors mppx)**: `vp` (vite-plus) for lint/fmt/test,
   `tsgo` for type-check, `zile` for build. Do NOT swap to
   `tsc`/`eslint`/`prettier` — the stack is deliberately pinned to mppx's.
-- **Packages**: top-level barrel `@bnb-chain/mpp` (`chargeFromDecimal` +
-  receipt codec), `@bnb-chain/mpp/server` (factory + verifiers),
-  `@bnb-chain/mpp/client` (credential constructors), `@bnb-chain/mpp/b402`
-  (+ `/client`, `/server`) — the Binance OnchainPay provider extension
-  integrated as MPP payment methods (see
-  [`docs/b402.md`](docs/b402.md)).
+- **Packages**: `@bnb-chain/mpp` (generic EVM Charge), `@bnb-chain/b402`
+  (B402 Provider Module + official x402 Adapters), and
+  `@bnb-chain/mpp-b402` (MPP `b402/charge` Adapter). See
+  [`docs/architecture.md`](docs/architecture.md) and
+  [`docs/b402.md`](docs/b402.md).
 
 ## Current implementation status
 
@@ -52,17 +51,17 @@ end-to-end:
   contract) carries a sentinel zero address (rejected by `preflightCharge`)
   pending a real verified opBNB testnet contract before any live-test
   broadcast.
-- **B402**: MPP-native `b402/charge` with `eip3009` + `permit2-exact`, plus
-  `createB402Facilitator()` for the standard mppx EIP-3009 x402 Seam. Runtime
-  response parsing, a shared TTL `/supported` cache, and typed unknown-settlement
-  handoff are included. Standalone Gate/buyer orchestration and
-  `permit2-upto` are intentionally unsupported.
+- **B402**: `@bnb-chain/b402` supports direct official x402 EIP-3009 +
+  Permit2 Exact. `@bnb-chain/mpp-b402` exposes both through `b402/charge` and
+  retains `createB402Facilitator()` for the standard mppx EIP-3009 Seam.
+  Standalone Gate/buyer orchestration and `permit2-upto` are unsupported.
 
 ## When touching wire contracts
 
 Re-read the relevant spec section before changing any of:
 
-- `src/Methods.ts` or `src/b402/Methods.ts` (wire schemas)
+- `src/Methods.ts` or `packages/mpp-b402/src/Methods.ts` (wire schemas)
+- `packages/b402/src/TypedData.ts` (B402 EIP-3009 typed data)
 - `src/protocol/TypedData.ts` (EIP-712 Permit2 + EIP-3009 type strings)
 - `src/server/Receipt.ts` (the `draft §7.6` receipt fields)
 
@@ -128,17 +127,6 @@ src/
 │   │                           (ADR-0003 Phase 1; hard-filter → mode-rank → fail-closed)
 │   └── index.ts                `@bnb-chain/mpp/client` barrel — the four credential
 │                               constructors + the high-level pay().
-└── b402/                       B402 provider extension (shared Method + adapters)
-    ├── Methods.ts              `b402/charge` request + credential wire contract
-    ├── Types.ts                x402 v2 provider wire types (browser-safe)
-    ├── Payload.ts              EIP-3009 provider builder / codec / payer recovery
-    ├── Permit2.ts              permit2-exact builder / validator / payer recovery
-    ├── Client.ts               RSA-signed /supported·/verify·/settle transport (Node)
-    ├── Response.ts             facilitator response runtime parsers
-    ├── Supported.ts            TTL + single-flight /supported cache
-    ├── client/                 `b402/charge` wallet + policy + allowance Interface
-    ├── server/                 payment Method, settlement invariants, standard Adapter
-    └── index.ts                shared browser-safe barrel
 test/                           vitest config + setup; live/ = testnet e2e scaffolds
 ├── helpers/server/             test seams kept OUT of the published src tarball
 │                               (preflightChargeForTest, terminalFailureStore)
@@ -148,6 +136,17 @@ examples/                       exactly two: server (minimal Hono merchant) and
                                 MPP-native B402 EIP-3009 + Permit2 Exact paths
                                 — see docs/examples.md
 docs/                           public docs (architecture, spec-compliance, replay-store, examples, adr/)
+packages/
+├── b402/                       `@bnb-chain/b402`
+│   └── src/
+│       ├── Types/Payload/Permit2/Requirements/TypedData
+│       ├── client/             official x402 buyer Scheme + allowance policy
+│       └── server/             RSA transport, cache, settlement, facilitator + server Scheme
+└── mpp-b402/                   `@bnb-chain/mpp-b402`
+    └── src/
+        ├── Methods.ts          `b402/charge` wire contract
+        ├── client/             MPP wallet Adapter
+        └── server/             MPP merchant + mppx EIP-3009 Adapter
 ```
 
 ## Common commands
@@ -158,9 +157,8 @@ pnpm install                  # corepack auto-bumps pnpm to 11.0.8
 pnpm check                    # lint --fix + fmt --write
 pnpm check:types              # tsgo -b + test config + example workspaces
 pnpm test                     # vp test --config vite.config.ts
-pnpm test -- --project unit   # unit only (the `--` is required — without it
-                              # some pnpm versions consume `--project`)
-pnpm build                    # zile -> dist/
+pnpm test --project unit      # unit only
+pnpm build                    # build all three publishable packages
 ```
 
 ## Generated / ignored files

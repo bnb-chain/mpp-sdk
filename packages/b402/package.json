@@ -1,0 +1,68 @@
+{
+  "name": "@bnb-chain/b402",
+  "description": "Binance OnchainPay B402 provider implementation for x402 clients and resource servers.",
+  "version": "0.0.0",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bnb-chain/mpp-sdk.git",
+    "directory": "packages/b402"
+  },
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "CHANGELOG.md",
+    "README.md",
+    "dist",
+    "src"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "src": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "src": "./src/client/index.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "src": "./src/server/index.ts",
+      "default": "./dist/server/index.js"
+    }
+  },
+  "scripts": {
+    "build": "zile",
+    "check:types": "tsgo --noEmit && tsgo --noEmit -p tsconfig.test.json"
+  },
+  "peerDependencies": {
+    "@x402/core": "^2.19.0",
+    "viem": "^2.54.0"
+  },
+  "peerDependenciesMeta": {
+    "@x402/core": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@x402/core": "^2.19.0",
+    "viem": "^2.54.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "b402",
+    "x402",
+    "bnb",
+    "bnb-chain",
+    "payments",
+    "permit2",
+    "eip-3009"
+  ]
+}

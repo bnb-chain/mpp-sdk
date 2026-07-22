@@ -10,7 +10,7 @@
  * SCOPE: the generic `evm/charge` Method only — the four spec credentials
  * (`authorization` / `permit2` / `transaction` / `hash`), single-wire, so there
  * is no cross-method idempotency problem here. B402 uses its own
- * `@bnb-chain/mpp/b402/client` Method and mppx composition; this helper does
+ * `@bnb-chain/mpp-b402/client` Method and mppx composition; this helper does
  * not select across Methods.
  *
  * This module is deliberately thin — orchestration only. The pieces live in

@@ -1,8 +1,6 @@
 /** Four-step browser walkthrough shared by both MPP-native B402 paths. */
 
 import {
-  type B402ChargeCredentialPayload,
-  type B402ChargeRequest,
   type Eip3009PaymentPayload,
   isEip3009PaymentPayload,
   isPermit2PaymentPayload,
@@ -10,12 +8,13 @@ import {
   type Permit2PaymentPayload,
   recoverEip3009Payer,
   recoverPermit2ExactPayer,
-} from '@bnb-chain/mpp/b402'
+} from '@bnb-chain/b402'
+import { B402_PERMIT2_ADDRESS, CURATED_B402_SPENDERS } from '@bnb-chain/b402/client'
 import {
-  B402_PERMIT2_ADDRESS,
-  CURATED_B402_SPENDERS,
+  type B402ChargeCredentialPayload,
+  type B402ChargeRequest,
   charge as b402Charge,
-} from '@bnb-chain/mpp/b402/client'
+} from '@bnb-chain/mpp-b402/client'
 import { Challenge, Credential, evm, Receipt } from 'mppx'
 import {
   erc20Abi,

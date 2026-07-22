@@ -10,7 +10,8 @@
     "check:types": "tsgo --noEmit"
   },
   "dependencies": {
-    "@bnb-chain/mpp": "workspace:*",
+    "@bnb-chain/b402": "workspace:*",
+    "@bnb-chain/mpp-b402": "workspace:*",
     "@hono/node-server": "^1.13.0",
     "hono": "^4.12.25",
     "mppx": "^0.8.12"
