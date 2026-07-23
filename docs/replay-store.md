@@ -182,14 +182,41 @@ alone — the SDK can't structurally tell a Redis client from a `Map`
 wrapper across the FFI boundary. Durability is therefore a
 deployment-side claim: pass a real durable store and own the §9 promise.
 
+### Executable conformance check
+
+Run the public conformance kit against the same backend configuration used by
+the deployment:
+
+```ts
+import { replayStoreConformance } from '@bnb-chain/mpp/testing'
+
+test('production replay store', async () => {
+  await replayStoreConformance(() => createRedisReplayStore({ namespace: 'mpp-conformance' }), {
+    // Optional: a second client connected to the SAME namespace verifies
+    // cross-connection atomicity instead of one object only.
+    createPeerStore: () => createRedisReplayStore({ namespace: 'mpp-conformance' }),
+  })
+})
+```
+
+The kit checks exclusive reservation, fencing tokens, stale-inflight reclaim,
+terminal-state immutability, and concurrent claims. Run it against an isolated
+test namespace: terminal test slots intentionally cannot be deleted through the
+replay Interface.
+
+Passing does **not** prove persistence across restarts, geographic durability,
+encryption, or the absence of an external TTL. Those remain operational
+deployment properties.
+
 ## Suggested durable backends
 
-- **Redis** — `SET key value NX` for atomic reserve. Upstash,
-  ElastiCache, self-hosted.
-- **Postgres** — `INSERT ... ON CONFLICT DO NOTHING` for atomic reserve.
-  Neon, Supabase, RDS.
-- **Cloudflare KV / Durable Objects** — `put` with conditional-write
-  (KV) or the single-writer model (DO, stronger consistency).
+- **Redis** — implement the complete update callback with a Lua script or
+  equivalent transaction, including fencing and terminal-state guards.
+- **Postgres** — implement update in a transaction with row locking or an
+  equivalent serializable CAS.
+- **Cloudflare Durable Objects** — the single-writer model can implement the
+  required update semantics. Plain eventually-consistent KV is not sufficient
+  for the replay CAS.
 
 ⚠️ **Do not attach a backend TTL (Redis `PX` / `EXPIRE`, KV
 `expirationTtl`) to replay slots.** Terminal slots (`consumed` /

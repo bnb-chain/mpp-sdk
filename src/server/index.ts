@@ -89,6 +89,15 @@ export {
   txHashKey,
 } from './Replay.js'
 
+// ── Production deployment profiles ───────────────────────────────────────
+// Convenience entry point with a required replay store. The low-level
+// chargeAsync(ServerParameters) factory remains available above.
+export {
+  productionCharge,
+  type ProductionChargeParameters,
+  type ProductionDeploymentProfile,
+} from './Profile.js'
+
 // ── Settlement signer ────────────────────────────────────────────────────
 export {
   resolveSettlementSigner,

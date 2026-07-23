@@ -11,12 +11,11 @@ landing in this repo.
 - **Public docs**: [`docs/`](docs/) — `architecture.md`,
   `spec-compliance.md`, `replay-store.md`, `examples.md`, and
   `adr/` (architecture decision records).
-- **Implementation spec**: `tmp/REWRITE-SPEC.md` is the detailed internal
-  spec. It is intentionally **not committed** (`tmp/` is gitignored — it
-  carries sensitive deployment context). When it conflicts with this
-  file, it wins. Contributors who need it request access from the
-  maintainers; the committed codebase + `docs/` are self-contained for
-  review and execution.
+- **Private implementation notes**: `tmp/REWRITE-SPEC.md` may carry sensitive
+  deployment context and is intentionally **not committed** (`tmp/` is
+  gitignored). It may inform local work but does not override committed wire
+  contracts, ADRs, tests, or public docs. Move every non-sensitive normative
+  rule into `docs/` before relying on it in shipped code.
 
 ## Project shape
 
@@ -77,7 +76,7 @@ touch an mppx API, confirm against the pinned commit
 2. Run `pnpm check && pnpm check:types && pnpm test` before every commit.
    CI runs `pnpm check:ci` + `pnpm test`.
 3. **Don't push** to `main` or `v1`. Feature branches only.
-   Releases ship from `v1` via the changesets workflow — see
+   Releases ship from `main`; `v1` is a legacy-compatible workflow trigger — see
    [`docs/releasing.md`](docs/releasing.md).
 4. Commit messages: explain what changed and why; reference the spec
    section a public-facing change implements.
@@ -111,10 +110,12 @@ src/
 │   ├── Transaction.ts          full EIP-1559 transaction verifier (§8.3)
 │   ├── Receipt.ts              buildEvmReceipt + (de)serializeEvmReceipt (browser-safe)
 │   ├── Replay.ts               3-state CAS store + per-credential key factories
+│   ├── Profile.ts              productionCharge + explicit binding profiles
 │   ├── Settlement.ts           resolveSettlementSigner with all guards
 │   ├── Transport.ts            optional fail-closed EVM receipt transport
 │   ├── curated.ts              SupportedChainPreset / SupportedTokenPreset + TOKEN_MATRIX
 │   └── index.ts                `@bnb-chain/mpp/server` barrel
+├── testing/                    `@bnb-chain/mpp/testing` replay-store conformance kit
 ├── client/
 │   ├── Authorization.ts        createAuthorizationCredential (EIP-3009 signer)
 │   ├── Hash.ts                 createHashCredential (tx-hash reference; no signing)
@@ -146,7 +147,7 @@ packages/
     └── src/
         ├── Methods.ts          `b402/charge` wire contract
         ├── client/             MPP wallet Adapter
-        └── server/             MPP merchant + mppx EIP-3009 Adapter
+        └── server/             MPP orchestration + snapshot/reconstruction/receipt Modules
 ```
 
 ## Common commands

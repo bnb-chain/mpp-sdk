@@ -122,10 +122,10 @@ export function charge(
 
   return Method.toServer(chargeMethod, {
     // —— defaults: ALL REQUIRED methodDetails fields must be present here.
-    //    mppx createMethodFn parses `{ ...defaults, ...rest }` directly via
-    //    schema.request.parse (src/server/Mppx.ts L1231 path), bypassing
-    //    request hook. Anything that schema declares REQUIRED MUST be in
-    //    defaults (or rest, but route options typically only pass amount).
+    //    mppx parses `{ ...defaults, ...routeInput }` before the request hook.
+    //    Anything the schema declares REQUIRED must therefore be in defaults
+    //    (or route input, which typically carries only amount). The pinned
+    //    behavior is guarded by the mppx contract tests.
     defaults: buildDefaults({
       amount,
       currency,
