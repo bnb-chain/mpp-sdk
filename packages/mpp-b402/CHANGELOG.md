@@ -1,5 +1,11 @@
 # @bnb-chain/mpp-b402
 
+## 0.1.1
+
+### Patch Changes
+
+- 520e614: Publish the refactored MPP B402 server Adapter with focused Provider snapshot, payment reconstruction, and Receipt mapping modules. The public API and `b402/charge` wire contract are unchanged.
+
 ## 0.1.0
 
 ### Minor Changes
