@@ -39,6 +39,13 @@ flowchart LR
 The replay store and Challenge store remain separate. See
 [replay-store.md](replay-store.md).
 
+For production deployments, `productionCharge()` makes the replay store
+required and maps one explicit profile to the existing Challenge-binding
+Interface. It does not hide settlement, RPC, or finality policy. Custom replay
+Implementations can run the framework-agnostic conformance kit exported from
+`@bnb-chain/mpp/testing`; the kit checks CAS semantics but cannot prove
+operational durability.
+
 ## B402 Provider Module
 
 `packages/b402` owns the behavior that must be identical for every caller:
@@ -86,6 +93,11 @@ flowchart LR
 The MPP Adapter owns Challenge binding, Credential serialization and Receipt
 mapping. It delegates Provider proof validation, snapshots and settlement
 classification to `@bnb-chain/b402`.
+
+Its server Implementation is split by responsibility: Provider snapshot
+resolution, merchant-authoritative x402 reconstruction, and MPP Receipt
+mapping. `Charge.ts` remains the orchestration Module and does not duplicate
+Provider settlement classification.
 
 ## Trust and settlement
 

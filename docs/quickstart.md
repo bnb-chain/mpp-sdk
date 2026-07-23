@@ -32,13 +32,14 @@ The runnable server below additionally uses `hono` + `@hono/node-server`
 
 Peers: `mppx ^0.8.12`, `viem ^2.54.0`. **Node ≥ 22.**
 
-Generic EVM Charge has three entry points:
+Generic EVM Charge has four public import surfaces:
 
-| Import                  | Use it for                                                                                                                                                                                         |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@bnb-chain/mpp/server` | The server factory (`chargeAsync` / `preflightCharge`), composed with `Mppx.create()`.                                                                                                             |
-| `@bnb-chain/mpp/client` | The four credential constructors (`createHashCredential`, `createPermit2Credential`, …) **plus `pay(url, { wallet, policy })`** — the high-level buyer that auto-selects a route from your policy. |
-| `@bnb-chain/mpp`        | Universal helpers — `chargeFromDecimal` (decimal → base units) and the `Payment-Receipt` codec.                                                                                                    |
+| Import                   | Use it for                                                                                                                                                                                         |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@bnb-chain/mpp/server`  | Server factories (`chargeAsync`, `productionCharge`, `preflightCharge`) composed with `Mppx.create()`.                                                                                             |
+| `@bnb-chain/mpp/client`  | The four credential constructors (`createHashCredential`, `createPermit2Credential`, …) **plus `pay(url, { wallet, policy })`** — the high-level buyer that auto-selects a route from your policy. |
+| `@bnb-chain/mpp/testing` | Framework-agnostic deployment conformance helpers, currently `replayStoreConformance`.                                                                                                             |
+| `@bnb-chain/mpp`         | Universal helpers — `chargeFromDecimal` (decimal → base units) and the `Payment-Receipt` codec.                                                                                                    |
 
 > B402 is published separately as `@bnb-chain/b402` and
 > `@bnb-chain/mpp-b402`; it does not replace or add dependencies to the generic
@@ -156,6 +157,41 @@ curl -i http://localhost:3000/article
 > form: `const prepared = await preflightCharge(params)` (does the curated
 > resolution + Permit2 probe) then `charge(prepared)` (synchronous).
 > `chargeAsync` is just sugar for `charge(await preflightCharge(params))`.
+
+### Production profile entry point
+
+`productionCharge()` keeps the same EVM Charge implementation but makes the
+replay store required in the TypeScript call shape and packages the three
+challenge-binding choices as a discriminated profile:
+
+```ts
+import { productionCharge } from '@bnb-chain/mpp/server'
+
+const charge = await productionCharge({
+  chain: 'bsc-testnet',
+  token: 'TEST_USDT',
+  recipient,
+  settlementAccount,
+  store: redisReplayStore,
+  profile: { mode: 'mppx-managed' },
+})
+```
+
+The other profiles are:
+
+```ts
+profile: {
+  mode: ('mppx-hmac', secretKey)
+}
+profile: {
+  mode: ('stored-lookup', challengeStore)
+}
+```
+
+Profiles only configure Challenge binding. Settlement signer/backend,
+confirmations, RPC, and replay timing remain independent visible parameters.
+The low-level `chargeAsync({ challengeBinding, store?, ... })` factory remains
+available for development and advanced hosts.
 
 ## 2. Client — pay the 402
 
@@ -325,7 +361,8 @@ verification notes live in `src/server/curated.ts`.
 ## Production checklist
 
 - **Replay store** — pass a durable, atomic `store` (Redis / Postgres /
-  Cloudflare KV). Under `NODE_ENV=production`, omitting it throws at startup.
+  a strongly consistent single-writer backend). Under `NODE_ENV=production`,
+  omitting it throws at startup.
   `Store.memory()` is dev/test only. See [`replay-store.md`](replay-store.md).
 - **Settlement signer** — fund it and treat the key as a hot wallet (rotate,
   scope per-deployment). Only needed for permit2 / authorization.

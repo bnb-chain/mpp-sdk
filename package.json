@@ -28,6 +28,11 @@
       "src": "./src/server/index.ts",
       "default": "./dist/server/index.js"
     },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "src": "./src/testing/index.ts",
+      "default": "./dist/testing/index.js"
+    },
     "./client": {
       "types": "./dist/client/index.d.ts",
       "src": "./src/client/index.ts",

@@ -52,7 +52,11 @@ export default defineConfig({
         test: {
           name: 'unit',
           alias,
-          include: ['src/**/*.test.ts', 'packages/*/src/**/*.test.ts'],
+          include: [
+            'src/**/*.test.ts',
+            'packages/*/src/**/*.test.ts',
+            'test/mppx-contract/**/*.test.ts',
+          ],
           exclude: ['**/node_modules/**', 'src/**/*.live.test.ts'],
           typecheck: {
             include: ['src/**/*.test-d.ts', 'packages/*/src/**/*.test-d.ts'],
