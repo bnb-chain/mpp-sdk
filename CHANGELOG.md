@@ -1,5 +1,11 @@
 # @bnb-chain/mpp
 
+## 0.6.0
+
+### Minor Changes
+
+- f09f21e: Add a production EVM Charge profile factory and a framework-agnostic replay-store conformance kit under `@bnb-chain/mpp/testing`.
+
 ## 0.5.0
 
 ### Minor Changes
