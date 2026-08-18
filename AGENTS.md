@@ -51,8 +51,14 @@ end-to-end:
   pending a real verified opBNB testnet contract before any live-test
   broadcast.
 - **B402**: `@bnb-chain/b402` supports direct official x402 EIP-3009 +
-  Permit2 Exact. `@bnb-chain/mpp-b402` exposes both through `b402/charge` and
-  retains `createB402Facilitator()` for the standard mppx EIP-3009 Seam.
+  Permit2 Exact. Permit2 Exact accepts smart-account signatures
+  (ERC-1271/ERC-7739 envelopes >65 bytes; facilitator-validated on-chain) —
+  EOA signatures keep the local recover-and-compare gate, and EIP-3009 stays
+  EOA-only (the facilitator rejects ERC-1271 there).
+  `@bnb-chain/mpp-b402` exposes both through `b402/charge` and
+  retains `createB402Facilitator()` for the standard mppx EIP-3009 Seam;
+  its `b402/charge` wire schema still pins the 65-byte Permit2 signature, so
+  smart-account payments are direct-x402-only for now.
   Standalone Gate/buyer orchestration and `permit2-upto` are unsupported.
 
 ## When touching wire contracts

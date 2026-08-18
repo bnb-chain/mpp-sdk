@@ -96,7 +96,11 @@ export interface Permit2Authorization {
 
 /** The `exact`/permit2-exact payment payload body (b402 `payload`). */
 export interface Permit2EvmPayload {
-  /** 65-byte EIP-712 signature, 0x-prefixed. */
+  /**
+   * 0x-prefixed EIP-712 signature: 65-byte r||s||v for EOAs, or a longer
+   * smart-account envelope (ERC-1271/ERC-7739 — the facilitator validates
+   * those on-chain via the payer contract's isValidSignature()).
+   */
   readonly signature: `0x${string}`
   readonly permit2Authorization: Permit2Authorization
 }

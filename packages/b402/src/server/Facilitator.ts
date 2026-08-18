@@ -145,6 +145,11 @@ async function reconstructPayment(
     }
     if (!isEip3009PaymentPayload(candidate)) throw new Error('Malformed B402 EIP-3009 payload')
     payment = candidate
+    // The eip3009 rail stays recover-and-compare: the facilitator only
+    // accepts EOA signatures there (probed 2026-08-18 — an ERC-1271
+    // envelope fails /verify with invalid_exact_evm_payload_signature), so
+    // accepting anything a local recover cannot validate would only let
+    // guaranteed rejections reach the network.
     payer = getAddress(await recoverEip3009Payer(candidate))
     if (!sameAddress(payer, candidate.payload.authorization.from)) {
       throw new Error('B402 EIP-3009 signature does not match authorization.from')
@@ -157,9 +162,22 @@ async function reconstructPayment(
     }
     if (!isPermit2PaymentPayload(candidate)) throw new Error('Malformed B402 Permit2 Exact payload')
     payment = candidate
-    payer = getAddress(await recoverPermit2ExactPayer(candidate))
-    if (!sameAddress(payer, candidate.payload.permit2Authorization.from)) {
-      throw new Error('B402 Permit2 signature does not match permit2Authorization.from')
+    if (EOA_SIGNATURE_RE.test(candidate.payload.signature)) {
+      payer = getAddress(await recoverPermit2ExactPayer(candidate))
+      if (!sameAddress(payer, candidate.payload.permit2Authorization.from)) {
+        throw new Error('B402 Permit2 signature does not match permit2Authorization.from')
+      }
+    } else {
+      // Smart-account signature (ERC-1271/ERC-7739 envelope, longer than 65
+      // bytes — e.g. Altana session keys, ERC-4337 wallets): it has no
+      // recoverable key, so the local recover-and-compare gate cannot apply.
+      // The facilitator validates it on-chain via the payer contract's
+      // isValidSignature() at /verify and /settle (live on the permit2
+      // rails since 2026-08). The declared `from` is the payer CLAIM used
+      // for expectation bookkeeping; a forged claim cannot pass the
+      // facilitator's on-chain check, and verify() cross-checks the
+      // facilitator-reported payer against this claim.
+      payer = getAddress(candidate.payload.permit2Authorization.from)
     }
   }
 
@@ -176,6 +194,9 @@ async function reconstructPayment(
     requirements,
   }
 }
+
+/** 65-byte r||s||v — the only shape a local ecrecover can validate. */
+const EOA_SIGNATURE_RE = /^0x[0-9a-fA-F]{130}$/
 
 function asNetwork(network: string): Network {
   if (!/^eip155:\d+$/.test(network)) throw new Error(`Invalid B402 network: ${network}`)
