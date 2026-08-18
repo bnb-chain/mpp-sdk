@@ -1,5 +1,12 @@
 # @bnb-chain/mpp-example-client
 
+## 0.0.7
+
+### Patch Changes
+
+- Updated dependencies [f1ac8be]
+  - @bnb-chain/b402@0.1.1
+
 ## 0.0.6
 
 ### Patch Changes
