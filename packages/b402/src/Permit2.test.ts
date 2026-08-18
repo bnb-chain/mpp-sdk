@@ -218,6 +218,24 @@ describe('isPermit2PaymentPayload', () => {
     ).toBe(false)
   })
 
+  test('accepts smart-account signature envelopes and rejects sub-EOA lengths', async () => {
+    const g = await good()
+    const withSignature = (signature: string): unknown => ({
+      ...g,
+      payload: { ...g.payload, signature },
+    })
+    // ERC-1271/ERC-7739 envelopes are longer than 65 bytes (Altana sessions
+    // sign ~98); the facilitator validates them on-chain, so the shape gate
+    // must let them through.
+    expect(isPermit2PaymentPayload(withSignature(`0x${'ab'.repeat(98)}`))).toBe(true)
+    expect(isPermit2PaymentPayload(withSignature(`0x${'ab'.repeat(66)}`))).toBe(true)
+    // Shorter than 65 bytes is no plausible signature of either kind, and
+    // odd-length hex is malformed.
+    expect(isPermit2PaymentPayload(withSignature(`0x${'ab'.repeat(64)}`))).toBe(false)
+    expect(isPermit2PaymentPayload(withSignature(`0x${'ab'.repeat(65)}a`))).toBe(false)
+    expect(isPermit2PaymentPayload(withSignature('not-hex'))).toBe(false)
+  })
+
   test('rejects cross-field mismatches a facilitator would reject anyway', async () => {
     const g = await good()
     const withAuth = (over: Record<string, unknown>): unknown => ({

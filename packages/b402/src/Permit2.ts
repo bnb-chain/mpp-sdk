@@ -228,6 +228,13 @@ export async function buildPermit2ExactPayment(
  * Recover the payer address from a signed permit2-exact `PaymentPayload` — the
  * EIP-712 `PermitWitnessTransferFrom` signer. Compare against
  * `payload.payload.permit2Authorization.from` before trusting it.
+ *
+ * EOA (65-byte r||s||v) signatures only: a smart-account envelope
+ * (ERC-1271/ERC-7739, longer than 65 bytes) has no recoverable key — only the
+ * payer contract's `isValidSignature()` can validate it, which the B402
+ * facilitator performs on-chain at `/verify` and `/settle`. Callers that may
+ * see smart-account payments must branch on the signature length instead of
+ * calling this (see `B402FacilitatorClient`).
  */
 export function recoverPermit2ExactPayer(payload: Permit2PaymentPayload): Promise<`0x${string}`> {
   const auth = payload.payload.permit2Authorization
@@ -247,8 +254,15 @@ export function recoverPermit2ExactPayer(payload: Permit2PaymentPayload): Promis
 }
 
 const HEX_ADDRESS = /^0x[0-9a-fA-F]{40}$/
-/** Permit2 signatures are strictly 65-byte r||s||v per the signing guide. */
-const HEX_SIGNATURE_65 = /^0x[0-9a-fA-F]{130}$/
+/**
+ * 65-byte r||s||v (EOA, per the signing guide) or a longer smart-account
+ * envelope (ERC-1271/ERC-7739; e.g. Altana sessions sign ~98 bytes). Permit2
+ * natively supports ERC-1271 owners and the B402 facilitator verifies such
+ * signatures on-chain on its permit2 rails, so the shape gate must not pin
+ * the EOA length. Anything shorter than 65 bytes is no plausible signature
+ * of either kind.
+ */
+const HEX_SIGNATURE_65_PLUS = /^0x(?:[0-9a-fA-F]{2}){65,}$/
 const DECIMAL = /^\d+$/
 const CAIP2_EIP155 = /^eip155:\d+$/
 
@@ -293,7 +307,7 @@ export function isPermit2PaymentPayload(value: unknown): value is Permit2Payment
 
   const payload = value['payload']
   if (!isRecord(payload)) return false
-  if (!isMatch(payload['signature'], HEX_SIGNATURE_65)) return false
+  if (!isMatch(payload['signature'], HEX_SIGNATURE_65_PLUS)) return false
   const auth = payload['permit2Authorization']
   if (!isRecord(auth)) return false
   const permitted = auth['permitted']
