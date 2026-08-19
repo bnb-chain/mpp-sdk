@@ -218,7 +218,15 @@ export async function buildCredential(method: CredentialType, c: BuildContext): 
       // The transfer IS the payment — from here on every failure carries txHash.
       await confirmSettlementTx(c.publicClient, txHash, c.route, 'transfer')
       try {
-        return await createHashCredential({ challenge: c.challenge, hash: txHash })
+        // `source` binds the credential to the transfer's sender: servers
+        // default to `hashFromPolicy: 'strict_from'` (audit H01), which
+        // rejects a source-less hash credential. The transfer above was
+        // broadcast from `c.account`, so Transfer.from === account.address.
+        return await createHashCredential({
+          challenge: c.challenge,
+          hash: txHash,
+          source: `did:pkh:eip155:${c.chainId}:${c.account.address}`,
+        })
       } catch (cause) {
         throw new PaymentSideEffectError(
           `${c.route.id}: transfer ${txHash} settled but the hash credential could not be ` +

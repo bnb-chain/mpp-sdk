@@ -100,7 +100,18 @@ export interface ServerParameters {
    * double-broadcast it.
    */
   readonly inflightTtlMs?: number
-  /** §8.4 hash verifier source-binding policy. Defaults to 'lax_from'. */
+  /**
+   * §8.4 hash verifier source-binding policy. Defaults to 'strict_from'
+   * (audit H01): the credential must carry a `source` DID matching the
+   * on-chain Transfer.from, so a bystander cannot claim a payer's
+   * transaction by racing its hash to the server. Note the residual risk:
+   * `source` is self-declared and unsigned — strict_from stops passive
+   * hash-sniping but not an attacker who also copies the payer's address;
+   * merchants selling fixed-price repeatable goods should consider
+   * disabling the `hash` credential type entirely (via `credentialTypes`).
+   * Set 'lax_from' only when payers legitimately send from addresses they
+   * don't control (exchange withdrawals, custodial wallets).
+   */
   readonly hashFromPolicy?: 'strict_from' | 'lax_from'
 
   // Challenge binding mode — REQUIRED, no default. See spec §8.0 / §10.

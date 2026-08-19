@@ -1,3 +1,4 @@
+import { Store } from 'mppx'
 import { Mppx } from 'mppx/server'
 import { test } from 'vitest'
 
@@ -43,6 +44,7 @@ test('async b402 server factory preserves concise route options', async () => {
     },
     network: 'eip155:56',
     recipient: '0x4444444444444444444444444444444444444444',
+    store: Store.memory(),
     transferMethods: ['eip3009'],
   })
   const payments = Mppx.create({

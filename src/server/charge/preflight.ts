@@ -247,9 +247,8 @@ export async function preflightChargeInternal(
     throw new Errors.InvalidChallengeError({
       reason:
         `params.hashFromPolicy must be 'strict_from' | 'lax_from' (or undefined ` +
-        `for the 'lax_from' default); got ${JSON.stringify(params.hashFromPolicy)}. ` +
-        `A typo here would silently degrade to lax_from and disable the source-binding ` +
-        `check (spec §8.4).`,
+        `for the 'strict_from' default); got ${JSON.stringify(params.hashFromPolicy)}. ` +
+        `A typo here would silently degrade the source-binding check (spec §8.4).`,
     })
   }
 

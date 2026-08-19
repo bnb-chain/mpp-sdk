@@ -8,7 +8,13 @@ import {
 } from '@bnb-chain/b402'
 import {
   B402SupportedCache,
+  b402ReplayKey,
+  consumeB402SlotBestEffort,
+  describeB402ReplayConflict,
+  releaseB402Slot,
+  reserveB402Slot,
   settleB402,
+  type B402ReplayStore,
   type B402SettlementUnknownHandler,
   type B402Transport,
   type FacilitatorRequest,
@@ -27,6 +33,14 @@ export function createB402Facilitator(
   parameters: createB402Facilitator.Parameters,
 ): x402.Types.Facilitator {
   const supported = parameters.supportedCache ?? new B402SupportedCache(parameters.client)
+  if (!parameters.store) {
+    // eslint-disable-next-line no-console -- one-time operator-facing warning
+    console.warn(
+      '[createB402Facilitator] no replay `store` configured — a resubmitted credential can ' +
+        'reach /settle more than once. Pass a durable atomic store unless the surrounding ' +
+        'pipeline already guarantees settle idempotency.',
+    )
+  }
 
   async function reconstruct(
     paymentPayload: x402.Types.PaymentPayload,
@@ -131,7 +145,42 @@ export function createB402Facilitator(
 
     async settle(paymentPayload, paymentRequirements) {
       const reconstructed = await reconstruct(paymentPayload, paymentRequirements, true)
-      return settleB402({
+
+      // ── Replay guard (audit H02): reserve BEFORE the irreversible call ──
+      const store = parameters.store
+      let replayKey: ReturnType<typeof b402ReplayKey> | undefined
+      let slotToken: string | null = null
+      if (store) {
+        const payload = reconstructed.request.paymentPayload.payload
+        if (!('authorization' in payload)) {
+          throw new Error('createB402Facilitator only supports EIP-3009 authorization payloads')
+        }
+        replayKey = b402ReplayKey({
+          asset: reconstructed.requirements.asset,
+          network: reconstructed.requirements.network,
+          nonce: payload.authorization.nonce,
+          payer: reconstructed.payer,
+          transferMethod: 'eip3009',
+        })
+        slotToken = await reserveB402Slot(store, replayKey, {
+          inflightTtlMs: parameters.inflightTtlMs,
+        })
+        if (slotToken === null) {
+          const conflict = await describeB402ReplayConflict(store, replayKey)
+          throw new Error(
+            conflict.state === 'consumed'
+              ? 'B402 credential already consumed by a previous settlement'
+              : conflict.state === 'rejected'
+                ? `B402 credential previously rejected: ${conflict.reason ?? 'unknown'}`
+                : 'concurrent B402 settlement in progress for this credential',
+          )
+        }
+      }
+
+      // A B402SettlementUnknownError must leave the slot `inflight` (the
+      // transfer may already be on-chain); only a provable non-broadcast
+      // (success=false ⇒ transaction === '') frees it for retry.
+      const result = await settleB402({
         client: parameters.client,
         expectation: {
           payer: reconstructed.payer,
@@ -143,6 +192,14 @@ export function createB402Facilitator(
           : {}),
         request: reconstructed.request,
       })
+      if (store && replayKey && slotToken !== null) {
+        if (result.success) {
+          await consumeB402SlotBestEffort(store, replayKey, '[createB402Facilitator settle]')
+        } else {
+          await releaseB402Slot(store, replayKey, slotToken).catch(() => undefined)
+        }
+      }
+      return result
     },
   }
 }
@@ -163,7 +220,21 @@ export declare namespace createB402Facilitator {
   export type Parameters = {
     readonly bazaar?: BazaarMetadata | undefined
     readonly client: B402Transport
+    /**
+     * Stale-inflight reclaim age (ms) for the replay guard. Only meaningful
+     * when `store` is set. Defaults to 10 minutes.
+     */
+    readonly inflightTtlMs?: number | undefined
     readonly onSettlementUnknown?: B402SettlementUnknownHandler | undefined
+    /**
+     * Replay store guarding `settle()` (audit H02): when set, each
+     * credential reserves a slot before the irreversible facilitator call,
+     * so a resubmission can never settle twice. STRONGLY recommended —
+     * omit only when the surrounding pipeline already guarantees settle
+     * idempotency. mppx `Store.redis(...)` / `Store.memory()` satisfy the
+     * type structurally (memory is test/dev-only).
+     */
+    readonly store?: B402ReplayStore | undefined
     readonly supportedCache?: B402SupportedCache | undefined
   }
 }

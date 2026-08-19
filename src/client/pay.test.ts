@@ -7,7 +7,7 @@
  *   3. pay — fetch → derive → select → (fail-closed | build + retry), wiring only.
  */
 
-import { Challenge } from 'mppx'
+import { Challenge, Credential } from 'mppx'
 import { privateKeyToAccount } from 'viem/accounts'
 import { describe, expect, test } from 'vitest'
 
@@ -343,17 +343,20 @@ function payClients(
 /** 402-then-retry fetch stub; retry status + optional Payment-Receipt configurable. */
 function payFetch(wwwAuth: string, retry: { status: number; receipt?: string }) {
   const calls: string[] = []
+  const auths: string[] = []
   const fn = (async (_input: string, init?: RequestInit) => {
     if (!init?.headers) {
       calls.push('probe')
       return new Response(null, { status: 402, headers: { 'WWW-Authenticate': wwwAuth } })
     }
     calls.push('retry')
+    const auth = new Headers(init.headers).get('Authorization')
+    if (auth) auths.push(auth)
     const headers: Record<string, string> = {}
     if (retry.receipt) headers['Payment-Receipt'] = retry.receipt
     return new Response('{"ok":true}', { status: retry.status, headers })
   }) as unknown as typeof fetch
-  return { fetch: fn, calls }
+  return { fetch: fn, calls, auths }
 }
 
 function permit2Challenge(): Challenge.Challenge {
@@ -381,10 +384,11 @@ describe('pay · build + retry', () => {
   test('hash route: broadcasts, retries, surfaces route + receipt', async () => {
     const wwwAuth = Challenge.serialize(challengeWith(['hash']))
     const { publicClient, walletClient, writeCalls } = payClients()
-    const { fetch, calls } = payFetch(wwwAuth, { status: 200, receipt: 'receipt-xyz' })
+    const { fetch, calls, auths } = payFetch(wwwAuth, { status: 200, receipt: 'receipt-xyz' })
+    const account = payAccount()
 
     const result = await pay('https://api.example/report', {
-      wallet: { account: payAccount(), publicClient, walletClient },
+      wallet: { account, publicClient, walletClient },
       fetch,
     })
 
@@ -392,6 +396,11 @@ describe('pay · build + retry', () => {
     expect(result.receiptHeader).toBe('receipt-xyz')
     expect(writeCalls).toEqual(['transfer']) // the buyer-broadcast settlement
     expect(calls).toEqual(['probe', 'retry'])
+    // Audit H01: the built credential binds `source` to the tx sender so it
+    // passes the server's strict_from default.
+    expect(Credential.deserialize(auths[0]!).source).toBe(
+      `did:pkh:eip155:${CHAIN_ID}:${account.address}`,
+    )
   })
 
   test('non-2xx retry → PaymentRejectedError carries the built credential (buyer broadcast, but NOT marked paid)', async () => {

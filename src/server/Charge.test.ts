@@ -225,7 +225,7 @@ describe('preflightCharge guards', () => {
       expect(result.hashFromPolicy).toBe('lax_from')
     })
 
-    test('accepts undefined (falls back to lax_from at verifier)', async () => {
+    test('accepts undefined (falls back to strict_from at verifier — audit H01)', async () => {
       const result = await happy()
       expect(result.hashFromPolicy).toBeUndefined()
     })
@@ -687,6 +687,8 @@ describe('charge(prepared) factory output', () => {
       credential: {
         challenge: makeChallenge(),
         payload: { type: 'hash', hash: TX },
+        // Default policy is strict_from (audit H01) — bind to Transfer.from.
+        source: `did:pkh:eip155:1:${PAYER}`,
       },
       request: {
         amount: '1000000',

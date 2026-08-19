@@ -10,6 +10,23 @@ export {
 } from './Client.js'
 export { B402FacilitatorClient, type B402FacilitatorClientOptions } from './Facilitator.js'
 export {
+  B402_DEFAULT_INFLIGHT_TTL_MS,
+  B402ReplayStoreUnavailableError,
+  b402ReplayKey,
+  consumeB402SlotBestEffort,
+  describeB402ReplayConflict,
+  getB402ReplaySlot,
+  markB402Consumed,
+  markB402Rejected,
+  releaseB402Slot,
+  reserveB402Slot,
+  type B402ReplayChange,
+  type B402ReplayKey,
+  type B402ReplaySlotState,
+  type B402ReplaySlotValue,
+  type B402ReplayStore,
+} from './Replay.js'
+export {
   B402ExactServerScheme,
   type B402ExactServerSchemeOptions,
   type B402SupportedProvider,

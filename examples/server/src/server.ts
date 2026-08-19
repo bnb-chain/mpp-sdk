@@ -4,6 +4,7 @@ import { B402Client, type B402SettlementUnknownEvent } from '@bnb-chain/b402/ser
 import { b402 as b402Server } from '@bnb-chain/mpp-b402/server'
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
+import { Store } from 'mppx'
 import { Mppx } from 'mppx/server'
 
 import './env.js'
@@ -48,6 +49,10 @@ const b402Charge = await b402Server.charge({
   onSettlementUnknown(event) {
     reportUnknownSettlement(event)
   },
+  // Replay guard (audit H02). Store.memory() is fine for this single-process
+  // demo; production deployments MUST use a durable atomic store shared by
+  // all instances (e.g. Store.redis(...)).
+  store: Store.memory(),
 })
 const payments = Mppx.create({ methods: [b402Charge], secretKey })
 const app = new Hono()
