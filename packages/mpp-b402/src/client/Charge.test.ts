@@ -17,14 +17,17 @@ const RECIPIENT = '0x2222222222222222222222222222222222222222' as const
 const SIGNER = '0x1111111111111111111111111111111111111111' as const
 const SPENDER = CURATED_B402_SPENDERS[NETWORK]!.exact
 
-function challenge(transferMethod: B402ChargeTransferMethod) {
+function challenge(
+  transferMethod: B402ChargeTransferMethod,
+  overrides: { amount?: string; decimals?: number } = {},
+) {
   return Challenge.fromMethod(chargeMethod, {
     expires: new Date(Date.now() + 5 * 60_000).toISOString(),
     realm: 'merchant.example',
     request: {
-      amount: '5',
+      amount: overrides.amount ?? '5',
       currency: CURRENCY,
-      decimals: 6,
+      decimals: overrides.decimals ?? 6,
       maxTimeoutSeconds: 300,
       network: NETWORK,
       providerSnapshot: {
@@ -44,7 +47,13 @@ describe('b402 client charge', () => {
   test('binds EIP-3009 authorization nonce to the MPP Challenge', async () => {
     const account = privateKeyToAccount(generatePrivateKey())
     const issued = challenge('eip3009')
-    const client = charge({ account, allowedNetworks: [NETWORK], maxAmount: '10' })
+    const client = charge({
+      account,
+      // maxAmount requires the buyer's own decimals declaration (audit M05).
+      allowedCurrencies: [{ address: CURRENCY, decimals: 6, network: NETWORK }],
+      allowedNetworks: [NETWORK],
+      maxAmount: '10',
+    })
 
     const credential = Credential.deserialize<B402ChargeCredentialPayload>(
       await client.createCredential({ challenge: issued }),
@@ -125,5 +134,35 @@ describe('b402 client charge', () => {
         eip3009,
       ]),
     ).rejects.toThrow(/RPC unavailable/)
+  })
+
+  // ── maxAmount ceiling vs merchant-declared decimals (audit M05) ───────────
+
+  test('maxAmount cannot be bypassed by merchant-misdeclared decimals', async () => {
+    const account = privateKeyToAccount(generatePrivateKey())
+    // The audit M05 wire shape: a genuine $5,000 charge on a true 6-decimals
+    // token (atomic 5_000_000_000) whose merchant declares decimals: 18 —
+    // under the wire-declared conversion it would masquerade as far below a
+    // "$10" ceiling and get signed.
+    const issued = challenge('eip3009', { amount: '0.000000005', decimals: 18 })
+    const client = charge({
+      account,
+      allowedCurrencies: [{ address: CURRENCY, decimals: 6, network: NETWORK }],
+      maxAmount: '10',
+    })
+
+    await expect(client.createCredential({ challenge: issued })).rejects.toThrow(
+      /exceeds maxAmount/,
+    )
+  })
+
+  test('maxAmount without buyer-declared decimals fails closed', async () => {
+    const account = privateKeyToAccount(generatePrivateKey())
+    const issued = challenge('eip3009')
+    const client = charge({ account, maxAmount: '10' })
+
+    await expect(client.createCredential({ challenge: issued })).rejects.toThrow(
+      /buyer-declared decimals/,
+    )
   })
 })

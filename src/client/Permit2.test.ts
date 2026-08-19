@@ -4,7 +4,7 @@
  * Tests both single-permit (no splits) and batch-permit (splits) paths.
  */
 
-import { Credential } from 'mppx'
+import { Challenge, Credential } from 'mppx'
 import { Mppx } from 'mppx/server'
 import {
   type Log,
@@ -15,7 +15,7 @@ import {
   encodeEventTopics,
 } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 
 import { preflightChargeForTest } from '../../test/helpers/server/preflightChargeForTest.js'
 import { charge } from '../server/Charge.js'
@@ -159,6 +159,99 @@ const fullRequest = { amount: AMOUNT } as const
 /*  Unit                                                                      */
 /* -------------------------------------------------------------------------- */
 
+describe('createPermit2Credential — audit M01/M02 guards', () => {
+  const baseOpts = (challenge: Challenge.Challenge) =>
+    ({
+      challenge,
+      account: ACCOUNT,
+      chainId: CHAIN_ID,
+      currency: USDC,
+      recipient: RECIPIENT,
+      amount: AMOUNT,
+      nonce: NONCE,
+      deadline: String(Math.floor(Date.now() / 1000) + 600),
+    }) as const
+
+  test('M02: rejects an empty trustedSpenders (no-default-trust)', async () => {
+    const handler = await buildHandler(happyReceipt([]))
+    const challenge = await handler.challenge.evm.charge(fullRequest)
+    await expect(
+      createPermit2Credential({
+        ...baseOpts(challenge),
+        permit2Address: PERMIT2,
+        trustedSpenders: [],
+      }),
+    ).rejects.toThrow(/trustedSpenders must be non-empty/)
+  })
+
+  test('M02: rejects a permit2Spender not in trustedSpenders', async () => {
+    const handler = await buildHandler(happyReceipt([]))
+    const challenge = await handler.challenge.evm.charge(fullRequest)
+    const OTHER = '0x7777777777777777777777777777777777777777' as const
+    await expect(
+      createPermit2Credential({
+        ...baseOpts(challenge),
+        permit2Address: PERMIT2,
+        trustedSpenders: [OTHER], // challenge's spender is SETTLEMENT.address
+      }),
+    ).rejects.toThrow(/not in trustedSpenders/)
+  })
+
+  // The real M01 scenario: a tampered/malicious challenge whose OWN
+  // permit2Address is the attacker contract (so it passes the
+  // challenge-consistency check) and the buyer's client must still refuse.
+  const NON_CANONICAL = '0x1234567890123456789012345678901234567890' as const
+  const nonCanonicalChallenge = () =>
+    Challenge.from({
+      method: 'evm',
+      intent: 'charge',
+      realm: 'https://api.example.com/',
+      request: {
+        amount: AMOUNT,
+        currency: USDC,
+        recipient: RECIPIENT,
+        methodDetails: {
+          chainId: CHAIN_ID,
+          permit2Address: NON_CANONICAL,
+          permit2Spender: SETTLEMENT.address,
+          credentialTypes: ['permit2'],
+        },
+      },
+      expires: new Date(Date.now() + 60_000).toISOString(),
+      secretKey: SECRET,
+    }) as Challenge.Challenge
+
+  test('M01: rejects a non-canonical permit2Address by default', async () => {
+    const challenge = nonCanonicalChallenge()
+    await expect(
+      createPermit2Credential({
+        ...baseOpts(challenge),
+        permit2Address: NON_CANONICAL,
+        trustedSpenders: [SETTLEMENT.address],
+      }),
+    ).rejects.toThrow(/not the canonical Permit2 deployment/)
+  })
+
+  test('M01: allowNonCanonicalPermit2 downgrades the non-canonical throw to a warning', async () => {
+    const challenge = nonCanonicalChallenge()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      // Construction must SUCCEED (only warn) when the caller opted in.
+      await expect(
+        createPermit2Credential({
+          ...baseOpts(challenge),
+          permit2Address: NON_CANONICAL,
+          trustedSpenders: [SETTLEMENT.address],
+          allowNonCanonicalPermit2: true,
+        }),
+      ).resolves.toMatch(/^Payment /)
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/not the canonical Permit2/))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+})
+
 describe('createPermit2Credential — unit', () => {
   test('single-permit output shape (no splits)', async () => {
     const receipt = happyReceipt([transferLog({ to: RECIPIENT, value: BigInt(AMOUNT) })])
@@ -168,6 +261,7 @@ describe('createPermit2Credential — unit', () => {
     const serialized = await createPermit2Credential({
       challenge,
       account: ACCOUNT,
+      trustedSpenders: [SETTLEMENT.address],
       chainId: CHAIN_ID,
       permit2Address: PERMIT2,
       currency: USDC,
@@ -203,6 +297,7 @@ describe('createPermit2Credential — unit', () => {
     const serialized = await createPermit2Credential({
       challenge,
       account: ACCOUNT,
+      trustedSpenders: [SETTLEMENT.address],
       chainId: CHAIN_ID,
       permit2Address: PERMIT2,
       currency: USDC,
@@ -236,6 +331,7 @@ describe('createPermit2Credential — unit', () => {
     const serialized = await createPermit2Credential({
       challenge,
       account: ACCOUNT,
+      trustedSpenders: [SETTLEMENT.address],
       chainId: CHAIN_ID,
       permit2Address: PERMIT2,
       currency: USDC,
@@ -280,6 +376,7 @@ describe('createPermit2Credential — unit', () => {
     const serialized = await createPermit2Credential({
       challenge,
       account: ACCOUNT,
+      trustedSpenders: [SETTLEMENT.address],
       chainId: CHAIN_ID,
       permit2Address: PERMIT2,
       currency: USDC,
@@ -312,6 +409,7 @@ describe('createPermit2Credential — round-trip with server verifier', () => {
     const serialized = await createPermit2Credential({
       challenge,
       account: ACCOUNT,
+      trustedSpenders: [SETTLEMENT.address],
       chainId: CHAIN_ID,
       permit2Address: PERMIT2,
       currency: USDC,
@@ -347,6 +445,7 @@ describe('createPermit2Credential — round-trip with server verifier', () => {
     const serialized = await createPermit2Credential({
       challenge,
       account: ACCOUNT,
+      trustedSpenders: [SETTLEMENT.address],
       chainId: CHAIN_ID,
       permit2Address: PERMIT2,
       currency: USDC,

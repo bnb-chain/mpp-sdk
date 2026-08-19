@@ -419,10 +419,24 @@ describe('credentialPayload wire schema', () => {
         credentialPayload.parse({ ...VALID_AUTHORIZATION_PAYLOAD, signature: SIG_WRONG_LENGTH }),
       ).toThrow(/signature/i)
     })
+
+    // Audit M04: decimal uint256 fields feed BigInt() (super-linear in
+    // length) before any cheap check — reject > 78 digits (uint256 max).
+    test('rejects an over-length value (BigInt DoS cap)', () => {
+      expect(() =>
+        credentialPayload.parse({ ...VALID_AUTHORIZATION_PAYLOAD, value: '9'.repeat(1000) }),
+      ).toThrow(/value/i)
+    })
+
+    test('rejects an over-length validBefore (BigInt DoS cap)', () => {
+      expect(() =>
+        credentialPayload.parse({ ...VALID_AUTHORIZATION_PAYLOAD, validBefore: '1'.repeat(200) }),
+      ).toThrow(/validBefore/i)
+    })
   })
 
   describe('transaction', () => {
-    test('happy path: 0x-prefixed hex raw transaction parses (length unconstrained)', () => {
+    test('happy path: 0x-prefixed hex raw transaction parses', () => {
       expect(() =>
         credentialPayload.parse({ type: 'transaction', signature: '0x02f87082' }),
       ).not.toThrow()
@@ -432,6 +446,21 @@ describe('credentialPayload wire schema', () => {
       expect(() => credentialPayload.parse({ type: 'transaction', signature: 'not-hex' })).toThrow(
         /signature/i,
       )
+    })
+
+    // Audit M04: an unbounded raw-tx hex feeds parseTransaction +
+    // recoverTransactionAddress + keccak256 (all length-scaling) before any
+    // cheap check — DoS. Cap at 128 KB (0x + 262144 hex chars).
+    test('rejects an over-length raw transaction (DoS cap)', () => {
+      const huge = `0x${'ab'.repeat(200_000)}` // ~400K hex chars, well over the cap
+      expect(() => credentialPayload.parse({ type: 'transaction', signature: huge })).toThrow(
+        /signature/i,
+      )
+    })
+
+    test('accepts a large-but-bounded raw transaction (just under the cap)', () => {
+      const ok = `0x${'ab'.repeat(130_000)}` // 260K hex chars < 262144
+      expect(() => credentialPayload.parse({ type: 'transaction', signature: ok })).not.toThrow()
     })
   })
 

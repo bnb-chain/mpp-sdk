@@ -93,6 +93,28 @@ describe('B402Client constructor', () => {
       expect(() => new B402Client({ ...creds, privateKey: form })).not.toThrow()
     }
   })
+
+  // ── https enforcement (audit M03) ──────────────────────────────────────
+  test('rejects a plain http:// baseUrl (forged-settlement-response guard)', () => {
+    const { pem } = keypair()
+    expect(
+      () => new B402Client({ ...creds, baseUrl: 'http://cb.example.test', privateKey: pem }),
+    ).toThrow(/baseUrl must use https/)
+  })
+
+  test('rejects a non-URL baseUrl', () => {
+    const { pem } = keypair()
+    expect(() => new B402Client({ ...creds, baseUrl: 'not a url', privateKey: pem })).toThrow(
+      /not a valid URL/,
+    )
+  })
+
+  test('permits http:// only for loopback development hosts', () => {
+    const { pem } = keypair()
+    for (const host of ['http://localhost:8080', 'http://127.0.0.1:3000', 'http://[::1]:9000']) {
+      expect(() => new B402Client({ ...creds, baseUrl: host, privateKey: pem })).not.toThrow()
+    }
+  })
 })
 
 describe('B402Client response boundary', () => {

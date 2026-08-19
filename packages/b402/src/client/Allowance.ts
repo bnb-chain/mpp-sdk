@@ -3,6 +3,14 @@ import { B402_PERMIT2_ADDRESS } from '../Permit2.js'
 export interface B402AssetId {
   readonly address: `0x${string}`
   readonly network: string
+  /**
+   * The token's TRUE decimals, declared by the buyer (audit M05). When a
+   * spending ceiling (`maxAmount`) is configured, the human-readable →
+   * atomic-units conversion MUST use this value — the wire-declared
+   * `methodDetails.decimals` is merchant-controlled, and overstating it
+   * inflates the computed ceiling by orders of magnitude.
+   */
+  readonly decimals?: number
 }
 
 export interface B402Permit2AllowanceQuery {

@@ -98,6 +98,14 @@ export declare namespace charge {
     account: Signer
     allowedCurrencies?: readonly B402AssetId[] | undefined
     allowedNetworks?: readonly string[] | undefined
+    /**
+     * Human-readable spending ceiling (e.g. `'10'` dollars). REQUIRES a
+     * matching `allowedCurrencies` entry with buyer-declared `decimals`
+     * (audit M05): the conversion never trusts the merchant-declared
+     * `methodDetails.decimals`, and payment is refused (fail closed) when
+     * the buyer-declared value is missing. Prefer `maxAtomicAmount` when
+     * you can express the ceiling in atomic units.
+     */
     maxAmount?: string | undefined
     maxAtomicAmount?: string | bigint | undefined
     methods?: readonly B402ChargeTransferMethod[] | undefined
@@ -133,11 +141,30 @@ function assertPolicy(parameters: charge.Parameters, request: B402ChargeRequest)
   ) {
     throw new Error('B402 charge amount exceeds maxAtomicAmount.')
   }
-  if (
-    parameters.maxAmount !== undefined &&
-    BigInt(request.amount) > parseUnits(parameters.maxAmount, request.methodDetails.decimals)
-  ) {
-    throw new Error('B402 charge amount exceeds maxAmount.')
+  if (parameters.maxAmount !== undefined) {
+    // Audit M05: NEVER convert the ceiling with the wire-declared
+    // methodDetails.decimals — the merchant controls it, and overstating it
+    // (6 → 18) inflates the computed ceiling ~10^12×, silently bypassing
+    // maxAmount. Use the buyer's own declared decimals (allowedCurrencies)
+    // and refuse to pay when they aren't available (fail closed), mirroring
+    // the core package's facts.ts.
+    const declared = parameters.allowedCurrencies?.find(
+      (currency) =>
+        currency.network === request.methodDetails.network &&
+        sameAddress(currency.address, request.currency),
+    )
+    if (declared?.decimals === undefined) {
+      throw new Error(
+        'B402 maxAmount is set but the token has no buyer-declared decimals — add a matching ' +
+          'allowedCurrencies entry with `decimals`, or use maxAtomicAmount (atomic-unit ' +
+          'comparison, no conversion). Refusing to pay without enforcing the limit: the ' +
+          'wire-declared methodDetails.decimals is merchant-controlled and can inflate the ' +
+          'ceiling (audit M05).',
+      )
+    }
+    if (BigInt(request.amount) > parseUnits(parameters.maxAmount, declared.decimals)) {
+      throw new Error('B402 charge amount exceeds maxAmount.')
+    }
   }
   if (method === 'permit2-exact') trustedSpenders(parameters, request.methodDetails.network)
 }

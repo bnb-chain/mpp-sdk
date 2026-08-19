@@ -103,7 +103,7 @@ function assertRouteRequestMatchesChallenge(
   challengeRequest: Record<string, unknown>,
   routeRequest: Record<string, unknown>,
   challengeId?: string,
-): void {
+): string {
   const challengeForm = PaymentRequest.serialize(challengeRequest)
   const routeForm = PaymentRequest.serialize(routeRequest)
   if (challengeForm !== routeForm) {
@@ -114,6 +114,9 @@ function assertRouteRequestMatchesChallenge(
         'a route option is attempting to override a server-configured value',
     })
   }
+  // Return the canonical form so stored-lookup can reuse it instead of
+  // canonicalizing the same request a second time (audit M04 waste note).
+  return challengeForm
 }
 
 /* -------------------------------------------------------------------------- */
@@ -164,6 +167,13 @@ async function verifyMppxHmac(
   assertEvmCharge(credential)
   const { challenge } = credential
 
+  // Cheap-reject ordering (audit M04): Expires.assert is O(1) while
+  // Challenge.verify canonicalizes (RFC 8785) + HMACs the whole challenge —
+  // cost scales with the attacker-controlled request size. An expired
+  // forgery must never buy the expensive step.
+  // Expires.assert throws InvalidChallengeError on missing/malformed/expired.
+  Expires.assert(challenge.expires, challenge.id)
+
   // Challenge.verify returns boolean (does NOT throw). Throw a normalized
   // InvalidChallengeError so all binding modes report the same error class.
   const ok = Challenge.verify(challenge, { secretKey })
@@ -173,9 +183,6 @@ async function verifyMppxHmac(
       reason: 'HMAC mismatch',
     })
   }
-
-  // Expires.assert throws InvalidChallengeError on missing/malformed/expired.
-  Expires.assert(challenge.expires, challenge.id)
 
   // Defence: route request must match the request that issued the challenge.
   assertRouteRequestMatchesChallenge(challenge.request, request, challenge.id)
@@ -214,12 +221,10 @@ async function verifyStoredLookup(
 
   Expires.assert(challenge.expires, challenge.id)
 
-  // Defence: route request must match the request the challenge was
-  // issued for. (The stored snapshot below redundantly confirms the
-  // SAME relationship via canonical bytes; this check is the early-fail
-  // path that matches mppx-hmac's behaviour.)
-  assertRouteRequestMatchesChallenge(challenge.request, request, challenge.id)
-
+  // Cheap-reject ordering (audit M04): the id-existence lookup is a plain
+  // key read, while the route-request comparison canonicalizes (RFC 8785)
+  // attacker-controlled bytes. A made-up challenge id must be rejected
+  // before any canonicalization runs.
   const stored = await lookupChallenge(challengeStore, challenge.id)
   if (stored === null) {
     throw new Errors.InvalidChallengeError({
@@ -228,11 +233,17 @@ async function verifyStoredLookup(
     })
   }
 
-  // Re-derive canonical wire form of request from the (parsed) credential
-  // challenge, then byte-compare to the stored snapshot. This is the
-  // key step spec §8.0.1 calls out — comparing the parsed objects
-  // directly would always mismatch or accept wrong tampered variants.
-  const requestSerialized = PaymentRequest.serialize(challenge.request)
+  // Defence: route request must match the request the challenge was
+  // issued for. (The stored snapshot below redundantly confirms the
+  // SAME relationship via canonical bytes; this check is the early-fail
+  // path that matches mppx-hmac's behaviour.) Returns the canonical wire
+  // form of challenge.request — the key step spec §8.0.1 calls out —
+  // reused below instead of canonicalizing the same bytes twice.
+  const requestSerialized = assertRouteRequestMatchesChallenge(
+    challenge.request,
+    request,
+    challenge.id,
+  )
 
   type StringField = 'request' | 'realm' | 'method' | 'intent'
   const pairs: ReadonlyArray<readonly [StringField, string, string]> = [

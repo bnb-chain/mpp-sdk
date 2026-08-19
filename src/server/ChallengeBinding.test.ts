@@ -179,6 +179,18 @@ describe('mppx-hmac mode (bare verify path)', () => {
     await expect(verify(...pair(buildValidChallenge({ expires: past })))).rejects.toThrow()
   })
 
+  // Audit M04: Expires.assert (cheap) must run BEFORE Challenge.verify
+  // (canonicalize + HMAC, cost scales with attacker-controlled request
+  // size). An expired forgery must fail on expiry, never buy the HMAC step.
+  test('checks expiry before HMAC (cheap-reject ordering)', async () => {
+    // Tampered id → HMAC would mismatch; also expired. The expiry check
+    // runs first, so the error is about expiry, not HMAC.
+    const past = new Date(Date.now() - 60_000).toISOString()
+    const challenge = buildValidChallenge({ expires: past })
+    const tampered = { ...challenge, id: 'forged-id' } as Challenge.Challenge
+    await expect(verify(...pair(tampered))).rejects.toThrow(/expire/i)
+  })
+
   test('rejects when route request differs from challenge.request', async () => {
     const challenge = buildValidChallenge()
     const cred = wrapCred(challenge)
@@ -210,6 +222,21 @@ describe('stored-lookup mode (draft §6 zero-deviation)', () => {
     const verify = makeVerifyChallengeBinding({ mode: 'stored-lookup', challengeStore })
 
     await expect(verify(...pair(buildValidChallenge()))).rejects.toThrow(/not in the issued/)
+  })
+
+  // Audit M04: the id-existence lookup (cheap key read) must run BEFORE the
+  // route-request canonicalization (RFC 8785, scales with attacker bytes).
+  // An unknown id paired with a mismatching route request fails on the
+  // lookup, never on the expensive comparison.
+  test('checks id existence before canonicalizing the route request', async () => {
+    const challengeStore = freshChallengeStore() // empty
+    const verify = makeVerifyChallengeBinding({ mode: 'stored-lookup', challengeStore })
+    const cred = wrapCred(buildValidChallenge())
+    const mismatchingRoute = {
+      ...(cred.challenge.request as Record<string, unknown>),
+      amount: '999999999',
+    }
+    await expect(verify(cred, mismatchingRoute)).rejects.toThrow(/not in the issued/)
   })
 
   test('rejects when request fields are tampered after remember', async () => {

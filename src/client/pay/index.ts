@@ -124,6 +124,10 @@ export async function pay(url: string, options: PayOptions): Promise<PayResult> 
     amount: request.amount,
     permit2Address,
     allowApproval: options.policy?.allowApproval ?? true,
+    allowNonCanonicalPermit2: options.policy?.allowNonCanonicalPermit2 ?? false,
+    ...(options.policy?.trustedPermit2Spenders && {
+      trustedPermit2Spenders: options.policy.trustedPermit2Spenders,
+    }),
     route,
     ...(facts.eip712 && { eip712: facts.eip712 }),
   })
