@@ -139,7 +139,12 @@ export function makeVerifyRouter(
       store,
       chainId,
       confirmations,
-      hashFromPolicy: hashFromPolicy ?? ('lax_from' as const),
+      // Default 'strict_from' (audit H01): 'lax_from' lets anyone watching
+      // the chain claim a payer's Transfer by submitting its tx hash first
+      // (zero-cost order sniping). Merchants whose payers send from
+      // addresses they don't control (exchange withdrawals, custodial
+      // wallets) may opt back with `hashFromPolicy: 'lax_from'`.
+      hashFromPolicy: hashFromPolicy ?? ('strict_from' as const),
     }
 
     switch (credential.payload.type) {

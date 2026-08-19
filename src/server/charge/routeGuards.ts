@@ -125,6 +125,19 @@ export function makeRequestHook(
       })
     }
     const md = merged.methodDetails
+    // Explicit `methodDetails: null` used to slip past the `!== undefined`
+    // guard and throw a raw TypeError at the first dereference (audit I04).
+    // mppx's shallow merge has already replaced defaults.methodDetails with
+    // the null at this point, so "treat as absent" isn't recoverable here —
+    // reject it deterministically instead.
+    if (md === null) {
+      throw new Errors.InvalidChallengeError({
+        reason:
+          "route option 'methodDetails' must not be null — omit the field entirely so the " +
+          'server-configured defaults apply (mppx merges shallowly, so an explicit null ' +
+          'replaces defaults.methodDetails wholesale)',
+      })
+    }
     if (md !== undefined) {
       // ─── (1) Existing value-mismatch checks on PRESENT fields ──────────
       //

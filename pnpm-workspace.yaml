@@ -6,13 +6,12 @@ packages:
 strictDepBuilds: true
 blockExoticSubdeps: true
 minimumReleaseAge: 1440
-# trustPolicy: no-downgrade
-#   TEMPORARILY relaxed for the boot install — tinyexec@1.2.x transitioned
-#   from "trusted publisher" to "provenance attestation" mid-week and pnpm
-#   flags any such transition as a downgrade, blocking install before any
-#   override is applied. After the first lockfile lands and we manually vet
-#   the resolved versions, RE-ENABLE this line and resolve via lockfile pin
-#   or per-package allowlist (TODO: file PR1 follow-up task).
+trustPolicy: no-downgrade
+#   Re-enabled (audit I01) now that the lockfile has landed and the
+#   tinyexec@1.2.2 resolution is pinned + vetted. `no-downgrade` detects a
+#   sudden drop in a dependency's trust signal (a supply-chain-compromise
+#   indicator); resolve any remaining exceptions via lockfile pin or a
+#   per-package allowlist rather than disabling this workspace-wide.
 
 # Runtime pins validated with mppx 0.8.12 (commit b4334f0):
 #   - ox 0.14.30      : common version used by mppx 0.8.12 and viem 2.55.x.

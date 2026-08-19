@@ -137,10 +137,14 @@ describe('createHashCredential — unit', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('createHashCredential — round-trip with server verifier', () => {
-  test('handler.verifyCredential accepts client-built credential', async () => {
+  test('handler.verifyCredential accepts client-built credential (source matches Transfer.from)', async () => {
     const handler = await buildHandler()
     const challenge = await handler.challenge.evm.charge(fullRequest)
-    const serialized = await createHashCredential({ challenge, hash: TX })
+    const serialized = await createHashCredential({
+      challenge,
+      hash: TX,
+      source: `did:pkh:eip155:${CHAIN_ID}:${PAYER}`,
+    })
 
     const receipt = await handler.verifyCredential(serialized, { request: fullRequest })
     expect(receipt).toMatchObject({
@@ -150,5 +154,15 @@ describe('createHashCredential — round-trip with server verifier', () => {
       challengeId: challenge.id,
       chainId: CHAIN_ID,
     })
+  })
+
+  test('a source-less credential is rejected under the strict_from default (audit H01)', async () => {
+    const handler = await buildHandler()
+    const challenge = await handler.challenge.evm.charge(fullRequest)
+    const serialized = await createHashCredential({ challenge, hash: TX })
+
+    await expect(handler.verifyCredential(serialized, { request: fullRequest })).rejects.toThrow(
+      /strict_from.*requires credential\.source/,
+    )
   })
 })

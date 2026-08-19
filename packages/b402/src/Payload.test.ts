@@ -10,11 +10,17 @@
  *   6. chainIdFromNetwork parses CAIP-2; randomB402Nonce is a 32-byte hex
  */
 
-import { getAddress } from 'viem'
+import {
+  getAddress,
+  parseSignature,
+  serializeCompactSignature,
+  signatureToCompactSignature,
+} from 'viem'
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
 import { describe, expect, test } from 'vitest'
 
 import {
+  DEFAULT_MAX_SETTLEMENT_SEC,
   buildEip3009Payment,
   chainIdFromNetwork,
   decodeXPayment,
@@ -51,6 +57,26 @@ describe('buildEip3009Payment', () => {
     expect(getAddress(await recoverEip3009Payer(payload))).toBe(account.address)
   })
 
+  // Audit I06: HEX_SIGNATURE accepts EIP-2098 compact (64-byte) signatures,
+  // so recovery must normalize them — previously a legitimate compact-signed
+  // payment passed validation but recoverEip3009Payer threw
+  // "invalid signature length".
+  test('recovers the payer from a mathematically-equivalent EIP-2098 compact signature', async () => {
+    const account = privateKeyToAccount(generatePrivateKey())
+    const payload = await buildEip3009Payment({ account, requirements: eip3009Requirements() })
+    const compact = serializeCompactSignature(
+      signatureToCompactSignature(parseSignature(payload.payload.signature)),
+    )
+    expect(compact).toMatch(/^0x[0-9a-fA-F]{128}$/) // genuinely 64 bytes
+
+    const compactPayload = {
+      ...payload,
+      payload: { ...payload.payload, signature: compact },
+    }
+    expect(isEip3009PaymentPayload(compactPayload)).toBe(true)
+    expect(getAddress(await recoverEip3009Payer(compactPayload))).toBe(account.address)
+  })
+
   test('mirrors the requirements in the authorization', async () => {
     const account = privateKeyToAccount(generatePrivateKey())
     const requirements = eip3009Requirements()
@@ -76,6 +102,39 @@ describe('buildEip3009Payment', () => {
       requirements: eip3009Requirements(),
     })
     expect(payment.payload.authorization.nonce).toBe(nonce)
+  })
+
+  // Audit L03: the merchant-supplied maxTimeoutSeconds must not be able to
+  // mint a long-lived "zombie authorization" — the buyer-side ceiling
+  // (default 24h) clamps validBefore independently.
+  test('clamps validBefore to the buyer settlement ceiling on a huge merchant timeout', async () => {
+    const account = privateKeyToAccount(generatePrivateKey())
+    const requirements = {
+      ...eip3009Requirements(),
+      maxTimeoutSeconds: 100 * 365 * 24 * 60 * 60, // "100 years"
+    }
+    const before = Math.floor(Date.now() / 1000)
+
+    const { authorization } = (await buildEip3009Payment({ account, requirements })).payload
+
+    expect(Number(authorization.validBefore)).toBeLessThanOrEqual(
+      before + DEFAULT_MAX_SETTLEMENT_SEC + 5,
+    )
+  })
+
+  test('an explicit validBefore is clamped by the same ceiling', async () => {
+    const account = privateKeyToAccount(generatePrivateKey())
+    const before = Math.floor(Date.now() / 1000)
+    const { authorization } = (
+      await buildEip3009Payment({
+        account,
+        requirements: eip3009Requirements(),
+        validBefore: BigInt(before) + 10n * 365n * 24n * 60n * 60n, // "10 years"
+      })
+    ).payload
+    expect(Number(authorization.validBefore)).toBeLessThanOrEqual(
+      before + DEFAULT_MAX_SETTLEMENT_SEC + 5,
+    )
   })
 
   test('rejects a non-eip3009 asset-transfer method', async () => {

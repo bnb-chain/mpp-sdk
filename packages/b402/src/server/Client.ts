@@ -149,6 +149,36 @@ export class B402Client {
   }
 
   constructor(credentials: B402Credentials) {
+    // Enforce https:// EAGERLY (audit M03). For eip3009/permit2-exact the
+    // facilitator's /settle response is the SOLE evidence of settlement
+    // success, and B402 does not sign its responses (no signature header or
+    // facilitator public key is documented) — transport TLS is the only
+    // authenticity guarantee. A typo'd http:// base URL (or a misconfigured
+    // TLS-terminating proxy) would let anyone on the path forge a
+    // "settlement success". Plain http is allowed only for loopback hosts
+    // (local development against a stub).
+    let parsed: URL
+    try {
+      parsed = new URL(credentials.baseUrl)
+    } catch {
+      throw new B402Error(
+        `B402Client: baseUrl ${JSON.stringify(credentials.baseUrl)} is not a valid URL — ` +
+          'expected the per-merchant https:// base URL from onboarding.',
+      )
+    }
+    const loopback =
+      parsed.hostname === 'localhost' ||
+      parsed.hostname === '127.0.0.1' ||
+      parsed.hostname === '[::1]'
+    if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && loopback)) {
+      throw new B402Error(
+        `B402Client: baseUrl must use https:// (got ${JSON.stringify(credentials.baseUrl)}). ` +
+          'The /settle response is the sole evidence of settlement success and is only ' +
+          'protected by TLS — plain http would let a network attacker forge "payment ' +
+          'received". http:// is permitted only for localhost/127.0.0.1/[::1] development ' +
+          'stubs. (audit M03)',
+      )
+    }
     this.#credentials = credentials
     // Parse the RSA key EAGERLY so a malformed key fails at boot with a
     // format hint — not at the first paid request (after the buyer already

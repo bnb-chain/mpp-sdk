@@ -38,6 +38,16 @@ export type CredentialType = (typeof credentialTypes)[number]
 /* -------------------------------------------------------------------------- */
 
 /**
+ * Length cap for decimal-string uint256 fields (amounts, nonces, unix-time
+ * bounds). uint256's maximum value is 78 decimal digits; anything longer is
+ * structurally invalid AND a DoS vector (audit M04): V8's decimal-string →
+ * BigInt conversion is super-linear in length, so an unbounded field lets an
+ * unauthenticated request freeze the event loop for seconds (measured: ~5s
+ * at 50M digits). The cap must run BEFORE any `BigInt(...)` on wire input.
+ */
+const UINT256_MAX_DECIMAL_DIGITS = 78
+
+/**
  * Base-units stringified *positive* integer. Used for any amount field on the
  * wire (top-level `amount`, `permit.permitted[].amount`,
  * `transferDetails[].requestedAmount`, `authorization.value`,
@@ -50,9 +60,23 @@ export type CredentialType = (typeof credentialTypes)[number]
  */
 const positiveBaseUnitAmount = z
   .string()
-  .check(z.regex(/^[1-9]\d*$/, 'amount must be base-units stringified positive integer'))
+  .check(
+    z.maxLength(UINT256_MAX_DECIMAL_DIGITS),
+    z.regex(/^[1-9]\d*$/, 'amount must be base-units stringified positive integer'),
+  )
 
-const hexString = z.string().check(z.regex(/^0x[0-9a-fA-F]+$/, 'expected 0x-prefixed hex string'))
+/**
+ * Raw signed transaction bytes for the `transaction` credential (0x-prefixed
+ * hex). Bounded (audit M04): the verifier's FIRST step feeds this into viem's
+ * parseTransaction → recoverTransactionAddress → keccak256, all of which
+ * scale with byte length (measured: ~3.8s total at ~23MB). 128 KB of raw tx
+ * (0x + 262144 hex chars) is orders of magnitude above any legitimate ERC-20
+ * transfer envelope (a few hundred bytes) while keeping the worst-case parse
+ * cost in the low milliseconds.
+ */
+const rawSignedTransactionHex = z
+  .string()
+  .check(z.maxLength(262146), z.regex(/^0x[0-9a-fA-F]+$/, 'expected 0x-prefixed hex string'))
 
 /**
  * 0x-prefixed 32-byte hex string. mppx `z.hash()` is equivalent (confirmed
@@ -208,11 +232,19 @@ const credentialPayload = z.discriminatedUnion('type', [
         .array(z.object({ token: evmAddress, amount: positiveBaseUnitAmount }))
         .check(z.minLength(1)),
       // Permit2 nonce is uint256 — serialized as decimal string on the wire.
-      nonce: z.string().check(z.regex(/^\d+$/, 'permit2 nonce must be decimal uint256 string')),
+      nonce: z
+        .string()
+        .check(
+          z.maxLength(UINT256_MAX_DECIMAL_DIGITS),
+          z.regex(/^\d+$/, 'permit2 nonce must be decimal uint256 string'),
+        ),
       // Permit2 deadline is unix seconds — also decimal string.
       deadline: z
         .string()
-        .check(z.regex(/^\d+$/, 'permit2 deadline must be unix seconds decimal string')),
+        .check(
+          z.maxLength(UINT256_MAX_DECIMAL_DIGITS),
+          z.regex(/^\d+$/, 'permit2 deadline must be unix seconds decimal string'),
+        ),
     }),
     transferDetails: z
       .array(z.object({ to: evmAddress, requestedAmount: positiveBaseUnitAmount }))
@@ -229,10 +261,16 @@ const credentialPayload = z.discriminatedUnion('type', [
     // EIP-3009 validAfter / validBefore are unix seconds — decimal string.
     validAfter: z
       .string()
-      .check(z.regex(/^\d+$/, 'validAfter must be unix seconds decimal string')),
+      .check(
+        z.maxLength(UINT256_MAX_DECIMAL_DIGITS),
+        z.regex(/^\d+$/, 'validAfter must be unix seconds decimal string'),
+      ),
     validBefore: z
       .string()
-      .check(z.regex(/^\d+$/, 'validBefore must be unix seconds decimal string')),
+      .check(
+        z.maxLength(UINT256_MAX_DECIMAL_DIGITS),
+        z.regex(/^\d+$/, 'validBefore must be unix seconds decimal string'),
+      ),
     // EIP-3009 nonce is a 32-byte opaque identifier (NOT a counter).
     nonce: bytes32,
     signature: evmSignature,
@@ -241,9 +279,10 @@ const credentialPayload = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('transaction'),
     // Raw signed transaction bytes (0x-prefixed hex). Length varies with
-    // calldata / typed-tx envelope — schema only enforces hex shape.
-    // Verifier (§8.3) parses via viem.parseTransaction.
-    signature: hexString,
+    // calldata / typed-tx envelope; capped at 128 KB (audit M04 — see
+    // rawSignedTransactionHex). Verifier (§8.3) parses via
+    // viem.parseTransaction.
+    signature: rawSignedTransactionHex,
   }),
   // —— hash ——
   z.object({

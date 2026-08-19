@@ -100,14 +100,33 @@ export interface ServerParameters {
    * double-broadcast it.
    */
   readonly inflightTtlMs?: number
-  /** §8.4 hash verifier source-binding policy. Defaults to 'lax_from'. */
+  /**
+   * §8.4 hash verifier source-binding policy. Defaults to 'strict_from'
+   * (audit H01): the credential must carry a `source` DID matching the
+   * on-chain Transfer.from, so a bystander cannot claim a payer's
+   * transaction by racing its hash to the server. Note the residual risk:
+   * `source` is self-declared and unsigned — strict_from stops passive
+   * hash-sniping but not an attacker who also copies the payer's address;
+   * merchants selling fixed-price repeatable goods should consider
+   * disabling the `hash` credential type entirely (via `credentialTypes`).
+   * Set 'lax_from' only when payers legitimately send from addresses they
+   * don't control (exchange withdrawals, custodial wallets).
+   */
   readonly hashFromPolicy?: 'strict_from' | 'lax_from'
 
   // Challenge binding mode — REQUIRED, no default. See spec §8.0 / §10.
   readonly challengeBinding: ChallengeBindingConfig
 
-  // Replay store — defaults to Store.memory() (test/dev only).
+  // Replay store — REQUIRED unless `allowMemoryStore` is set (audit L05).
   readonly store?: ChargeStore
+  /**
+   * Explicit opt-in to run WITHOUT a durable store — falls back to an
+   * in-process `Store.memory()` (audit L05). Required (except under
+   * `NODE_ENV=test`) when `store` is omitted; otherwise preflight throws.
+   * NEVER enable in a multi-instance deployment: replay protection silently
+   * becomes per-instance and double-spend protection fails. Dev / test only.
+   */
+  readonly allowMemoryStore?: boolean
 
   // Direct wire methodDetails overrides (uncommon — usually omitted).
   /** Override canonical Permit2 deployment (fork / private chain / mirror). */

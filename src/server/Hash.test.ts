@@ -493,6 +493,27 @@ describe('verifyHash step 6 (strict_from policy)', () => {
     ).resolves.toBeDefined()
   })
 
+  test('a format-failed source is escaped in the rejection (audit L02 — log injection)', async () => {
+    const receipt = buildReceipt({
+      logs: [transferLog({ from: PAYER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY })],
+    })
+    const ctx = buildCtx({
+      publicClient: stubPublicClient({ receipt: { receipt } }),
+      hashFromPolicy: 'strict_from',
+    })
+
+    // An attacker-shaped source carrying a newline + a forged log line.
+    const cred = buildCredential({ source: 'evil\n[operator] payment OK id=999' })
+    const err = await verifyHash({ credential: cred, request: buildRequest(), ctx }).catch(
+      (e: unknown) => e,
+    )
+    const message = (err as Error).message
+    // The raw newline must NOT survive into the message; JSON.stringify
+    // renders it as the two characters `\n`.
+    expect(message).not.toMatch(/\n\[operator\]/)
+    expect(message).toContain('\\n')
+  })
+
   test('missing credential.source → markRejected with explicit message', async () => {
     const receipt = buildReceipt({
       logs: [transferLog({ from: PAYER, to: RECIPIENT, value: BigInt(AMOUNT), address: CURRENCY })],

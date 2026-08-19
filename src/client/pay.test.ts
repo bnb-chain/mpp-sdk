@@ -7,7 +7,7 @@
  *   3. pay — fetch → derive → select → (fail-closed | build + retry), wiring only.
  */
 
-import { Challenge } from 'mppx'
+import { Challenge, Credential } from 'mppx'
 import { privateKeyToAccount } from 'viem/accounts'
 import { describe, expect, test } from 'vitest'
 
@@ -31,8 +31,15 @@ const CHAIN_ID = 97
 const CURRENCY = '0xc70b8741b8b07a6d61e54fd4b20f22fa648e5565' as const
 const PERMIT2 = '0x000000000022d473030f116ddee9f6b43ac78ba3' as const
 const RECIPIENT = '0x2222222222222222222222222222222222222222' as const
+const PERMIT2_SPENDER = '0x3333333333333333333333333333333333333333' as const
 const AMOUNT = '1000000000000000000' // 1.0 @ 18 decimals
 const REALM = 'https://demo.example/'
+
+/**
+ * Audit M02: permit2 routes require an explicit spender allowlist — spread
+ * this into any policy that expects a permit2 route to stay viable.
+ */
+const TRUSTED = { trustedPermit2Spenders: [PERMIT2_SPENDER] } as const
 
 function challengeWith(credentialTypes?: readonly string[]): Challenge.Challenge {
   return {
@@ -112,7 +119,7 @@ describe('deriveLogicalPaths', () => {
 describe('selectRoute · mode ranking', () => {
   test('auto keeps merchant order (first viable wins)', () => {
     const paths = deriveLogicalPaths(challengeWith(['permit2', 'authorization']))
-    const r = selectRoute(paths, { mode: 'auto' }, ctx())
+    const r = selectRoute(paths, { mode: 'auto', ...TRUSTED }, ctx())
     expect(r.ok && r.route.id).toBe('mpp:permit2')
   })
 
@@ -140,7 +147,7 @@ describe('selectRoute · mode ranking', () => {
     const paths = deriveLogicalPaths(challengeWith(['authorization', 'permit2', 'hash']))
     const r = selectRoute(
       paths,
-      { mode: 'manual' },
+      { mode: 'manual', ...TRUSTED },
       ctx({ routePreference: ['mpp:permit2', 'mpp:authorization'] }),
     )
     expect(r.ok && r.route.id).toBe('mpp:permit2')
@@ -153,23 +160,52 @@ describe('selectRoute · hard filters', () => {
     deriveLogicalPaths(challengeWith(['authorization', 'permit2', 'transaction', 'hash']))
 
   test('allowPayerGas:false drops the buyer-funded routes', () => {
-    const r = selectRoute(all(), { allowPayerGas: false }, ctx())
+    const r = selectRoute(all(), { allowPayerGas: false, ...TRUSTED }, ctx())
     expect(r.ok && ids(r.ranked)).toEqual(['mpp:authorization', 'mpp:permit2'])
   })
 
   test('allowApproval:false drops permit2 ONLY when an approve is needed', () => {
     const need = selectRoute(
       all(),
-      { allowApproval: false },
+      { allowApproval: false, ...TRUSTED },
       ctx({ capabilities: { ...ALL_CAPS, hasPermit2Allowance: false } }),
     )
     expect(need.ok && ids(need.ranked)).not.toContain('mpp:permit2')
     const have = selectRoute(
       all(),
-      { allowApproval: false },
+      { allowApproval: false, ...TRUSTED },
       ctx({ capabilities: { ...ALL_CAPS, hasPermit2Allowance: true } }),
     )
     expect(have.ok && ids(have.ranked)).toContain('mpp:permit2')
+  })
+
+  // Audit M02: permit2 needs a non-empty trustedPermit2Spenders allowlist.
+  test('permit2 is dropped when no trustedPermit2Spenders is configured', () => {
+    const r = selectRoute(all(), {}, ctx()) // no TRUSTED
+    expect(r.ok && ids(r.ranked)).not.toContain('mpp:permit2')
+    // The non-permit2 routes still resolve — only permit2 is gated.
+    expect(r.ok && ids(r.ranked)).toContain('mpp:authorization')
+  })
+
+  test('permit2 is dropped when the challenge spender is not in the allowlist', () => {
+    // deriveLogicalPaths carries permit2Spender only when the challenge
+    // declares one; a spender outside the allowlist must be excluded.
+    const paths = deriveLogicalPaths({
+      ...challengeWith(['permit2', 'authorization']),
+      request: {
+        amount: AMOUNT,
+        currency: CURRENCY,
+        recipient: RECIPIENT,
+        methodDetails: {
+          chainId: CHAIN_ID,
+          permit2Address: PERMIT2,
+          permit2Spender: '0x9999999999999999999999999999999999999999',
+          credentialTypes: ['permit2', 'authorization'],
+        },
+      },
+    } as unknown as Challenge.Challenge)
+    const r = selectRoute(paths, { ...TRUSTED }, ctx())
+    expect(r.ok && ids(r.ranked)).not.toContain('mpp:permit2')
   })
 
   test('allowedAssets filters by (chainId, address) — the wire identity, not symbol', () => {
@@ -210,20 +246,20 @@ describe('selectRoute · hard filters', () => {
   test('wallet capability gates each method', () => {
     const noTyped = selectRoute(
       all(),
-      {},
+      { ...TRUSTED },
       ctx({ capabilities: { ...ALL_CAPS, canSignTypedData: false } }),
     )
     expect(noTyped.ok && ids(noTyped.ranked)).toEqual(['mpp:transaction', 'mpp:hash'])
     const noDomain = selectRoute(
       all(),
-      {},
+      { ...TRUSTED },
       ctx({ capabilities: { ...ALL_CAPS, knownEip712Domain: false } }),
     )
     expect(noDomain.ok && ids(noDomain.ranked)).not.toContain('mpp:authorization')
     expect(noDomain.ok && ids(noDomain.ranked)).toContain('mpp:permit2')
     const noBroadcast = selectRoute(
       all(),
-      {},
+      { ...TRUSTED },
       ctx({ capabilities: { ...ALL_CAPS, canBroadcast: false } }),
     )
     expect(noBroadcast.ok && ids(noBroadcast.ranked)).not.toContain('mpp:hash')
@@ -284,7 +320,6 @@ describe('pay', () => {
 
 /* ── pay — success + post-build fail-closed (the build/retry half) ────────── */
 
-const PERMIT2_SPENDER = '0x3333333333333333333333333333333333333333' as const
 const VALID_TXHASH = `0x${'a'.repeat(64)}` as const
 
 function payAccount() {
@@ -343,17 +378,20 @@ function payClients(
 /** 402-then-retry fetch stub; retry status + optional Payment-Receipt configurable. */
 function payFetch(wwwAuth: string, retry: { status: number; receipt?: string }) {
   const calls: string[] = []
+  const auths: string[] = []
   const fn = (async (_input: string, init?: RequestInit) => {
     if (!init?.headers) {
       calls.push('probe')
       return new Response(null, { status: 402, headers: { 'WWW-Authenticate': wwwAuth } })
     }
     calls.push('retry')
+    const auth = new Headers(init.headers).get('Authorization')
+    if (auth) auths.push(auth)
     const headers: Record<string, string> = {}
     if (retry.receipt) headers['Payment-Receipt'] = retry.receipt
     return new Response('{"ok":true}', { status: retry.status, headers })
   }) as unknown as typeof fetch
-  return { fetch: fn, calls }
+  return { fetch: fn, calls, auths }
 }
 
 function permit2Challenge(): Challenge.Challenge {
@@ -381,10 +419,11 @@ describe('pay · build + retry', () => {
   test('hash route: broadcasts, retries, surfaces route + receipt', async () => {
     const wwwAuth = Challenge.serialize(challengeWith(['hash']))
     const { publicClient, walletClient, writeCalls } = payClients()
-    const { fetch, calls } = payFetch(wwwAuth, { status: 200, receipt: 'receipt-xyz' })
+    const { fetch, calls, auths } = payFetch(wwwAuth, { status: 200, receipt: 'receipt-xyz' })
+    const account = payAccount()
 
     const result = await pay('https://api.example/report', {
-      wallet: { account: payAccount(), publicClient, walletClient },
+      wallet: { account, publicClient, walletClient },
       fetch,
     })
 
@@ -392,6 +431,11 @@ describe('pay · build + retry', () => {
     expect(result.receiptHeader).toBe('receipt-xyz')
     expect(writeCalls).toEqual(['transfer']) // the buyer-broadcast settlement
     expect(calls).toEqual(['probe', 'retry'])
+    // Audit H01: the built credential binds `source` to the tx sender so it
+    // passes the server's strict_from default.
+    expect(Credential.deserialize(auths[0]!).source).toBe(
+      `did:pkh:eip155:${CHAIN_ID}:${account.address}`,
+    )
   })
 
   test('non-2xx retry → PaymentRejectedError carries the built credential (buyer broadcast, but NOT marked paid)', async () => {
@@ -432,6 +476,39 @@ describe('pay · build + retry', () => {
       fetch,
     })
     expect(result.receiptHeader).toBeNull()
+  })
+
+  test('refuses a non-loopback http:// target unless allowInsecureUrl (audit I03)', async () => {
+    const wwwAuth = Challenge.serialize(challengeWith(['hash']))
+    const { publicClient, walletClient, writeCalls } = payClients()
+    const { fetch, calls } = payFetch(wwwAuth, { status: 200, receipt: 'r' })
+
+    await expect(
+      pay('http://api.example/report', {
+        wallet: { account: payAccount(), publicClient, walletClient },
+        fetch,
+      }),
+    ).rejects.toThrow(/must go over https/)
+    expect(calls).toEqual([]) // never even probed
+    expect(writeCalls).toEqual([])
+
+    // Loopback is exempt for local dev…
+    const local = payFetch(wwwAuth, { status: 200, receipt: 'r' })
+    const localResult = await pay('http://localhost:8080/report', {
+      wallet: { account: payAccount(), publicClient, walletClient },
+      fetch: local.fetch,
+    })
+    expect(localResult.route.id).toBe('mpp:hash')
+
+    // …and the explicit opt-out unlocks non-loopback http.
+    const opted = payFetch(wwwAuth, { status: 200, receipt: 'r' })
+    const b = payClients()
+    const optedResult = await pay('http://api.example/report', {
+      wallet: { account: payAccount(), publicClient: b.publicClient, walletClient: b.walletClient },
+      allowInsecureUrl: true,
+      fetch: opted.fetch,
+    })
+    expect(optedResult.route.id).toBe('mpp:hash')
   })
 
   test('maxAmount set but decimals unresolved → fail closed (throws, never broadcasts)', async () => {
@@ -545,7 +622,7 @@ describe('pay · build + retry', () => {
 
     const result = await pay('https://api.example/report', {
       wallet: { account: payAccount(), publicClient, walletClient },
-      policy: { mode: 'auto', allowApproval: true },
+      policy: { mode: 'auto', allowApproval: true, ...TRUSTED },
       fetch,
     })
 
@@ -689,7 +766,7 @@ describe('pay · allowApproval enforcement', () => {
     await expect(
       pay('https://api.example/report', {
         wallet: { account: payAccount(), publicClient, walletClient },
-        policy: { mode: 'auto', allowApproval: false },
+        policy: { mode: 'auto', allowApproval: false, ...TRUSTED },
         fetch,
       }),
     ).rejects.toThrow(/allowApproval is false|refusing to send an approve/)
@@ -711,7 +788,7 @@ describe('pay · failure paths', () => {
     await expect(
       pay('https://api.example/report', {
         wallet: { account: payAccount(), publicClient, walletClient },
-        policy: { mode: 'auto', allowApproval: true },
+        policy: { mode: 'auto', allowApproval: true, ...TRUSTED },
         fetch,
       }),
     ).rejects.toThrow(/permit2Spender is missing/)
@@ -766,7 +843,7 @@ describe('pay · failure paths', () => {
 
     const err = await pay('https://api.example/report', {
       wallet: { account: payAccount(), publicClient, walletClient },
-      policy: { allowApproval: true },
+      policy: { allowApproval: true, ...TRUSTED },
       fetch,
     }).catch((e: unknown) => e)
 
@@ -820,7 +897,7 @@ describe('pay · failure paths', () => {
 
     const err = await pay('https://api.example/report', {
       wallet: { account: rejectingAccount(), publicClient, walletClient },
-      policy: { allowApproval: true },
+      policy: { allowApproval: true, ...TRUSTED },
       fetch,
     }).catch((e: unknown) => e)
 
@@ -839,7 +916,7 @@ describe('pay · failure paths', () => {
 
     const err = await pay('https://api.example/report', {
       wallet: { account: rejectingAccount(), publicClient, walletClient },
-      policy: { allowApproval: true },
+      policy: { allowApproval: true, ...TRUSTED },
       fetch,
     }).catch((e: unknown) => e)
 

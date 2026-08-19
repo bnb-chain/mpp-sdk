@@ -36,7 +36,7 @@
 
 import { type Hex, type LocalAccount, recoverTypedDataAddress } from 'viem'
 
-import { chainIdFromNetwork, randomB402Nonce } from './Payload.js'
+import { DEFAULT_MAX_SETTLEMENT_SEC, chainIdFromNetwork, randomB402Nonce } from './Payload.js'
 import {
   X402_VERSION,
   type PaymentRequirements,
@@ -114,6 +114,12 @@ export interface BuildPermit2ExactPaymentOptions {
   /** Unix seconds; default `now + 3600`. Capped — see module JSDoc. */
   readonly deadline?: string | bigint
   /**
+   * Buyer-side hard ceiling (seconds from now) on how long the permit stays
+   * redeemable, independent of merchant-declared `maxTimeoutSeconds` (audit
+   * L03). Defaults to `DEFAULT_MAX_SETTLEMENT_SEC` (24h).
+   */
+  readonly maxSettlementSeconds?: number
+  /**
    * Optional caller-supplied unordered nonce. Native B402/x402 callers
    * normally leave this unset for a random nonce. Protocol adapters may derive
    * it from an external challenge to prevent cross-request replay.
@@ -174,7 +180,13 @@ export async function buildPermit2ExactPayment(
   }
   const deadline = options.deadline !== undefined ? BigInt(options.deadline) : nowSec + 3600n
   const timeout = BigInt(Math.max(requirements.maxTimeoutSeconds, 3600))
-  const deadlineCap = nowSec + timeout + DEADLINE_SLACK_SEC
+  // Cap = min(merchant window, buyer hard ceiling) + slack (audit L03): the
+  // merchant-derived window can no longer stretch the deadline past what the
+  // buyer independently allows.
+  const maxSettlementSeconds = options.maxSettlementSeconds ?? DEFAULT_MAX_SETTLEMENT_SEC
+  const boundedTimeout =
+    timeout < BigInt(maxSettlementSeconds) ? timeout : BigInt(maxSettlementSeconds)
+  const deadlineCap = nowSec + boundedTimeout + DEADLINE_SLACK_SEC
   if (deadline <= nowSec) {
     throw new Error(`buildPermit2ExactPayment: deadline ${deadline} is not in the future`)
   }

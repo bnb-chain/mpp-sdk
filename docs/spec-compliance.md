@@ -193,17 +193,26 @@ literal, covered by frozen typed-data and viem cross-check vectors.
 
 ### `hashFromPolicy: 'strict_from'` is a consistency check, not submitter authentication
 
-The opt-in `strict_from` policy (`src/server/Hash.ts`, step 6) requires
-`credential.source` and checks it equals the on-chain `Transfer.from`.
-That is a consistency check between what the credential claims and what
-happened on-chain — it does **not** authenticate the HTTP submitter:
-anyone who observes a tx hash on a public chain can read
-`Transfer.from` from the receipt and construct a matching `source`. It
-therefore does not close §10.4's hash-credential binding weakness ("the
-server … cannot prove the payment was created for a specific challenge
-instance"). Operators who need real challenge binding should follow
-§10.4's MAY mitigations instead: prefer `permit2` / `authorization`
-ordering in `credentialTypes`, or restrict `hash` to low-value charges.
+The `strict_from` policy (`src/server/Hash.ts`, step 6) — the DEFAULT
+since audit H01 — requires `credential.source` and checks it equals the
+on-chain `Transfer.from`. That is a consistency check between what the
+credential claims and what happened on-chain — it does **not**
+authenticate the HTTP submitter: anyone who observes a tx hash on a
+public chain can read `Transfer.from` from the receipt and construct a
+matching `source`. It therefore does not close §10.4's hash-credential
+binding weakness ("the server … cannot prove the payment was created
+for a specific challenge instance"); closing it fully needs a
+protocol-level change (a challenge-bound signature proving control of
+`source`). What the default DOES stop is the zero-effort variant —
+passively scripting other payers' Transfer hashes into submissions —
+and it makes sniping require targeting a specific payer's address.
+Operators who need real challenge binding should follow §10.4's MAY
+mitigations: prefer `permit2` / `authorization` ordering in
+`credentialTypes` (or omit `hash` entirely for fixed-price repeatable
+goods), or restrict `hash` to low-value charges. Merchants whose payers
+send from addresses they don't control (exchange withdrawals, custodial
+wallets) can opt back with `hashFromPolicy: 'lax_from'`, accepting the
+sniping risk in exchange.
 
 ### EIP-55 wire encoding (draft §4.1 SHOULD)
 

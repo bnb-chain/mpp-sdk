@@ -18,8 +18,17 @@ import {
   type BazaarMetadata,
   type PaymentPayload,
   type PaymentRequirements,
+  type SettleResult,
 } from '../Types.js'
 import type { FacilitatorRequest } from './Client.js'
+import {
+  b402ReplayKey,
+  consumeB402SlotBestEffort,
+  describeB402ReplayConflict,
+  releaseB402Slot,
+  reserveB402Slot,
+  type B402ReplayStore,
+} from './Replay.js'
 import { settleB402, type B402SettlementUnknownHandler } from './Settlement.js'
 import { B402SupportedCache } from './Supported.js'
 import type { B402Transport } from './Types.js'
@@ -27,7 +36,21 @@ import type { B402Transport } from './Types.js'
 export type B402FacilitatorClientOptions = {
   readonly bazaar?: BazaarMetadata | undefined
   readonly client: B402Transport
+  /**
+   * Stale-inflight reclaim age (ms) for the replay guard. Only meaningful
+   * when `store` is set. Defaults to 10 minutes.
+   */
+  readonly inflightTtlMs?: number | undefined
   readonly onSettlementUnknown?: B402SettlementUnknownHandler | undefined
+  /**
+   * Replay store guarding `settle()` (audit H02): when set, each credential
+   * reserves a slot before the irreversible facilitator call, so a
+   * resubmission can never settle twice. STRONGLY recommended — omit only
+   * when an upstream layer already guarantees settle idempotency for this
+   * adapter. Pass a durable atomic backend shared by all instances (mppx
+   * `Store.redis(...)` satisfies the type structurally).
+   */
+  readonly store?: B402ReplayStore | undefined
   readonly supportedCache?: B402SupportedCache | undefined
 }
 
@@ -39,6 +62,14 @@ export class B402FacilitatorClient implements X402FacilitatorClient {
   constructor(options: B402FacilitatorClientOptions) {
     this.#options = options
     this.#supported = options.supportedCache ?? new B402SupportedCache(options.client)
+    if (!options.store) {
+      // eslint-disable-next-line no-console -- one-time operator-facing warning
+      console.warn(
+        '[B402FacilitatorClient] no replay `store` configured — a resubmitted credential can ' +
+          'reach /settle more than once. Pass a durable atomic store unless an upstream layer ' +
+          'already guarantees settle idempotency.',
+      )
+    }
   }
 
   async getSupported(): Promise<X402SupportedResponse> {
@@ -91,7 +122,44 @@ export class B402FacilitatorClient implements X402FacilitatorClient {
     const reconstructed = await reconstructPayment(paymentPayload, paymentRequirements, true, {
       bazaar: this.#options.bazaar,
     })
-    const result = await settleB402({
+
+    // ── Replay guard (audit H02): reserve BEFORE the irreversible call ──
+    const store = this.#options.store
+    let replayKey: ReturnType<typeof b402ReplayKey> | undefined
+    let slotToken: string | null = null
+    if (store) {
+      const payload = reconstructed.request.paymentPayload.payload
+      replayKey = b402ReplayKey({
+        asset: reconstructed.requirements.asset,
+        network: reconstructed.requirements.network,
+        nonce:
+          'authorization' in payload
+            ? payload.authorization.nonce
+            : payload.permit2Authorization.nonce,
+        payer: reconstructed.payer,
+        transferMethod: reconstructed.requirements.extra.assetTransferMethod,
+      })
+      slotToken = await reserveB402Slot(store, replayKey, {
+        inflightTtlMs: this.#options.inflightTtlMs,
+      })
+      if (slotToken === null) {
+        const conflict = await describeB402ReplayConflict(store, replayKey)
+        throw new Error(
+          conflict.state === 'consumed'
+            ? 'B402 credential already consumed by a previous settlement'
+            : conflict.state === 'rejected'
+              ? `B402 credential previously rejected: ${conflict.reason ?? 'unknown'}`
+              : 'concurrent B402 settlement in progress for this credential',
+        )
+      }
+    }
+
+    // A B402SettlementUnknownError below must leave the slot `inflight`
+    // (the transfer may already be on-chain); the stale-inflight TTL
+    // reclaims it after the operator's reconciliation window. Only a
+    // provable non-broadcast (success=false ⇒ transaction === '' per
+    // settleB402's contract) frees the slot for retry.
+    const result: SettleResult = await settleB402({
       client: this.#options.client,
       expectation: {
         payer: reconstructed.payer,
@@ -103,6 +171,13 @@ export class B402FacilitatorClient implements X402FacilitatorClient {
         : {}),
       request: reconstructed.request,
     })
+    if (store && replayKey && slotToken !== null) {
+      if (result.success) {
+        await consumeB402SlotBestEffort(store, replayKey, '[B402FacilitatorClient settle]')
+      } else {
+        await releaseB402Slot(store, replayKey, slotToken).catch(() => undefined)
+      }
+    }
     return {
       ...(result.amount !== undefined ? { amount: result.amount } : {}),
       ...(result.errorMessage !== undefined ? { errorMessage: result.errorMessage } : {}),

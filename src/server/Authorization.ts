@@ -319,7 +319,11 @@ export async function verifyAuthorization({
   }
 
   // ── Step 2: payload.value === amount ──────────────────────────────────
-  if (BigInt(payload.value) !== BigInt(amount)) {
+  // Both fields passed the canonical positive-integer schema (`^[1-9]\d*$`,
+  // no leading zeros, ≤78 digits), so string equality IS numeric equality —
+  // no BigInt conversion on wire input (audit M04 defense-in-depth; the
+  // schema length cap is the primary guard).
+  if (payload.value !== amount) {
     throw new Errors.VerificationFailedError({
       ...(challengeId && { id: challengeId }),
       reason: `authorization payload.value ${payload.value} != amount ${amount}`,

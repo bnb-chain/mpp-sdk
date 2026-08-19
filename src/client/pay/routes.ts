@@ -48,6 +48,27 @@ export interface PayPolicy {
   readonly allowApproval?: boolean
   /** Allow a route where the buyer pays gas (`transaction` / `hash`). Default `true`. */
   readonly allowPayerGas?: boolean
+  /**
+   * Trusted Permit2 settlement spenders (the merchant settlement-signer
+   * addresses you vetted). REQUIRED for the `permit2` route (audit M02 /
+   * ADR-0004 "no default trust"): Permit2's signature covers `spender` but
+   * NOT the transfer recipient, so whoever controls the spender key can
+   * redeem the signature to ANY address directly on-chain — and the wallet
+   * UI never shows the recipient. Omitted / empty → permit2 routes are
+   * excluded from selection (fail closed); a challenge whose
+   * `permit2Spender` is not in this list is likewise excluded. Compared
+   * case-insensitively.
+   */
+  readonly trustedPermit2Spenders?: readonly Address[]
+  /**
+   * Accept a non-canonical `methodDetails.permit2Address` (an intentional
+   * fork/mirror Permit2 deployment). Default `false` (audit M01): the
+   * one-time unlimited `approve` targets this address, so a tampered
+   * challenge pointing at an attacker contract must throw BEFORE the
+   * approve broadcasts — tokens approved to a hostile contract are
+   * drainable with a plain `transferFrom`.
+   */
+  readonly allowNonCanonicalPermit2?: boolean
 }
 
 /** A route as the client sees it — derived from the standard wire, never the wire itself. */
@@ -63,6 +84,12 @@ export interface LogicalPath {
   readonly gasless: boolean
   readonly requiresApproval: 'never' | 'if-insufficient-allowance'
   readonly trust: 'merchant-settlement' | 'payer-broadcast'
+  /**
+   * The merchant's declared settlement signer (`methodDetails.permit2Spender`)
+   * — carried on permit2 routes so `selectRoute` can gate it against
+   * `policy.trustedPermit2Spenders` (audit M02).
+   */
+  readonly permit2Spender?: Address
 }
 
 export interface WalletCapabilities {
@@ -197,6 +224,10 @@ export function deriveLogicalPaths(challenge: Challenge.Challenge): LogicalPath[
       gasless: t.gasless,
       requiresApproval: t.requiresApproval,
       trust: t.trust,
+      ...(method === 'permit2' &&
+        request.methodDetails.permit2Spender && {
+          permit2Spender: request.methodDetails.permit2Spender,
+        }),
     })
   }
   return paths
@@ -261,6 +292,21 @@ export function selectRoute(
       !cap.hasPermit2Allowance
     )
       return reject('allowApproval=false and a one-time Permit2 approve is required')
+    // permit2 spender trust (audit M02 / ADR-0004 "no default trust"): the
+    // signature covers `spender` but never the recipient, so an unvetted
+    // spender is a direct token-theft instrument. No list → no permit2.
+    if (p.method === 'permit2') {
+      const trusted = policy.trustedPermit2Spenders
+      if (!trusted || trusted.length === 0)
+        return reject(
+          'permit2 requires policy.trustedPermit2Spenders (non-empty) — ADR-0004 no-default-trust',
+        )
+      if (
+        p.permit2Spender &&
+        !trusted.some((a) => a.toLowerCase() === p.permit2Spender!.toLowerCase())
+      )
+        return reject(`permit2Spender ${p.permit2Spender} is not in trustedPermit2Spenders`)
+    }
     // require-gasless: a hard filter, not just a ranking
     if (mode === 'require-gasless' && !p.gasless)
       return reject('require-gasless and this route is buyer-funded')

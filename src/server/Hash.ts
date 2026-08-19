@@ -26,11 +26,16 @@
  *   5. `parseEventLogs(Transfer)` finds an event with
  *      `address === currency` AND `to === recipient` AND `value === amount`.
  *      No match → `markRejected` and throw LOGS_MISMATCH.
- *   6. If `hashFromPolicy === 'strict_from'`, require `credential.source`
- *      to be `did:pkh:eip155:${chainId}:${addr}` and `Transfer.from ===
- *      addr`. Fail → `markRejected` and throw FROM_MISMATCH.
- *      Default `'lax_from'` skips step 6 (draft §6.4 only requires the
- *      token/to/value triple).
+ *   6. If `hashFromPolicy === 'strict_from'` (the DEFAULT, audit H01),
+ *      require `credential.source` to be `did:pkh:eip155:${chainId}:${addr}`
+ *      and `Transfer.from === addr`. Fail → `markRejected` and throw
+ *      FROM_MISMATCH. Opt-in `'lax_from'` skips step 6 (draft §6.4 only
+ *      requires the token/to/value triple) — with lax_from, whoever
+ *      submits a Transfer's hash first claims it, so reserve it for
+ *      flows where payers send from addresses they don't control.
+ *      Residual risk under strict_from: `source` is self-declared and
+ *      unsigned, so it stops passive hash-sniping but not an attacker
+ *      who also copies the payer's address (see docs/spec-compliance.md).
  *   7. `markConsumed` (permanent).
  *   8. Return `buildEvmReceipt(...)` with the resolved txHash as `reference`.
  *
@@ -219,10 +224,18 @@ export async function verifyHash({
       const expected = new RegExp(`^did:pkh:eip155:${chainId}:(0x[0-9a-fA-F]{40})$`)
       const matchSource = expected.exec(source)
       if (!matchSource) {
-        await markRejected(store, key, `credential.source format mismatch: ${source}`)
+        // JSON.stringify escapes newlines/control chars in the untrusted
+        // source before it reaches operator logs AND the replay store (which
+        // can surface it to future callers via throwReserveConflict) — audit
+        // L02 log injection. Matches externalId handling elsewhere.
+        await markRejected(
+          store,
+          key,
+          `credential.source format mismatch: ${JSON.stringify(source)}`,
+        )
         throw new Errors.VerificationFailedError({
           ...(challengeId && { id: challengeId }),
-          reason: `credential.source must match 'did:pkh:eip155:${chainId}:<address>'; got '${source}'`,
+          reason: `credential.source must match 'did:pkh:eip155:${chainId}:<address>'; got ${JSON.stringify(source)}`,
         })
       }
       const sourceAddress = matchSource[1]!.toLowerCase()

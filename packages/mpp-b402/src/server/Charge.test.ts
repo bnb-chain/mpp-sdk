@@ -4,7 +4,7 @@ import {
   type B402Transport,
   type FacilitatorRequest,
 } from '@bnb-chain/b402/server'
-import { Challenge, Credential, Receipt } from 'mppx'
+import { Challenge, Credential, Receipt, Store } from 'mppx'
 import { Mppx as ClientMppx } from 'mppx/client'
 import { Mppx } from 'mppx/server'
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
@@ -110,6 +110,7 @@ async function credentialFor(parameters: {
     currency: { address: CURRENCY, decimals: 6, name: 'USDT Token', version: '1' },
     network: NETWORK,
     recipient: RECIPIENT,
+    store: Store.memory(),
   })
   const routeRequest = {
     ...server.defaults!,
@@ -143,6 +144,7 @@ describe('b402 server charge', () => {
       currency: { address: CURRENCY, decimals: 6, name: 'USDT Token', version: '1' },
       network: NETWORK,
       recipient: RECIPIENT,
+      store: Store.memory(),
     })
     const server = Mppx.create({
       methods: [method],
@@ -186,6 +188,7 @@ describe('b402 server charge', () => {
         currency: { address: CURRENCY, decimals: 6, name: 'USDT Token', version: '1' },
         network: NETWORK,
         recipient: RECIPIENT,
+        store: Store.memory(),
       })
       const server = Mppx.create({
         methods: [method],
@@ -311,6 +314,7 @@ describe('b402 server charge', () => {
         unknown.push(event)
       },
       recipient: RECIPIENT,
+      store: Store.memory(),
     })
 
     await expect(
@@ -318,5 +322,148 @@ describe('b402 server charge', () => {
     ).rejects.toBeInstanceOf(B402SettlementUnknownError)
     expect(unknown).toHaveLength(1)
     expect(unknown[0]).toMatchObject({ phase: 'settle', status: 'unknown' })
+  })
+
+  // ── stableBinding pins the facilitator identities (audit L04) ─────────────
+
+  test.each(['eip3009', 'permit2-exact'] as const)(
+    'stableBinding pins %s signerAddress/spenderAddress into the HMAC surface',
+    async (transferMethod) => {
+      const fake = fakeClient()
+      const fixture = await credentialFor({ client: fake.client, transferMethod })
+      const request = fixture.credential.challenge.request as B402ChargeRequest
+
+      const binding = (
+        fixture.server as unknown as {
+          stableBinding: (request: B402ChargeRequest) => {
+            methodDetails: Record<string, unknown>
+          }
+        }
+      ).stableBinding(request)
+
+      // ProviderSnapshot.ts documents these as HMAC-bound; a challenge whose
+      // signer/spender was silently substituted must now fail verification.
+      expect(binding.methodDetails['signerAddress']).toBe(SIGNER)
+      if (transferMethod === 'permit2-exact') {
+        expect(binding.methodDetails['spenderAddress']).toBe(SPENDER)
+      } else {
+        expect(binding.methodDetails).not.toHaveProperty('spenderAddress')
+      }
+    },
+  )
+
+  // ── Replay protection (audit H02) ─────────────────────────────────────────
+
+  test.each(['eip3009', 'permit2-exact'] as const)(
+    'rejects a resubmitted %s credential after a successful settlement',
+    async (transferMethod) => {
+      const fake = fakeClient()
+      const fixture = await credentialFor({ client: fake.client, transferMethod })
+
+      const receipt = await fixture.server.verify({
+        credential: fixture.credential,
+        request: fixture.routeRequest,
+      })
+      expect(receipt).toMatchObject({ status: 'success' })
+
+      await expect(
+        fixture.server.verify({ credential: fixture.credential, request: fixture.routeRequest }),
+      ).rejects.toThrow(/already consumed/)
+      expect(fake.settle).toHaveLength(1)
+      expect(fake.verify).toHaveLength(1)
+    },
+  )
+
+  test('admits exactly one settlement under true-concurrent duplicate submission', async () => {
+    const fake = fakeClient()
+    const fixture = await credentialFor({ client: fake.client, transferMethod: 'eip3009' })
+
+    const outcomes = await Promise.allSettled(
+      Array.from({ length: 8 }, () =>
+        fixture.server.verify({ credential: fixture.credential, request: fixture.routeRequest }),
+      ),
+    )
+
+    const fulfilled = outcomes.filter((outcome) => outcome.status === 'fulfilled')
+    const rejected = outcomes.filter((outcome) => outcome.status === 'rejected')
+    expect(fulfilled).toHaveLength(1)
+    expect(rejected).toHaveLength(7)
+    for (const outcome of rejected) {
+      expect(String((outcome as PromiseRejectedResult).reason)).toMatch(
+        /already consumed|in progress/,
+      )
+    }
+    expect(fake.settle).toHaveLength(1)
+  })
+
+  test('keeps the slot blocking retries after an unknown settlement outcome', async () => {
+    const fake = fakeClient()
+    let settleCalls = 0
+    fake.client.settle = async (request) => {
+      settleCalls += 1
+      return {
+        amount: request.paymentRequirements.amount,
+        network: request.paymentRequirements.network,
+        payer: payerOf(request),
+        success: true,
+        transaction: '', // malformed success → B402SettlementUnknownError
+      }
+    }
+    const fixture = await credentialFor({ client: fake.client, transferMethod: 'eip3009' })
+
+    await expect(
+      fixture.server.verify({ credential: fixture.credential, request: fixture.routeRequest }),
+    ).rejects.toBeInstanceOf(B402SettlementUnknownError)
+
+    // The transfer may already be on-chain — a retry must stay blocked until
+    // the operator reconciles (stale-inflight TTL), never re-enter settle.
+    await expect(
+      fixture.server.verify({ credential: fixture.credential, request: fixture.routeRequest }),
+    ).rejects.toThrow(/in progress/)
+    expect(settleCalls).toBe(1)
+  })
+
+  test('marks a facilitator-rejected credential permanently rejected', async () => {
+    const fake = fakeClient()
+    const fixture = await credentialFor({ client: fake.client, transferMethod: 'eip3009' })
+    fake.client.verify = async () => ({
+      invalidReason: 'invalid_exact_evm_payload_signature',
+      isValid: false,
+      payer: '0x0000000000000000000000000000000000000000',
+    })
+
+    await expect(
+      fixture.server.verify({ credential: fixture.credential, request: fixture.routeRequest }),
+    ).rejects.toThrow(/invalid_exact_evm_payload_signature/)
+
+    await expect(
+      fixture.server.verify({ credential: fixture.credential, request: fixture.routeRequest }),
+    ).rejects.toThrow(/previously rejected/)
+    expect(fake.settle).toHaveLength(0)
+  })
+
+  test('frees the slot after a provable non-broadcast settle failure', async () => {
+    const fake = fakeClient()
+    const fixture = await credentialFor({ client: fake.client, transferMethod: 'eip3009' })
+    fake.client.settle = async () => ({
+      errorReason: 'settle_failed',
+      network: NETWORK,
+      payer: '0x0000000000000000000000000000000000000000',
+      success: false,
+      transaction: '', // nothing broadcast → slot must release for retry
+    })
+
+    await expect(
+      fixture.server.verify({ credential: fixture.credential, request: fixture.routeRequest }),
+    ).rejects.toThrow(/settle_failed/)
+
+    // Facilitator recovers; the SAME credential may retry cleanly.
+    const recovered = fakeClient()
+    fake.client.settle = recovered.client.settle
+    const receipt = await fixture.server.verify({
+      credential: fixture.credential,
+      request: fixture.routeRequest,
+    })
+    expect(receipt).toMatchObject({ reference: TX_HASH, status: 'success' })
   })
 })

@@ -116,6 +116,16 @@ export function canonicalizeChallenge(challenge: Challenge.Challenge): StoredCha
  * after `handler.challenge.evm.charge({...})` returns in stored-lookup
  * mode). The SDK provides this helper but does not auto-call it — mppx
  * does not expose an issuance hook.
+ *
+ * ⚠️ Unbounded growth (audit I02): anyone can trigger 402s for free, and
+ * every one of them lands here. The SDK ships NO automatic sweep (the
+ * store interface has no scan primitive), so the deployment MUST clean
+ * up: call `forgetChallenge` once the matching replay slot is consumed,
+ * AND give entries a backend TTL slightly past the challenge `expires`
+ * (safe here — an expired challenge is rejected by `Expires.assert`
+ * before the lookup ever runs; this is the opposite of REPLAY slots,
+ * which must never expire). See docs/replay-store.md § “sweep the
+ * stored-lookup challenge store”.
  */
 export async function rememberChallenge(
   store: ChallengeStore,

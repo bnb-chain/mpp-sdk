@@ -169,8 +169,18 @@ export function parseSupportedResponse(value: unknown): SupportedResponse {
   if (!Array.isArray(data['extensions'])) throw new Error('supported.extensions must be an array')
   const signers = record(data['signers'], 'supported.signers')
 
-  const parsedSigners: Record<string, readonly string[]> = {}
+  // Object.create(null): the `network` keys come from the facilitator's
+  // /supported response (attacker-controllable), and a "__proto__" key
+  // written via `[[Set]]` on a normal object literal would invoke
+  // Object.prototype's __proto__ setter and rewrite this object's prototype
+  // (audit I05 — single-object prototype confusion). A null-prototype
+  // accumulator has no such setter, so the key becomes an ordinary own
+  // property.
+  const parsedSigners: Record<string, readonly string[]> = Object.create(null)
   for (const [network, values] of Object.entries(signers)) {
+    if (network === '__proto__' || network === 'constructor' || network === 'prototype') {
+      throw new Error(`supported.signers: illegal network key '${network}'`)
+    }
     if (!Array.isArray(values)) {
       throw new Error(`supported.signers.${network} must be an array`)
     }

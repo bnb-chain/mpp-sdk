@@ -133,10 +133,12 @@ describe('§14.5.1.2 — hash credential real mppx pipeline', () => {
     // Issue a real challenge through mppx so the HMAC id is HMAC(SECRET).
     const challenge = await handler.challenge.evm.charge(fullRequestArgs)
 
-    // Build the hash credential bound to that challenge.
+    // Build the hash credential bound to that challenge. The default
+    // policy is strict_from (audit H01), so bind source to Transfer.from.
     const credential = Credential.from({
       challenge,
       payload: { type: 'hash', hash: TX },
+      source: `did:pkh:eip155:1:${PAYER}`,
     })
     const serialized = Credential.serialize(credential)
 

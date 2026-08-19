@@ -100,6 +100,56 @@ export interface CreatePermit2CredentialOptions {
    * to grant the spender extra headroom.
    */
   readonly permittedUpperBounds?: ReadonlyArray<string | bigint>
+  /**
+   * Trusted Permit2 settlement spenders — REQUIRED, non-empty (audit M02 /
+   * ADR-0004 "no default trust"). The challenge's `permit2Spender` MUST be
+   * in this list or construction throws BEFORE the wallet signature prompt.
+   * Rationale: `permitWitnessTransferFrom`'s signature covers `spender` but
+   * NOT the transfer recipient — whoever controls the spender key can
+   * redeem the signature to ANY address directly on-chain, bypassing this
+   * SDK's server-side recipient check entirely, and the wallet UI shows
+   * only signed fields so a tampered spender is invisible to the user.
+   * List the merchant settlement-signer addresses you vetted; compared
+   * case-insensitively.
+   */
+  readonly trustedSpenders: ReadonlyArray<`0x${string}`>
+  /**
+   * Accept a non-canonical `permit2Address` (an intentional fork/mirror
+   * Permit2 deployment). Default `false` (audit M01): tokens approved to an
+   * attacker-controlled contract are drainable with a plain `transferFrom`,
+   * so a non-canonical address throws instead of warning. When `true`, the
+   * spec §10.5 visibility warning is still emitted.
+   */
+  readonly allowNonCanonicalPermit2?: boolean
+}
+
+/**
+ * Canonical-deployment gate shared by `createPermit2Credential` and the
+ * `pay()` build step (audit M01). The build step MUST call this BEFORE
+ * broadcasting the one-time unlimited `approve` — checking only inside the
+ * credential constructor would fire after the approve is already on-chain,
+ * defeating the check's stated purpose.
+ */
+export function assertCanonicalPermit2(
+  permit2Address: `0x${string}`,
+  allowNonCanonical: boolean,
+): void {
+  if (permit2Address.toLowerCase() === CANONICAL_PERMIT2_ADDRESS.toLowerCase()) return
+  if (!allowNonCanonical) {
+    throw new Error(
+      `permit2Address ${permit2Address} is not the canonical Permit2 deployment ` +
+        `(${CANONICAL_PERMIT2_ADDRESS}) — refusing by default (audit M01): the unlimited ` +
+        `approve would make tokens drainable by whoever controls that contract. Pass ` +
+        `allowNonCanonicalPermit2: true only for an intentional fork/mirror deployment ` +
+        `you have verified (spec §10.5).`,
+    )
+  }
+  // eslint-disable-next-line no-console -- §10.5 client-side visibility
+  console.warn(
+    `permit2Address ${permit2Address} is not the canonical Permit2 deployment ` +
+      `(${CANONICAL_PERMIT2_ADDRESS}) — allowNonCanonicalPermit2 is set; proceeding against ` +
+      'a fork/mirror deployment (spec §10.5)',
+  )
 }
 
 /**
@@ -171,18 +221,9 @@ export async function createPermit2Credential(
     }
   }
 
-  // Spec §10.5 SHOULD: "clients SHOULD verify the contract address
-  // matches the canonical deployment." Warn (not throw) so legitimate
-  // fork/mirror deployments keep working while a tampered or
-  // misconfigured challenge is at least visible.
-  if (opts.permit2Address.toLowerCase() !== CANONICAL_PERMIT2_ADDRESS.toLowerCase()) {
-    // eslint-disable-next-line no-console -- §10.5 client-side visibility
-    console.warn(
-      `createPermit2Credential: permit2Address ${opts.permit2Address} is not the canonical ` +
-        `Permit2 deployment (${CANONICAL_PERMIT2_ADDRESS}) — verify this is an intentional ` +
-        'fork/mirror deployment before approving tokens to it (spec §10.5)',
-    )
-  }
+  // Spec §10.5, hardened per audit M01: non-canonical deployments THROW
+  // unless the caller explicitly opted in (then §10.5 visibility warn).
+  assertCanonicalPermit2(opts.permit2Address, opts.allowNonCanonicalPermit2 ?? false)
 
   const domain = permit2Domain(opts.chainId, opts.permit2Address)
   const nonce = BigInt(opts.nonce)
@@ -223,6 +264,25 @@ export async function createPermit2Credential(
         'that pre-dates the spender-bug fix; upgrade the server-side SDK or the client cannot ' +
         'produce a credential Permit2 will accept (it would revert with InvalidSigner at ' +
         'settlement).',
+    )
+  }
+  // Audit M02 / ADR-0004 "no default trust": the spender is checked on-chain
+  // as msg.sender, but the signature never covers the RECIPIENT — an
+  // attacker-controlled spender can redeem it to any address. Fail before
+  // the wallet prompt unless the caller explicitly vetted this spender.
+  if (!opts.trustedSpenders || opts.trustedSpenders.length === 0) {
+    throw new Error(
+      'createPermit2Credential: trustedSpenders must be non-empty (ADR-0004 no-default-trust) ' +
+        '— a Permit2 signature to a hostile spender is a direct token-theft instrument; list ' +
+        'the merchant settlement-signer addresses you trust.',
+    )
+  }
+  if (!opts.trustedSpenders.some((a) => a.toLowerCase() === spender.toLowerCase())) {
+    throw new Error(
+      `createPermit2Credential: permit2Spender ${spender} is not in trustedSpenders — ` +
+        'refusing to sign a Permit2 authorization to an unvetted spender (audit M02). The ' +
+        'signature covers spender but NOT the recipient; whoever controls the spender key ' +
+        'can redeem it to any address on-chain.',
     )
   }
 

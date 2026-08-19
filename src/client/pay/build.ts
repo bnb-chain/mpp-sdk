@@ -30,7 +30,7 @@ import {
   assertNoSplitsForNonPermit2,
   parseEvmChargeChallenge,
 } from '../internal/AssertChallenge.js'
-import { createPermit2Credential } from '../Permit2.js'
+import { assertCanonicalPermit2, createPermit2Credential } from '../Permit2.js'
 import { createTransactionCredential } from '../Transaction.js'
 import { PaymentSideEffectError } from './request.js'
 import type { LogicalPath } from './routes.js'
@@ -52,6 +52,18 @@ export interface BuildContext {
    * `false` with an insufficient allowance FAILS CLOSED rather than approving.
    */
   allowApproval: boolean
+  /**
+   * Accept a non-canonical `permit2Address` (audit M01). Checked BEFORE the
+   * unlimited approve broadcasts — default `false` throws on a tampered or
+   * misconfigured challenge.
+   */
+  allowNonCanonicalPermit2: boolean
+  /**
+   * Vetted Permit2 settlement spenders (audit M02) — forwarded to
+   * `createPermit2Credential`, which requires a non-empty list. Selection
+   * already excluded permit2 routes when unset; this carries the values.
+   */
+  trustedPermit2Spenders?: readonly Address[]
   /** The selected route — carried so post-side-effect errors can reference it. */
   route: LogicalPath
 }
@@ -131,6 +143,10 @@ export async function buildCredential(method: CredentialType, c: BuildContext): 
       })
     }
     case 'permit2': {
+      // Audit M01: the canonical-deployment gate MUST run before the
+      // unlimited `approve` below fires — createPermit2Credential re-checks,
+      // but by then the approve would already be confirmed on-chain.
+      assertCanonicalPermit2(c.permit2Address, c.allowNonCanonicalPermit2)
       const allowance = await c.publicClient.readContract({
         address: c.currency,
         abi: erc20Abi,
@@ -169,6 +185,10 @@ export async function buildCredential(method: CredentialType, c: BuildContext): 
           amount: c.amount,
           nonce: randomNonce(),
           deadline: BigInt(Math.floor(Date.now() / 1000) + 600),
+          // Selection guarantees a non-empty list when permit2 was chosen;
+          // an empty fallback still FAILS CLOSED inside the constructor.
+          trustedSpenders: c.trustedPermit2Spenders ?? [],
+          allowNonCanonicalPermit2: c.allowNonCanonicalPermit2,
         })
       } catch (cause) {
         // A signature rejection / RPC error here throws AFTER the max approve was
@@ -218,7 +238,15 @@ export async function buildCredential(method: CredentialType, c: BuildContext): 
       // The transfer IS the payment — from here on every failure carries txHash.
       await confirmSettlementTx(c.publicClient, txHash, c.route, 'transfer')
       try {
-        return await createHashCredential({ challenge: c.challenge, hash: txHash })
+        // `source` binds the credential to the transfer's sender: servers
+        // default to `hashFromPolicy: 'strict_from'` (audit H01), which
+        // rejects a source-less hash credential. The transfer above was
+        // broadcast from `c.account`, so Transfer.from === account.address.
+        return await createHashCredential({
+          challenge: c.challenge,
+          hash: txHash,
+          source: `did:pkh:eip155:${c.chainId}:${c.account.address}`,
+        })
       } catch (cause) {
         throw new PaymentSideEffectError(
           `${c.route.id}: transfer ${txHash} settled but the hash credential could not be ` +

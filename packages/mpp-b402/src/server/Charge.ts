@@ -1,7 +1,14 @@
 import { X402_VERSION, parseVerifyResult, type BazaarMetadata } from '@bnb-chain/b402'
 import {
   B402SupportedCache,
+  b402ReplayKey,
+  consumeB402SlotBestEffort,
+  describeB402ReplayConflict,
+  markB402Rejected,
+  releaseB402Slot,
+  reserveB402Slot,
   settleB402,
+  type B402ReplayStore,
   type B402SettlementUnknownHandler,
   type B402Transport,
   type FacilitatorRequest,
@@ -93,6 +100,15 @@ export async function charge(
           maxTimeoutSeconds: request.methodDetails.maxTimeoutSeconds,
           network: request.methodDetails.network,
           protocolVersion: request.methodDetails.protocolVersion,
+          // Audit L04: signerAddress (both methods) and spenderAddress
+          // (permit2-exact) are the facilitator's settlement identities.
+          // ProviderSnapshot.ts documents them as HMAC-bound; include them
+          // here so that assertion actually holds and a tampered identity
+          // is tamper-evident.
+          signerAddress: request.methodDetails.signerAddress,
+          ...(request.methodDetails.spenderAddress !== undefined
+            ? { spenderAddress: request.methodDetails.spenderAddress }
+            : {}),
         },
         recipient: request.recipient,
       }
@@ -103,61 +119,123 @@ export async function charge(
       const credentialPayload = credential.payload as B402ChargeCredentialPayload
       const reconstructed = await reconstructPayment({ credentialPayload, credential, request })
 
-      const verifyRequest: FacilitatorRequest = {
-        paymentPayload: reconstructed.payment,
-        paymentRequirements: reconstructed.requirements,
-        x402Version: X402_VERSION,
-      }
-      const verified = parseVerifyResult(await parameters.client.verify(verifyRequest))
-      if (!verified.isValid) {
-        throw new Errors.VerificationFailedError({
-          reason:
-            verified.invalidMessage ??
-            verified.invalidReason ??
-            'B402 facilitator rejected payment',
-        })
-      }
-      assertAddressEqual(
-        verified.payer,
-        reconstructed.payer,
-        'B402 verify payer does not match the signed payment',
-      )
-
-      const settleRequest: FacilitatorRequest = {
-        ...verifyRequest,
-        paymentPayload: parameters.bazaar
-          ? { ...reconstructed.payment, extensions: { bazaar: parameters.bazaar } }
-          : reconstructed.payment,
-      }
-      const settlement = await settleB402({
-        client: parameters.client,
-        expectation: {
-          payer: reconstructed.payer,
-          requirements: reconstructed.requirements,
-          transferMethod: request.methodDetails.assetTransferMethod,
-        },
-        ...(parameters.onSettlementUnknown
-          ? { onSettlementUnknown: parameters.onSettlementUnknown }
-          : {}),
-        request: settleRequest,
-      })
-      if (!settlement.success) {
-        throw new Errors.VerificationFailedError({
-          reason:
-            settlement.errorMessage ??
-            settlement.errorReason ??
-            'B402 facilitator settlement failed',
-        })
-      }
-
-      return toMppReceipt({
-        challengeId: credential.challenge.id,
-        externalId: request.externalId,
+      // ── Replay guard (audit H02): reserve BEFORE any facilitator call ──
+      // Keyed on the credential's protocol identity; `payer` is the locally
+      // recovered signer (see reconstructPayment), never the stated field.
+      const replayKey = b402ReplayKey({
+        asset: request.currency,
         network: request.methodDetails.network,
+        nonce:
+          credentialPayload.type === 'eip3009'
+            ? credentialPayload.authorization.nonce
+            : credentialPayload.permit2Authorization.nonce,
         payer: reconstructed.payer,
-        transaction: settlement.transaction,
         transferMethod: request.methodDetails.assetTransferMethod,
       })
+      const slotToken = await reserveB402Slot(parameters.store, replayKey, {
+        inflightTtlMs: parameters.inflightTtlMs,
+      })
+      if (slotToken === null) {
+        const conflict = await describeB402ReplayConflict(parameters.store, replayKey)
+        throw new Errors.VerificationFailedError({
+          reason:
+            conflict.state === 'consumed'
+              ? 'B402 credential already consumed by a previous settlement'
+              : conflict.state === 'rejected'
+                ? `B402 credential previously rejected: ${conflict.reason ?? 'unknown'}`
+                : 'concurrent B402 verification in progress for this credential',
+        })
+      }
+
+      // From here on: `settlePhase` flips to true right before the
+      // irreversible settle call. Failures BEFORE that point release the
+      // slot for a clean retry (markRejected paths write a terminal state
+      // first, making the safety-net release a noop). Failures AFTER it —
+      // including B402SettlementUnknownError — must leave the slot
+      // `inflight`: the transfer may already be on-chain, and releasing
+      // would re-admit the same credential → double settlement. The
+      // stale-inflight TTL reclaims the slot after the reconciliation
+      // window.
+      let settlePhase = false
+      try {
+        const verifyRequest: FacilitatorRequest = {
+          paymentPayload: reconstructed.payment,
+          paymentRequirements: reconstructed.requirements,
+          x402Version: X402_VERSION,
+        }
+        const verified = parseVerifyResult(await parameters.client.verify(verifyRequest))
+        if (!verified.isValid) {
+          const reason =
+            verified.invalidMessage ?? verified.invalidReason ?? 'B402 facilitator rejected payment'
+          await markB402Rejected(parameters.store, replayKey, reason)
+          throw new Errors.VerificationFailedError({ reason })
+        }
+        try {
+          assertAddressEqual(
+            verified.payer,
+            reconstructed.payer,
+            'B402 verify payer does not match the signed payment',
+          )
+        } catch (err) {
+          await markB402Rejected(
+            parameters.store,
+            replayKey,
+            'B402 verify payer does not match the signed payment',
+          )
+          throw err
+        }
+
+        const settleRequest: FacilitatorRequest = {
+          ...verifyRequest,
+          paymentPayload: parameters.bazaar
+            ? { ...reconstructed.payment, extensions: { bazaar: parameters.bazaar } }
+            : reconstructed.payment,
+        }
+        settlePhase = true
+        const settlement = await settleB402({
+          client: parameters.client,
+          expectation: {
+            payer: reconstructed.payer,
+            requirements: reconstructed.requirements,
+            transferMethod: request.methodDetails.assetTransferMethod,
+          },
+          ...(parameters.onSettlementUnknown
+            ? { onSettlementUnknown: parameters.onSettlementUnknown }
+            : {}),
+          request: settleRequest,
+        })
+        if (!settlement.success) {
+          // settleB402's contract: success=false implies transaction === ''
+          // (anything ambiguous threw B402SettlementUnknownError instead),
+          // so nothing was broadcast and the slot may free for retry.
+          settlePhase = false
+          throw new Errors.VerificationFailedError({
+            reason:
+              settlement.errorMessage ??
+              settlement.errorReason ??
+              'B402 facilitator settlement failed',
+          })
+        }
+
+        await consumeB402SlotBestEffort(parameters.store, replayKey, '[b402/charge verify]')
+
+        return toMppReceipt({
+          challengeId: credential.challenge.id,
+          externalId: request.externalId,
+          network: request.methodDetails.network,
+          payer: reconstructed.payer,
+          transaction: settlement.transaction,
+          transferMethod: request.methodDetails.assetTransferMethod,
+        })
+      } catch (err) {
+        if (!settlePhase) {
+          // Noop when a markRejected above already wrote a terminal state
+          // (release only deletes an `inflight` slot owned by this token).
+          // Swallow store failures here so they never mask the real error.
+          await releaseB402Slot(parameters.store, replayKey, slotToken).catch(() => undefined)
+        }
+        throw err
+      }
     },
   })
 }
@@ -178,10 +256,25 @@ export declare namespace charge {
     readonly bazaar?: BazaarMetadata | undefined
     readonly client: B402Transport
     readonly currency: Currency
+    /**
+     * Stale-inflight reclaim age (ms) for the replay guard — the operator's
+     * window to reconcile a `B402SettlementUnknownError` before a retry may
+     * re-enter settlement. Defaults to 10 minutes.
+     */
+    readonly inflightTtlMs?: number | undefined
     readonly maxTimeoutSeconds?: number | undefined
     readonly network: `eip155:${number}`
     readonly onSettlementUnknown?: B402SettlementUnknownHandler | undefined
     readonly recipient: `0x${string}`
+    /**
+     * Replay store — REQUIRED (audit H02). Every credential reserves a slot
+     * here before the facilitator's verify/settle run, so a resubmitted
+     * credential (client retry, duplicate request, deliberate replay) can
+     * never settle twice. Production deployments MUST pass a durable atomic
+     * backend (e.g. mppx `Store.redis(...)`) shared by ALL instances;
+     * `Store.memory()` guards a single process only and is test/dev-only.
+     */
+    readonly store: B402ReplayStore
     readonly supportedCache?: B402SupportedCache | undefined
     /** Enabled route methods. Defaults to both supported B402 methods. */
     readonly transferMethods?: readonly B402ChargeTransferMethod[] | undefined

@@ -13,9 +13,11 @@
  *   - The payer / server topology has a chargeFromDecimal-style flow
  *     where users sweep external balances into the merchant address.
  *
- * For the default `hashFromPolicy: 'lax_from'` server setting,
- * `credential.source` is OPTIONAL. Pass it (DID PKH form) when the
- * server is configured with `'strict_from'` — see spec §8.4.
+ * Servers default to `hashFromPolicy: 'strict_from'` (audit H01) and
+ * reject a hash credential whose `source` is missing or does not match
+ * the on-chain Transfer.from — ALWAYS pass `source` (DID PKH form of the
+ * tx sender) unless you know the server opted back to `'lax_from'`.
+ * The high-level `pay()` flow fills it in automatically.
  */
 
 import { type Challenge, Credential } from 'mppx'
@@ -41,10 +43,11 @@ export interface CreateHashCredentialOptions {
   /** The 32-byte transaction hash of the on-chain settlement. */
   readonly hash: `0x${string}`
   /**
-   * Optional `did:pkh:eip155:<chainId>:<address>` identifier of the
-   * tx-from address. REQUIRED iff the server is configured with
-   * `hashFromPolicy: 'strict_from'` (spec §8.4 step 6); the default
-   * `'lax_from'` ignores this field.
+   * `did:pkh:eip155:<chainId>:<address>` identifier of the tx-from
+   * address. REQUIRED under the server DEFAULT `hashFromPolicy:
+   * 'strict_from'` (spec §8.4 step 6, audit H01) — it must match the
+   * on-chain Transfer.from or the credential is rejected. Only servers
+   * explicitly opted back to `'lax_from'` ignore this field.
    */
   readonly source?: string
 }
