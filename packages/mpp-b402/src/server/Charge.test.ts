@@ -324,6 +324,34 @@ describe('b402 server charge', () => {
     expect(unknown[0]).toMatchObject({ phase: 'settle', status: 'unknown' })
   })
 
+  // ── stableBinding pins the facilitator identities (audit L04) ─────────────
+
+  test.each(['eip3009', 'permit2-exact'] as const)(
+    'stableBinding pins %s signerAddress/spenderAddress into the HMAC surface',
+    async (transferMethod) => {
+      const fake = fakeClient()
+      const fixture = await credentialFor({ client: fake.client, transferMethod })
+      const request = fixture.credential.challenge.request as B402ChargeRequest
+
+      const binding = (
+        fixture.server as unknown as {
+          stableBinding: (request: B402ChargeRequest) => {
+            methodDetails: Record<string, unknown>
+          }
+        }
+      ).stableBinding(request)
+
+      // ProviderSnapshot.ts documents these as HMAC-bound; a challenge whose
+      // signer/spender was silently substituted must now fail verification.
+      expect(binding.methodDetails['signerAddress']).toBe(SIGNER)
+      if (transferMethod === 'permit2-exact') {
+        expect(binding.methodDetails['spenderAddress']).toBe(SPENDER)
+      } else {
+        expect(binding.methodDetails).not.toHaveProperty('spenderAddress')
+      }
+    },
+  )
+
   // ── Replay protection (audit H02) ─────────────────────────────────────────
 
   test.each(['eip3009', 'permit2-exact'] as const)(

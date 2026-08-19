@@ -117,8 +117,16 @@ export interface ServerParameters {
   // Challenge binding mode — REQUIRED, no default. See spec §8.0 / §10.
   readonly challengeBinding: ChallengeBindingConfig
 
-  // Replay store — defaults to Store.memory() (test/dev only).
+  // Replay store — REQUIRED unless `allowMemoryStore` is set (audit L05).
   readonly store?: ChargeStore
+  /**
+   * Explicit opt-in to run WITHOUT a durable store — falls back to an
+   * in-process `Store.memory()` (audit L05). Required (except under
+   * `NODE_ENV=test`) when `store` is omitted; otherwise preflight throws.
+   * NEVER enable in a multi-instance deployment: replay protection silently
+   * becomes per-instance and double-spend protection fails. Dev / test only.
+   */
+  readonly allowMemoryStore?: boolean
 
   // Direct wire methodDetails overrides (uncommon — usually omitted).
   /** Override canonical Permit2 deployment (fork / private chain / mirror). */

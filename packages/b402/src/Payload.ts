@@ -9,7 +9,15 @@
  * need to bind the proof to an external request or challenge.
  */
 
-import { type Hex, type LocalAccount, recoverTypedDataAddress, toHex } from 'viem'
+import {
+  type Hex,
+  type LocalAccount,
+  compactSignatureToSignature,
+  parseCompactSignature,
+  recoverTypedDataAddress,
+  serializeSignature,
+  toHex,
+} from 'viem'
 
 import { eip3009Domain, eip3009Types } from './TypedData.js'
 import {
@@ -40,12 +48,29 @@ export interface BuildEip3009PaymentOptions {
    */
   readonly validBefore?: string | bigint
   /**
+   * Hard upper bound (seconds from now) the buyer is willing to leave the
+   * signed authorization redeemable — a ceiling the buyer sets, independent
+   * of the merchant-supplied `maxTimeoutSeconds` (audit L03). Defaults to
+   * `DEFAULT_MAX_SETTLEMENT_SEC` (24h). A tampered challenge declaring
+   * `maxTimeoutSeconds` of, say, 100 years cannot mint a long-lived "zombie
+   * authorization": the computed `validBefore` is clamped to
+   * `now + maxSettlementSeconds`.
+   */
+  readonly maxSettlementSeconds?: number
+  /**
    * Optional caller-supplied nonce. Native B402/x402 callers normally leave
    * this unset for a random nonce. Protocol adapters may derive it from an
    * external challenge to prevent cross-request replay.
    */
   readonly nonce?: Hex
 }
+
+/**
+ * Default buyer-side settlement-window ceiling (24h) — a signed
+ * authorization stays redeemable at most this long regardless of the
+ * merchant-declared `maxTimeoutSeconds` (audit L03).
+ */
+export const DEFAULT_MAX_SETTLEMENT_SEC = 24 * 60 * 60
 
 /**
  * Sign an EIP-3009 `TransferWithAuthorization` for `requirements` and assemble
@@ -74,10 +99,17 @@ export async function buildEip3009Payment(
   const chainId = chainIdFromNetwork(requirements.network)
   const nowSec = BigInt(Math.floor(Date.now() / 1000))
   const validAfter = options.validAfter !== undefined ? BigInt(options.validAfter) : 0n
-  const validBefore =
+  // Buyer-side hard ceiling (audit L03): never leave the authorization
+  // redeemable past now + maxSettlementSeconds, regardless of the
+  // merchant-declared maxTimeoutSeconds or an explicit validBefore.
+  const maxSettlementSeconds = options.maxSettlementSeconds ?? DEFAULT_MAX_SETTLEMENT_SEC
+  const settlementCeiling = nowSec + BigInt(maxSettlementSeconds)
+  const requestedValidBefore =
     options.validBefore !== undefined
       ? BigInt(options.validBefore)
       : nowSec + BigInt(requirements.maxTimeoutSeconds)
+  const validBefore =
+    requestedValidBefore < settlementCeiling ? requestedValidBefore : settlementCeiling
   const nonce = options.nonce ?? randomB402Nonce()
 
   const signature = await account.signTypedData({
@@ -144,8 +176,24 @@ export function recoverEip3009Payer(payload: Eip3009PaymentPayload): Promise<`0x
       validBefore: BigInt(auth.validBefore),
       nonce: auth.nonce,
     },
-    signature: payload.payload.signature,
+    signature: normalizeEip3009Signature(payload.payload.signature),
   })
+}
+
+/**
+ * Normalize a 64-byte EIP-2098 compact signature to standard 65-byte
+ * r||s||v form before recovery (audit I06). `HEX_SIGNATURE` accepts both
+ * lengths, but viem's `recoverTypedDataAddress` requires 65 bytes and
+ * throws on 64 — so a legitimate compact-signature payer was misclassified
+ * as malformed and rejected. 65-byte (130 hex) input passes through
+ * unchanged.
+ */
+function normalizeEip3009Signature(signature: string): Hex {
+  const hex = signature as Hex
+  if (/^0x[0-9a-fA-F]{128}$/.test(signature)) {
+    return serializeSignature(compactSignatureToSignature(parseCompactSignature(hex)))
+  }
+  return hex
 }
 
 /** Encode a PaymentPayload into the base64 `X-PAYMENT` header value. */

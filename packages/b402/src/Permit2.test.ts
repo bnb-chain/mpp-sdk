@@ -55,6 +55,26 @@ describe('buildPermit2ExactPayment', () => {
     expect(getAddress(await recoverPermit2ExactPayer(payment))).toBe(account.address)
   })
 
+  // Audit L03: previously the deadline cap was DERIVED from the merchant's
+  // maxTimeoutSeconds, so a tampered "100-year" timeout meant a 100-year
+  // cap — no real constraint. The buyer-side ceiling (24h default) now
+  // bounds it independently.
+  test('the deadline cap is bounded by the buyer ceiling, not a huge merchant timeout', async () => {
+    const account = privateKeyToAccount(generatePrivateKey())
+    const requirements = permit2Requirements({
+      maxTimeoutSeconds: 100 * 365 * 24 * 60 * 60, // "100 years"
+    })
+    const twoDaysOut = BigInt(Math.floor(Date.now() / 1000)) + 48n * 60n * 60n
+    await expect(
+      buildPermit2ExactPayment({
+        account,
+        deadline: twoDaysOut, // fine under the old merchant-derived cap
+        requirements,
+        trustedSpenders: TRUSTED,
+      }),
+    ).rejects.toThrow(/exceeds the cap/)
+  })
+
   test('wire envelope matches the b402 signing guide (decimal strings, exact 1:1 amount)', async () => {
     const account = privateKeyToAccount(generatePrivateKey())
     const requirements = permit2Requirements()

@@ -270,24 +270,22 @@ export async function preflightChargeInternal(
   // covered the SDK-auto-defaulted instance. We replace that
   // half-measure with an honest presence-only check + clear docs.
   //
-  // Behavior matrix:
-  //   - 'production' + omitted        → throw (deployment MUST pass a
-  //                                            durable atomic store;
-  //                                            SDK trusts the claim)
-  //   - 'production' + any store      → accepted presence-only
-  //                                     (SDK can't verify durability)
-  //   - 'test'                        → silent default to memory
-  //   - everything else (dev / unset) → memory + one-time console.warn
+  // Fail-closed store resolution (audit L05): whether the durable-store
+  // requirement is enforced no longer hinges on an exact NODE_ENV string
+  // match. Previously only the literal 'production' triggered a throw, so
+  // NODE_ENV unset (extremely common) or a near-miss like 'prod' silently
+  // fell through to a process-local Store.memory() — and a multi-instance
+  // deployment behind a load balancer then ran one independent replay store
+  // per instance, silently defeating double-spend protection.
   //
-  // Note: the SDK does NOT endorse `Store.memory()` as a
-  // production option. It can't structurally distinguish a Redis client
-  // from a Map, so a deployment that explicitly passes `Store.memory()`
-  // under `NODE_ENV=production` slips through the presence check — but
-  // that's a violation of spec §9 (process-local store forbidden in
-  // production), not a sanctioned escape hatch. For local / single-process
-  // experiments, run with a non-`production` `NODE_ENV` instead; the dev
-  // path defaults to memory and emits the visible warn that flags the
-  // gap before any deploy cutover.
+  // Behavior matrix:
+  //   - any store passed             → accepted presence-only
+  //                                    (SDK can't verify durability across
+  //                                     the FFI boundary)
+  //   - omitted + allowMemoryStore   → memory (explicit opt-in; dev/test)
+  //   - omitted, NODE_ENV=test       → memory (test convenience)
+  //   - omitted otherwise            → THROW (fail closed, independent of
+  //                                    NODE_ENV string-sniffing)
   const nodeEnv =
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- process.env shape varies (Node vs edge)
     typeof process !== 'undefined' && (process as any).env
@@ -297,31 +295,27 @@ export async function preflightChargeInternal(
   let store: ChargeStore
   if (params.store !== undefined) {
     store = params.store as ChargeStore
-  } else {
-    if (nodeEnv === 'production') {
-      throw new Errors.InvalidChallengeError({
-        reason:
-          'preflightCharge: params.store is REQUIRED when NODE_ENV=production ' +
-          '(spec §9). Pass a durable atomic store (Redis / Postgres / Cloudflare KV); ' +
-          "the SDK trusts the supplied store is durable — it can't structurally " +
-          'verify that across the FFI boundary. For local / single-process ' +
-          'experiments, run with a non-`production` NODE_ENV (dev / unset both ' +
-          'default to Store.memory() with a one-time warn).',
-      })
-    }
+  } else if (params.allowMemoryStore === true || nodeEnv === 'test') {
     const { Store } = await import('mppx')
     if (nodeEnv !== 'test') {
-      // Visible warn in dev so the developer notices BEFORE the production
-      // deploy hits the throw above. Once per process — preflight is called
-      // once at server startup, so this naturally doesn't repeat per request.
       // eslint-disable-next-line no-console -- intentional one-shot startup warn
       console.warn(
-        '[preflightCharge] params.store omitted; defaulting to Store.memory() ' +
-          '(in-process replay protection only). Production deployments MUST pass a ' +
-          'durable atomic store — see spec §9.',
+        '[preflightCharge] params.store omitted; allowMemoryStore=true → Store.memory() ' +
+          '(in-process replay protection only). NEVER use this in a multi-instance ' +
+          'deployment — replay protection silently becomes per-instance. See spec §9.',
       )
     }
     store = Store.memory() as ChargeStore
+  } else {
+    throw new Errors.InvalidChallengeError({
+      reason:
+        'preflightCharge: params.store is REQUIRED. Pass a durable atomic store ' +
+        '(Redis / Postgres / Cloudflare KV) shared by all instances; the SDK trusts ' +
+        "the supplied store is durable — it can't structurally verify that across the " +
+        'FFI boundary. For local / single-process experiments, set ' +
+        'allowMemoryStore: true to opt into an in-process Store.memory() explicitly ' +
+        '(audit L05 — no longer inferred from NODE_ENV).',
+    })
   }
 
   // —— credentialTypes empty-array early reject ——

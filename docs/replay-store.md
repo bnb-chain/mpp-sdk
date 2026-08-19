@@ -230,3 +230,51 @@ stored in the slot value.
 The store implements `ChargeStore` (an `mppx` `Store.AtomicStore`-shaped
 interface). `Store.memory()` from mppx is acceptable **only** for tests
 and local single-process dev.
+
+## Deployment hardening: rate-limit the verify endpoint (audit L01)
+
+Credential verification is deliberately **free to attempt** for two of the
+four credential types, which makes your RPC provider the resource an
+attacker spends:
+
+| Credential      | Cost to forge an attempt                               | RPC calls per garbage attempt                                                                          |
+| --------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `hash`          | none — any random 32-byte hex                          | up to 2 (`getTransactionReceipt` + `getBlockNumber`), then the slot **releases** for unlimited retries |
+| `transaction`   | a validly-signed but unfunded tx (local key, no funds) | up to 4 (broadcast attempt + receipt + mempool lookup + nonce probe)                                   |
+| `authorization` | real EIP-712 signature required                        | probes gated behind `balanceOf` / `authorizationState`                                                 |
+| `permit2`       | real EIP-712 signature required                        | probes gated behind `allowance` / nonce checks                                                         |
+
+The SDK intentionally does **not** `markRejected` a not-found `hash` — that
+would let an attacker permanently poison a future legitimate tx hash — so a
+zero-cost garbage submission can repeat forever. DoS/cost protection is the
+**deployment's rate limiter**, not the SDK:
+
+- Rate-limit the paid endpoint per client IP / API key **before** the
+  verify hook runs (any standard reverse-proxy or middleware limiter).
+- Alert on sustained `hash` / `transaction` verification failures — a
+  spike is either an integration bug or someone running up your RPC bill.
+- If you self-host the RPC node, budget for the 2–4 calls per attempt
+  above; if you use a metered provider, a limiter directly caps your bill.
+- Also cap request body size at the front door (the SDK's wire schema caps
+  numeric/hex field lengths — audit M04 — but the outermost body limit is
+  the deployment's).
+
+## Deployment hardening: sweep the stored-lookup challenge store (audit I02)
+
+Only relevant to `challengeBinding: { mode: 'stored-lookup' }`. Every 402
+issued calls `rememberChallenge`, and anyone can trigger 402s for free —
+without cleanup, the challenge store grows unboundedly. The SDK provides
+`forgetChallenge` but no automatic sweep (the `ChargeStore`/`ChallengeStore`
+interface has no scan primitive to build one on).
+
+Treat it like a session store:
+
+- Call `forgetChallenge(store, id)` after the matching replay slot is
+  marked `consumed` (the challenge can never be redeemed again).
+- Give challenge entries a backend TTL slightly beyond the challenge
+  `expires` window (e.g. `expires + 1h`). Unlike **replay** slots — which
+  must NEVER expire (see the warning above) — challenge snapshots are safe
+  to expire: an expired challenge is already rejected by `Expires.assert`
+  before the lookup runs, so a missing entry changes nothing.
+- On Redis: `SET key value PX <ttl>` in your `ChallengeStore` adapter;
+  on Postgres: a periodic `DELETE ... WHERE expires_at < now()`.

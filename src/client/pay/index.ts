@@ -60,6 +60,14 @@ export interface PayOptions {
    * `true` to take responsibility for pointing the clients at the right chain.
    */
   readonly allowChainMismatch?: boolean
+  /**
+   * Permit a plain `http://` target URL (audit I03). Default `false` —
+   * `pay()` requires `https://` so the 402 challenge and the paid retry
+   * aren't exposed to a network attacker. Loopback hosts
+   * (localhost / 127.0.0.1 / [::1]) are always allowed for local
+   * development; set this only to hit a non-loopback http endpoint.
+   */
+  readonly allowInsecureUrl?: boolean
   /** Injectable fetch (testing). Defaults to the global `fetch`. */
   readonly fetch?: typeof fetch
 }
@@ -67,6 +75,9 @@ export interface PayOptions {
 export async function pay(url: string, options: PayOptions): Promise<PayResult> {
   const doFetch = options.fetch ?? fetch
   const { wallet } = options
+
+  // 0. Enforce https on the target (audit I03) — loopback exempt.
+  assertSecureUrl(url, options.allowInsecureUrl ?? false)
 
   // 1. Fetch the 402 (reusing the caller's request) + parse the mpp challenge.
   assertRequest(options.request)
@@ -134,6 +145,31 @@ export async function pay(url: string, options: PayOptions): Promise<PayResult> 
 
   // 5. Retry with Authorization: Payment → content + receipt (fail-closed on non-2xx).
   return submitPayment(doFetch, url, options.request, credential, route)
+}
+
+/**
+ * Enforce https on the pay() target (audit I03). Loopback hosts are always
+ * allowed (local dev); any other http:// URL needs an explicit
+ * `allowInsecureUrl: true`.
+ */
+function assertSecureUrl(url: string, allowInsecure: boolean): void {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw new Error(`pay: invalid URL ${JSON.stringify(url)}`)
+  }
+  if (parsed.protocol === 'https:') return
+  const loopback =
+    parsed.hostname === 'localhost' ||
+    parsed.hostname === '127.0.0.1' ||
+    parsed.hostname === '[::1]'
+  if (parsed.protocol === 'http:' && (loopback || allowInsecure)) return
+  throw new Error(
+    `pay: refusing to send a payment over ${parsed.protocol}// (${url}) — the 402 challenge ` +
+      'and paid retry must go over https. Loopback hosts are exempt; set allowInsecureUrl: ' +
+      'true to override for a non-loopback http endpoint (audit I03).',
+  )
 }
 
 /* Public surface — errors, pure selection helpers, and every buyer-facing type. */

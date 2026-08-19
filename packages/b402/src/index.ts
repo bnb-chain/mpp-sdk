@@ -23,6 +23,7 @@ export {
 } from './Types.js'
 
 export {
+  DEFAULT_MAX_SETTLEMENT_SEC,
   buildEip3009Payment,
   chainIdFromNetwork,
   decodeXPayment,

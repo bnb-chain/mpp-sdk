@@ -226,7 +226,10 @@ export function assertDidPkhSourceMatches(args: {
   if (!sourceMatch) {
     throw new Errors.VerificationFailedError({
       ...(challengeId && { id: challengeId }),
-      reason: `credential.source must match 'did:pkh:eip155:${chainId}:<address>'; got '${source}'`,
+      // JSON.stringify escapes newlines/control chars in the untrusted,
+      // format-failed source before it reaches operator logs (audit L02 —
+      // log injection), matching how externalId is handled elsewhere.
+      reason: `credential.source must match 'did:pkh:eip155:${chainId}:<address>'; got ${JSON.stringify(source)}`,
     })
   }
   if (sourceMatch[1]!.toLowerCase() !== expectedAddress.toLowerCase()) {

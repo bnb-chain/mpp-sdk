@@ -585,6 +585,17 @@ describe('charge(prepared) factory output', () => {
     expect(() => server.request!({ request: fullMatchingMd as never })).not.toThrow()
   })
 
+  test('rejects an explicit methodDetails:null with a typed error (audit I04 — no raw TypeError)', async () => {
+    // `md !== undefined` was true for null, so the guard dereferenced
+    // null.chainId and threw an unhandled TypeError instead of the intended
+    // InvalidChallengeError.
+    const server = charge(await happy())
+    const nullMd = { amount: '1000000', methodDetails: null }
+    expect(() => server.request!({ request: nullMd as never })).toThrow(
+      /'methodDetails' must not be null/,
+    )
+  })
+
   test('stableBinding pins full EVM methodDetails (spec §14.10)', async () => {
     const server = charge(await happy())
     const fullReq = {
@@ -867,10 +878,10 @@ describe('chargeAsync sugar', () => {
 })
 
 /* -------------------------------------------------------------------------- */
-/*  Memory-store production guard — honest presence-only check                */
+/*  Store requirement — fail-closed, independent of NODE_ENV (audit L05)      */
 /* -------------------------------------------------------------------------- */
 
-describe('preflightCharge store production guard', () => {
+describe('preflightCharge store requirement (audit L05)', () => {
   const originalNodeEnv = process.env.NODE_ENV
 
   beforeEach(() => {
@@ -878,24 +889,50 @@ describe('preflightCharge store production guard', () => {
     vi.restoreAllMocks()
   })
 
-  test('throws when params.store is omitted and NODE_ENV=production', async () => {
-    process.env.NODE_ENV = 'production'
+  // Previously only the literal 'production' triggered a throw; unset or a
+  // near-miss like 'prod' silently fell through to per-process
+  // Store.memory(), so a multi-instance deployment lost its double-spend
+  // guarantee. Now ANY env without an explicit opt-in fails closed.
+  test.each(['production', 'prod', 'development', 'staging'])(
+    'throws when params.store is omitted under NODE_ENV=%s',
+    async (env) => {
+      process.env.NODE_ENV = env
+      try {
+        await expect(happy()).rejects.toThrow(/params\.store is REQUIRED/)
+      } finally {
+        process.env.NODE_ENV = originalNodeEnv
+      }
+    },
+  )
+
+  test('throws when params.store is omitted and NODE_ENV is unset', async () => {
+    const saved = process.env.NODE_ENV
+    delete process.env.NODE_ENV
     try {
-      await expect(happy()).rejects.toThrow(/params\.store is REQUIRED when NODE_ENV=production/)
+      await expect(happy()).rejects.toThrow(/params\.store is REQUIRED/)
     } finally {
+      if (saved !== undefined) process.env.NODE_ENV = saved
+    }
+  })
+
+  test('allowMemoryStore:true opts into memory with a visible warn (any env)', async () => {
+    process.env.NODE_ENV = 'development'
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const result = await happy({ allowMemoryStore: true })
+      expect(result._resolved.store).toBeTruthy()
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/allowMemoryStore=true/))
+    } finally {
+      warnSpy.mockRestore()
       process.env.NODE_ENV = originalNodeEnv
     }
   })
 
   test('ANY explicitly-passed store passes under production (SDK trusts caller)', async () => {
-    // An earlier approach tried to brand the auto-defaulted Store.memory() and reject
-    // user-passed Store.memory() via the brand. That was a half-measure:
-    // user code that did `params.store = Store.memory()` carried no brand
-    // and slipped through. The current behavior acknowledges the SDK genuinely cannot
-    // verify durability across the FFI boundary — anyone can wrap a Map
-    // in a ChargeStore interface and call it "Redis". Honest behavior:
-    // presence-only check, with docs that say "SDK trusts the supplied
-    // store is durable".
+    // The SDK genuinely cannot verify durability across the FFI boundary —
+    // anyone can wrap a Map in a ChargeStore interface and call it "Redis".
+    // Honest behavior: presence-only check, with docs that say "SDK trusts
+    // the supplied store is durable".
     process.env.NODE_ENV = 'production'
     const { Store } = await import('mppx')
     try {
@@ -905,43 +942,13 @@ describe('preflightCharge store production guard', () => {
         }),
         { mockedIsContractDeployed: () => true },
       )
-      // The store passes through unchanged — SDK doesn't reject Store.memory()
-      // even under production. The DEPLOYMENT is responsible for ensuring
-      // the supplied store is actually durable.
       expect(result._resolved.store).toBeTruthy()
     } finally {
       process.env.NODE_ENV = originalNodeEnv
     }
   })
 
-  test('warns (but resolves) when params.store is omitted and NODE_ENV=development', async () => {
-    process.env.NODE_ENV = 'development'
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    try {
-      const result = await happy()
-      expect(result._resolved.store).toBeTruthy()
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/defaulting to Store\.memory\(\)/))
-    } finally {
-      warnSpy.mockRestore()
-      process.env.NODE_ENV = originalNodeEnv
-    }
-  })
-
-  test('warns when NODE_ENV is unset (treated like dev)', async () => {
-    const saved = process.env.NODE_ENV
-    delete process.env.NODE_ENV
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    try {
-      const result = await happy()
-      expect(result._resolved.store).toBeTruthy()
-      expect(warnSpy).toHaveBeenCalled()
-    } finally {
-      warnSpy.mockRestore()
-      if (saved !== undefined) process.env.NODE_ENV = saved
-    }
-  })
-
-  test('silent under NODE_ENV=test (no log noise in test runs)', async () => {
+  test('silent memory fallback under NODE_ENV=test (no log noise in test runs)', async () => {
     process.env.NODE_ENV = 'test'
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {

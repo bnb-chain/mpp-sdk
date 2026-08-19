@@ -478,6 +478,39 @@ describe('pay · build + retry', () => {
     expect(result.receiptHeader).toBeNull()
   })
 
+  test('refuses a non-loopback http:// target unless allowInsecureUrl (audit I03)', async () => {
+    const wwwAuth = Challenge.serialize(challengeWith(['hash']))
+    const { publicClient, walletClient, writeCalls } = payClients()
+    const { fetch, calls } = payFetch(wwwAuth, { status: 200, receipt: 'r' })
+
+    await expect(
+      pay('http://api.example/report', {
+        wallet: { account: payAccount(), publicClient, walletClient },
+        fetch,
+      }),
+    ).rejects.toThrow(/must go over https/)
+    expect(calls).toEqual([]) // never even probed
+    expect(writeCalls).toEqual([])
+
+    // Loopback is exempt for local dev…
+    const local = payFetch(wwwAuth, { status: 200, receipt: 'r' })
+    const localResult = await pay('http://localhost:8080/report', {
+      wallet: { account: payAccount(), publicClient, walletClient },
+      fetch: local.fetch,
+    })
+    expect(localResult.route.id).toBe('mpp:hash')
+
+    // …and the explicit opt-out unlocks non-loopback http.
+    const opted = payFetch(wwwAuth, { status: 200, receipt: 'r' })
+    const b = payClients()
+    const optedResult = await pay('http://api.example/report', {
+      wallet: { account: payAccount(), publicClient: b.publicClient, walletClient: b.walletClient },
+      allowInsecureUrl: true,
+      fetch: opted.fetch,
+    })
+    expect(optedResult.route.id).toBe('mpp:hash')
+  })
+
   test('maxAmount set but decimals unresolved → fail closed (throws, never broadcasts)', async () => {
     const wwwAuth = Challenge.serialize(challengeWith(['hash']))
     const { publicClient, walletClient, writeCalls } = payClients({ decimalsThrows: true })

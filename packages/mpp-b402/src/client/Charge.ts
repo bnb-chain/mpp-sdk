@@ -30,7 +30,11 @@ export function charge(parameters: charge.Parameters): charge.Client {
       const request = challenge.request as B402ChargeRequest
       assertPolicy(parameters, request)
       const requirements = toPaymentRequirements(request)
-      const deadline = paymentDeadline(challenge.expires, request.methodDetails.maxTimeoutSeconds)
+      const deadline = paymentDeadline(
+        challenge.expires,
+        request.methodDetails.maxTimeoutSeconds,
+        parameters.maxSettlementSeconds,
+      )
 
       if (request.methodDetails.assetTransferMethod === 'eip3009') {
         const payment = await buildEip3009Payment({
@@ -108,6 +112,14 @@ export declare namespace charge {
      */
     maxAmount?: string | undefined
     maxAtomicAmount?: string | bigint | undefined
+    /**
+     * Buyer-side hard ceiling (seconds) on how long a signed authorization
+     * stays redeemable, independent of the merchant-declared
+     * `maxTimeoutSeconds` (audit L03). Defaults to 24h. A tampered challenge
+     * declaring a huge timeout cannot mint a long-lived "zombie
+     * authorization" — the deadline is clamped to `now + this`.
+     */
+    maxSettlementSeconds?: number | undefined
     methods?: readonly B402ChargeTransferMethod[] | undefined
     permit2Allowance?: B402Permit2AllowanceReader | undefined
     trustedSpenders?: Readonly<Record<string, readonly string[]>> | undefined
@@ -240,14 +252,30 @@ function toPaymentRequirements(request: B402ChargeRequest): PaymentRequirements 
   }
 }
 
-function paymentDeadline(expires: string | undefined, maxTimeoutSeconds: number): bigint {
+/**
+ * Buyer-side settlement-window ceiling (24h) — the signed authorization
+ * stays redeemable at most this long, independent of the merchant-declared
+ * maxTimeoutSeconds (audit L03). Prevents a tampered challenge from minting
+ * a long-lived "zombie authorization".
+ */
+const DEFAULT_MAX_SETTLEMENT_SEC = 24 * 60 * 60
+
+function paymentDeadline(
+  expires: string | undefined,
+  maxTimeoutSeconds: number,
+  maxSettlementSeconds: number = DEFAULT_MAX_SETTLEMENT_SEC,
+): bigint {
   const now = BigInt(Math.floor(Date.now() / 1000))
+  // Buyer's independent hard ceiling — never derived from maxTimeoutSeconds.
+  const settlementCeiling = now + BigInt(maxSettlementSeconds)
   const timeoutDeadline = now + BigInt(maxTimeoutSeconds)
-  if (!expires) return timeoutDeadline
-  const milliseconds = new Date(expires).getTime()
-  if (!Number.isFinite(milliseconds)) throw new Error(`Invalid Challenge expiry: ${expires}`)
-  const challengeDeadline = BigInt(Math.floor(milliseconds / 1000))
-  const deadline = challengeDeadline < timeoutDeadline ? challengeDeadline : timeoutDeadline
+  let deadline = timeoutDeadline < settlementCeiling ? timeoutDeadline : settlementCeiling
+  if (expires) {
+    const milliseconds = new Date(expires).getTime()
+    if (!Number.isFinite(milliseconds)) throw new Error(`Invalid Challenge expiry: ${expires}`)
+    const challengeDeadline = BigInt(Math.floor(milliseconds / 1000))
+    if (challengeDeadline < deadline) deadline = challengeDeadline
+  }
   if (deadline <= now) throw new Error('B402 Challenge has expired.')
   return deadline
 }

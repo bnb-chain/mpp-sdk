@@ -100,6 +100,15 @@ export async function charge(
           maxTimeoutSeconds: request.methodDetails.maxTimeoutSeconds,
           network: request.methodDetails.network,
           protocolVersion: request.methodDetails.protocolVersion,
+          // Audit L04: signerAddress (both methods) and spenderAddress
+          // (permit2-exact) are the facilitator's settlement identities.
+          // ProviderSnapshot.ts documents them as HMAC-bound; include them
+          // here so that assertion actually holds and a tampered identity
+          // is tamper-evident.
+          signerAddress: request.methodDetails.signerAddress,
+          ...(request.methodDetails.spenderAddress !== undefined
+            ? { spenderAddress: request.methodDetails.spenderAddress }
+            : {}),
         },
         recipient: request.recipient,
       }

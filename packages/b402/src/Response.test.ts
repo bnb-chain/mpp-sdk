@@ -33,6 +33,18 @@ describe('b402 response parsers', () => {
     expect(parseSupportedResponse(value)).toEqual(value)
   })
 
+  // Audit I05: `signers` keys come from the external facilitator. A
+  // "__proto__" key written via [[Set]] on a plain object would rewrite the
+  // accumulator's prototype chain (single-object prototype confusion).
+  test('rejects a __proto__ network key in /supported signers', () => {
+    const value = JSON.parse(
+      `{"kinds":[],"extensions":[],"signers":{"__proto__":["${ADDRESS}"]}}`,
+    ) as unknown
+    expect(() => parseSupportedResponse(value)).toThrow(/illegal network key/)
+    // And the global prototype stayed clean.
+    expect(({} as Record<string, unknown>)['0']).toBeUndefined()
+  })
+
   test('rejects malformed /supported kinds before Gate or Adapter code sees them', () => {
     expect(() =>
       parseSupportedResponse({
