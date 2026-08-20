@@ -2,6 +2,7 @@ import {
   X402_VERSION,
   isEip3009PaymentPayload,
   parseVerifyResult,
+  recoverEip3009Payer,
   type BazaarMetadata,
   type Eip3009PaymentPayload,
   type PaymentRequirements,
@@ -117,8 +118,21 @@ export function createB402Facilitator(
     if (!isEip3009PaymentPayload(payment)) {
       throw new Error('B402 EIP-3009 payload does not satisfy the payment requirements')
     }
+    // Recover the payer LOCALLY rather than trusting the declared `from`
+    // (audit H02 follow-up). settle()'s replay guard keys on this address, so
+    // a self-declared value would let anyone squat a victim's slot using the
+    // victim's publicly-visible address + nonce plus a garbage signature —
+    // briefly blocking the victim's own genuine payment. EIP-3009 signatures
+    // are always locally recoverable on this rail (EOA-only, see the
+    // `recover-and-compare` note in ReconstructPayment.ts), so this gate is
+    // strictly stronger AND cheaper than a facilitator round-trip, and it
+    // runs before any slot is reserved.
+    const recovered = getAddress(await recoverEip3009Payer(payment))
+    if (recovered.toLowerCase() !== getAddress(authorization.from).toLowerCase()) {
+      throw new Error('B402 EIP-3009 signature does not match authorization.from')
+    }
     return {
-      payer: getAddress(authorization.from),
+      payer: recovered,
       request: {
         paymentPayload: payment,
         paymentRequirements: requirements,

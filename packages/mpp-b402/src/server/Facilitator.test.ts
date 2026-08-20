@@ -1,12 +1,13 @@
-import type { SupportedResponse } from '@bnb-chain/b402'
+import { buildEip3009Payment, type SupportedResponse } from '@bnb-chain/b402'
 import {
   B402SettlementUnknownError,
   type B402Transport,
   type FacilitatorRequest,
 } from '@bnb-chain/b402/server'
-import { Receipt, x402 } from 'mppx'
+import { Receipt, Store, x402 } from 'mppx'
 import { Mppx as ClientMppx, evm as evmClient } from 'mppx/client'
 import { Mppx as ServerMppx, evm as evmServer } from 'mppx/server'
+import { getAddress, type LocalAccount } from 'viem'
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
 import { describe, expect, test } from 'vitest'
 
@@ -15,9 +16,13 @@ import { createB402Facilitator } from './Facilitator.js'
 const NETWORK = 'eip155:97' as const
 const CURRENCY = '0x337610d27c682E347C9cD60BD4b3b107C9d34dDd'
 const RECIPIENT = '0x2222222222222222222222222222222222222222'
-const PAYER = '0x3333333333333333333333333333333333333333'
 const SIGNER = '0x1111111111111111111111111111111111111111'
 const TX_HASH = `0x${'ab'.repeat(32)}`
+const NONCE = `0x${'12'.repeat(32)}` as const
+
+/** The payer signs for real — the adapter recovers and compares locally. */
+const PAYER_ACCOUNT = privateKeyToAccount(generatePrivateKey())
+const PAYER = PAYER_ACCOUNT.address
 
 const SUPPORTED: SupportedResponse = {
   extensions: [],
@@ -37,10 +42,16 @@ const SUPPORTED: SupportedResponse = {
   signers: { [NETWORK]: [SIGNER] },
 }
 
-function payment(): {
+/**
+ * A GENUINELY signed EIP-3009 payment in x402 shape. The signature must be
+ * real: the adapter recovers the payer locally and compares it against the
+ * declared `from` before touching a replay slot (audit H02 follow-up), so a
+ * fabricated signature no longer reaches settlement.
+ */
+async function payment(account: LocalAccount = PAYER_ACCOUNT): Promise<{
   payload: x402.Types.PaymentPayload
   requirements: x402.Types.PaymentRequirements
-} {
+}> {
   const requirements: x402.Types.PaymentRequirements = {
     amount: '5000000',
     asset: CURRENCY,
@@ -50,20 +61,30 @@ function payment(): {
     payTo: RECIPIENT,
     scheme: 'exact',
   }
+  // Sign against the SAME domain the adapter rebuilds from /supported
+  // (token name + version, chainId, token address).
+  const signed = await buildEip3009Payment({
+    account,
+    nonce: NONCE,
+    requirements: {
+      amount: '5000000',
+      asset: getAddress(CURRENCY),
+      extra: {
+        assetTransferMethod: 'eip3009',
+        name: 'USDT Token',
+        signerAddress: getAddress(SIGNER),
+        version: '1',
+      },
+      maxTimeoutSeconds: 300,
+      network: NETWORK,
+      payTo: getAddress(RECIPIENT),
+      scheme: 'exact',
+    },
+  })
   return {
     payload: {
       accepted: requirements,
-      payload: {
-        authorization: {
-          from: PAYER,
-          nonce: `0x${'12'.repeat(32)}`,
-          to: RECIPIENT,
-          validAfter: '0',
-          validBefore: '9999999999',
-          value: '5000000',
-        },
-        signature: `0x${'34'.repeat(65)}`,
-      },
+      payload: signed.payload,
       x402Version: 2,
     },
     requirements,
@@ -157,7 +178,7 @@ describe('createB402Facilitator', () => {
   test('adapts standard mppx EIP-3009 requirements to the B402 signer snapshot', async () => {
     const fake = fakeClient()
     const facilitator = createB402Facilitator({ client: fake.client })
-    const { payload, requirements } = payment()
+    const { payload, requirements } = await payment()
 
     expect(await facilitator.verify(payload, requirements)).toEqual({
       isValid: true,
@@ -175,7 +196,7 @@ describe('createB402Facilitator', () => {
   test('rejects Permit2 because the standard mppx facilitator seam is EIP-3009-only', async () => {
     const fake = fakeClient()
     const facilitator = createB402Facilitator({ client: fake.client })
-    const { payload, requirements } = payment()
+    const { payload, requirements } = await payment()
     const permit2Requirements = {
       ...requirements,
       extra: { ...requirements.extra, assetTransferMethod: 'permit2' },
@@ -201,11 +222,52 @@ describe('createB402Facilitator', () => {
         events.push(event)
       },
     })
-    const { payload, requirements } = payment()
+    const { payload, requirements } = await payment()
 
     await expect(facilitator.settle(payload, requirements)).rejects.toBeInstanceOf(
       B402SettlementUnknownError,
     )
     expect(events).toHaveLength(1)
+  })
+
+  // ── Slot squatting (audit H02 follow-up) ─────────────────────────────────
+  //
+  // The replay guard keys on the payer address. This adapter previously took
+  // that address from the payload's self-declared `authorization.from` with
+  // NO local verification, so an attacker who copied a victim's
+  // publicly-visible address + nonce onto a garbage-signed payload could claim
+  // the victim's slot first and have the victim's genuine payment rejected as
+  // "already in progress". Recovering the payer locally closes it: the forged
+  // payload is refused before any slot is touched.
+  test('a forged `from` is rejected locally and never claims the replay slot', async () => {
+    const fake = fakeClient()
+    const facilitator = createB402Facilitator({ client: fake.client, store: Store.memory() })
+
+    const victim = await payment()
+    // Attacker signs with their OWN key, then swaps in the victim's address.
+    const forged = await payment(privateKeyToAccount(generatePrivateKey()))
+    ;(forged.payload.payload as { authorization: { from: string } }).authorization.from = PAYER
+
+    await expect(facilitator.settle(forged.payload, forged.requirements)).rejects.toThrow(
+      /does not match authorization\.from/,
+    )
+    expect(fake.settle).toHaveLength(0) // never reached the facilitator
+
+    // The victim's genuine payment still settles — its slot was never taken.
+    expect(await facilitator.settle(victim.payload, victim.requirements)).toMatchObject({
+      success: true,
+      transaction: TX_HASH,
+    })
+    expect(fake.settle).toHaveLength(1)
+  })
+
+  test('a garbage signature is rejected before the facilitator is called', async () => {
+    const fake = fakeClient()
+    const facilitator = createB402Facilitator({ client: fake.client, store: Store.memory() })
+    const { payload, requirements } = await payment()
+    ;(payload.payload as { signature: string }).signature = `0x${'34'.repeat(65)}`
+
+    await expect(facilitator.settle(payload, requirements)).rejects.toThrow()
+    expect(fake.settle).toHaveLength(0)
   })
 })
