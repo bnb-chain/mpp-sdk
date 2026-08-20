@@ -128,6 +128,46 @@ export class B402FacilitatorClient implements X402FacilitatorClient {
     let replayKey: ReturnType<typeof b402ReplayKey> | undefined
     let slotToken: string | null = null
     if (store) {
+      // Confirm the signature BEFORE claiming a slot when the payer could
+      // not be proven locally (smart-account / ERC-1271 permit2 — audit H02
+      // follow-up). Otherwise an attacker who copies the victim's
+      // publicly-visible address + nonce and attaches a garbage signature
+      // claims the slot first, and the victim's genuine payment is rejected
+      // as "already in progress" without ever reaching the facilitator.
+      //
+      // `/verify` is idempotent and gas-free (B402's own guidance is
+      // "always verify before settling"), so this costs one extra round
+      // trip on that path only. Note the slot is still claimed BEFORE the
+      // irreversible `/settle`, so H02's replay guarantee is unchanged.
+      if (!reconstructed.payerVerifiedLocally) {
+        const verified = parseVerifyResult(await this.#options.client.verify(reconstructed.request))
+        if (!verified.isValid) {
+          return {
+            ...(verified.invalidMessage !== undefined
+              ? { errorMessage: verified.invalidMessage }
+              : {}),
+            errorReason: verified.invalidReason ?? 'invalid_payload',
+            network: asNetwork(reconstructed.requirements.network),
+            payer: verified.payer,
+            success: false,
+            transaction: '',
+          }
+        }
+        // The facilitator vouched for the signature; it must vouch for THIS
+        // payer, or the declared `from` we are about to key the slot on is
+        // not the address the facilitator will actually debit.
+        if (!sameAddress(verified.payer, reconstructed.payer)) {
+          return {
+            errorMessage: 'B402 verify payer does not match the signed payment',
+            errorReason: 'payer_mismatch',
+            network: asNetwork(reconstructed.requirements.network),
+            payer: verified.payer,
+            success: false,
+            transaction: '',
+          }
+        }
+      }
+
       const payload = reconstructed.request.paymentPayload.payload
       replayKey = b402ReplayKey({
         asset: reconstructed.requirements.asset,
@@ -192,6 +232,16 @@ export class B402FacilitatorClient implements X402FacilitatorClient {
 
 type ReconstructedPayment = {
   payer: `0x${string}`
+  /**
+   * Whether `payer` was proven by a LOCAL signature recovery (as opposed to
+   * being the payload's self-declared `from`). False only on the
+   * smart-account (ERC-1271) permit2 path, whose signature has no
+   * recoverable key — there the facilitator's on-chain `isValidSignature` is
+   * the only authority. The replay guard in `settle()` needs this
+   * distinction: keying a slot on an unproven address lets an attacker squat
+   * a victim's slot (audit H02 follow-up).
+   */
+  payerVerifiedLocally: boolean
   request: FacilitatorRequest
   requirements: PaymentRequirements
 }
@@ -212,6 +262,7 @@ async function reconstructPayment(
 
   let payment: PaymentPayload
   let payer: `0x${string}`
+  let payerVerifiedLocally = true
   if (requirements.extra.assetTransferMethod === 'eip3009') {
     const candidate: unknown = {
       accepted: requirements,
@@ -253,6 +304,7 @@ async function reconstructPayment(
       // facilitator's on-chain check, and verify() cross-checks the
       // facilitator-reported payer against this claim.
       payer = getAddress(candidate.payload.permit2Authorization.from)
+      payerVerifiedLocally = false
     }
   }
 
@@ -261,6 +313,7 @@ async function reconstructPayment(
   }
   return {
     payer,
+    payerVerifiedLocally,
     request: {
       paymentPayload: payment,
       paymentRequirements: requirements,

@@ -23,6 +23,7 @@ import { buildEip3009Payment } from '../Payload.js'
 import { buildPermit2ExactPayment } from '../Permit2.js'
 import type { PaymentRequirements, SupportedResponse } from '../Types.js'
 import { B402FacilitatorClient } from './Facilitator.js'
+import type { B402ReplayChange, B402ReplayStore } from './Replay.js'
 import type { B402Transport } from './Types.js'
 
 const network = 'eip155:97' as const
@@ -122,6 +123,41 @@ class RecordingTransport implements B402Transport {
   }
 }
 
+/** Map-backed atomic store — b402 carries no mppx dependency, so build one here. */
+function memoryStore(): B402ReplayStore {
+  const map = new Map<string, unknown>()
+  return {
+    get: async (key) => map.get(key) ?? null,
+    update: async <result>(
+      key: string,
+      fn: (current: unknown) => B402ReplayChange<result>,
+    ): Promise<result> => {
+      const change = fn(map.get(key) ?? null)
+      if (change.op === 'set') map.set(key, JSON.parse(JSON.stringify(change.value)))
+      if (change.op === 'delete') map.delete(key)
+      return change.result
+    },
+  }
+}
+
+/** Facilitator that rejects specific signature envelopes as invalid — the
+ * on-chain ERC-1271 check is the only authority on smart-account signatures. */
+class SelectiveTransport extends RecordingTransport {
+  readonly invalidSignatures = new Set<string>()
+
+  override async verify(request: Parameters<B402Transport['verify']>[0]) {
+    this.verifyRequests.push(request)
+    if (this.invalidSignatures.has(request.paymentPayload.payload.signature)) {
+      return {
+        invalidReason: 'invalid_exact_evm_payload_signature',
+        isValid: false,
+        payer: this.verifyPayer,
+      }
+    }
+    return { isValid: true, payer: this.verifyPayer }
+  }
+}
+
 describe('smart-account permit2 signatures (ERC-1271/ERC-7739)', () => {
   test('verify forwards the payment instead of failing the local recover', async () => {
     const { requirements, from, payment } = await smartAccountPayment()
@@ -165,6 +201,78 @@ describe('smart-account permit2 signatures (ERC-1271/ERC-7739)', () => {
     })
     expect(transport.settleRequests).toHaveLength(1)
     expect(transport.settleRequests[0]?.paymentPayload.payload.signature).toBe(SMART_SIGNATURE)
+  })
+})
+
+// ── Slot squatting on the smart-account path (audit H02 follow-up) ──────────
+//
+// The replay guard keys on the payer address, and on this path that address is
+// the payload's SELF-DECLARED `from` (an ERC-1271 envelope has no recoverable
+// key). Reserving before asking the facilitator therefore let an attacker who
+// copied a victim's publicly-visible address + nonce claim the victim's slot
+// with a garbage envelope, so the victim's genuine payment was rejected as
+// "already in progress" without ever reaching the facilitator. The guard now
+// confirms the signature via the idempotent, gas-free /verify first.
+describe('smart-account replay-slot squatting', () => {
+  test('a forged envelope is refused on the facilitator verdict and never claims the slot', async () => {
+    const victim = await smartAccountPayment()
+    const forgedSignature = `0x${'ee'.repeat(80)}` as const
+    // Same declared `from` and same nonce as the victim — only the envelope
+    // differs, and it is garbage.
+    const forged = {
+      ...victim.payment,
+      payload: { ...victim.payment.payload, signature: forgedSignature },
+    }
+
+    const transport = new SelectiveTransport(victim.from)
+    transport.invalidSignatures.add(forgedSignature)
+    const client = new B402FacilitatorClient({ client: transport, store: memoryStore() })
+
+    await expect(
+      client.settle(asX402(forged), asX402Requirements(victim.requirements)),
+    ).resolves.toMatchObject({
+      errorReason: 'invalid_exact_evm_payload_signature',
+      success: false,
+      transaction: '',
+    })
+    expect(transport.settleRequests).toHaveLength(0) // never reached /settle
+
+    // The victim's genuine payment still settles — its slot was never taken.
+    await expect(
+      client.settle(asX402(victim.payment), asX402Requirements(victim.requirements)),
+    ).resolves.toMatchObject({ payer: victim.from, success: true, transaction })
+    expect(transport.settleRequests).toHaveLength(1)
+  })
+
+  test('a facilitator-reported payer that contradicts the declared from is refused', async () => {
+    const victim = await smartAccountPayment()
+    // Facilitator vouches for the signature but names a different payer than
+    // the address the slot would be keyed on.
+    const transport = new SelectiveTransport('0x9999999999999999999999999999999999999999')
+    const client = new B402FacilitatorClient({ client: transport, store: memoryStore() })
+
+    await expect(
+      client.settle(asX402(victim.payment), asX402Requirements(victim.requirements)),
+    ).resolves.toMatchObject({ errorReason: 'payer_mismatch', success: false })
+    expect(transport.settleRequests).toHaveLength(0)
+  })
+
+  test('the EOA path reserves with no extra verify round trip (local recover suffices)', async () => {
+    const requirements = permit2Requirements()
+    const account = privateKeyToAccount(generatePrivateKey())
+    const eoa = await buildPermit2ExactPayment({
+      account,
+      requirements,
+      trustedSpenders: [spender],
+    })
+    const transport = new SelectiveTransport(eoa.payload.permit2Authorization.from)
+    const client = new B402FacilitatorClient({ client: transport, store: memoryStore() })
+
+    await expect(
+      client.settle(asX402(eoa), asX402Requirements(requirements)),
+    ).resolves.toMatchObject({ success: true, transaction })
+    expect(transport.verifyRequests).toHaveLength(0) // no added latency on the main path
+    expect(transport.settleRequests).toHaveLength(1)
   })
 })
 
