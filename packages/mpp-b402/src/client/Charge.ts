@@ -21,6 +21,8 @@ import {
   type B402MissingAllowanceBehavior,
 } from './Prefer.js'
 
+const EIP3009_VALID_AFTER_BACKDATE_SEC = 60n
+
 export function charge(parameters: charge.Parameters): charge.Client {
   const method = Method.toClient(chargeMethod, {
     async createCredential({ challenge }) {
@@ -30,17 +32,26 @@ export function charge(parameters: charge.Parameters): charge.Client {
       const request = challenge.request as B402ChargeRequest
       assertPolicy(parameters, request)
       const requirements = toPaymentRequirements(request)
+      const now = BigInt(Math.floor(Date.now() / 1000))
       const deadline = paymentDeadline(
         challenge.expires,
         request.methodDetails.maxTimeoutSeconds,
         parameters.maxSettlementSeconds,
+        now,
       )
 
       if (request.methodDetails.assetTransferMethod === 'eip3009') {
+        // EIP-3009 accepts zero as already-valid, but hardened wallets bound
+        // the declared validBefore-validAfter interval. Backdating from one
+        // captured clock value keeps that interval narrow while absorbing
+        // client/chain clock skew at immediate settlement.
+        const validAfter =
+          now > EIP3009_VALID_AFTER_BACKDATE_SEC ? now - EIP3009_VALID_AFTER_BACKDATE_SEC : 0n
         const payment = await buildEip3009Payment({
           account: parameters.account as LocalAccount,
           nonce: evm.Types.challengeHash(challenge),
           requirements,
+          validAfter,
           validBefore: deadline,
         } satisfies BuildEip3009PaymentOptions)
         return Credential.serialize({
@@ -264,8 +275,8 @@ function paymentDeadline(
   expires: string | undefined,
   maxTimeoutSeconds: number,
   maxSettlementSeconds: number = DEFAULT_MAX_SETTLEMENT_SEC,
+  now: bigint = BigInt(Math.floor(Date.now() / 1000)),
 ): bigint {
-  const now = BigInt(Math.floor(Date.now() / 1000))
   // Buyer's independent hard ceiling — never derived from maxTimeoutSeconds.
   const settlementCeiling = now + BigInt(maxSettlementSeconds)
   const timeoutDeadline = now + BigInt(maxTimeoutSeconds)

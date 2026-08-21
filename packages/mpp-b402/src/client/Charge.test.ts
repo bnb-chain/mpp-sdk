@@ -44,7 +44,7 @@ function challenge(
 }
 
 describe('b402 client charge', () => {
-  test('binds EIP-3009 authorization nonce to the MPP Challenge', async () => {
+  test('binds EIP-3009 authorization nonce and bounded validity to the MPP Challenge', async () => {
     const account = privateKeyToAccount(generatePrivateKey())
     const issued = challenge('eip3009')
     const client = charge({
@@ -55,9 +55,11 @@ describe('b402 client charge', () => {
       maxAmount: '10',
     })
 
+    const before = BigInt(Math.floor(Date.now() / 1000))
     const credential = Credential.deserialize<B402ChargeCredentialPayload>(
       await client.createCredential({ challenge: issued }),
     )
+    const after = BigInt(Math.floor(Date.now() / 1000))
     expect(credential.payload).toMatchObject({
       type: 'eip3009',
       authorization: {
@@ -67,7 +69,12 @@ describe('b402 client charge', () => {
       },
     })
     if (credential.payload.type !== 'eip3009') throw new Error('expected EIP-3009 credential')
-    expect(BigInt(credential.payload.authorization.validBefore)).toBeLessThanOrEqual(
+    const validAfter = BigInt(credential.payload.authorization.validAfter)
+    const validBefore = BigInt(credential.payload.authorization.validBefore)
+    expect(validAfter).toBeGreaterThanOrEqual(before - 60n)
+    expect(validAfter).toBeLessThanOrEqual(after - 60n)
+    expect(validBefore - validAfter).toBeLessThanOrEqual(600n)
+    expect(validBefore).toBeLessThanOrEqual(
       BigInt(Math.floor(new Date(issued.expires!).getTime() / 1000)),
     )
   })
