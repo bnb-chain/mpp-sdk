@@ -1,5 +1,11 @@
 # @bnb-chain/mpp-b402
 
+## 0.2.2
+
+### Patch Changes
+
+- 4b959eb: Backdate EIP-3009 `validAfter` by 60 seconds so MPP B402 credentials declare a bounded authorization window and pass hardened wallet signing policies.
+
 ## 0.2.1
 
 ### Patch Changes
