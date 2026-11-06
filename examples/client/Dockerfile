@@ -4,8 +4,8 @@ FROM node:22-slim AS build
 RUN corepack enable
 WORKDIR /app
 COPY . .
-# Optional native addons have pure-JS fallbacks in this browser build.
-RUN sed -i 's/^strictDepBuilds: true/strictDepBuilds: false/' pnpm-workspace.yaml
+# Preserve the workspace build approvals; optional native addons are already
+# explicitly denied in pnpm-workspace.yaml and use their JavaScript fallbacks.
 RUN pnpm install --frozen-lockfile
 
 ARG VITE_BSC_TESTNET_RPC_URL
