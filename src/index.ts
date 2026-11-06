@@ -85,6 +85,12 @@ export function chargeFromDecimal(input: ChargeFromDecimalInput): ChargeFromDeci
         'server factory defaults (spec §10).',
     )
   }
+  if (
+    typeof input.amount === 'number' &&
+    (!Number.isFinite(input.amount) || Math.abs(input.amount) > Number.MAX_SAFE_INTEGER)
+  ) {
+    throw new Error('chargeFromDecimal: unsafe numeric amounts must be decimal strings')
+  }
   const amount = parseUnits(String(input.amount), input.decimals).toString()
   return {
     amount,

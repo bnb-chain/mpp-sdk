@@ -25,8 +25,15 @@ describe('chargeFromDecimal — decimal -> base-units', () => {
     expect(chargeFromDecimal({ amount: '1', decimals: 18 }).amount).toBe('1000000000000000000')
   })
 
-  test('numeric input is coerced via String()', () => {
+  test('safe numeric input remains supported; unsafe magnitudes require strings', () => {
+    expect(chargeFromDecimal({ amount: 2, decimals: 6 }).amount).toBe('2000000')
     expect(chargeFromDecimal({ amount: 2.5, decimals: 6 }).amount).toBe('2500000')
+    expect(() => chargeFromDecimal({ amount: Number.MAX_SAFE_INTEGER + 1, decimals: 0 })).toThrow(
+      /decimal strings/,
+    )
+    expect(chargeFromDecimal({ amount: '9007199254740993', decimals: 0 }).amount).toBe(
+      '9007199254740993',
+    )
   })
 
   test('passes recipient/description/externalId through', () => {
