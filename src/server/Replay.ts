@@ -189,6 +189,9 @@ export async function reserve(
   opts?: { readonly inflightTtlMs?: number | undefined },
 ): Promise<string | null> {
   const inflightTtlMs = opts?.inflightTtlMs ?? DEFAULT_INFLIGHT_TTL_MS
+  if (!Number.isSafeInteger(inflightTtlMs) || inflightTtlMs <= 0) {
+    throw new Error('inflightTtlMs must be a positive safe integer')
+  }
   const token = crypto.randomUUID()
   return withStoreUnavailableWrap('reserve', key, () =>
     store.update(key, (current) => {
