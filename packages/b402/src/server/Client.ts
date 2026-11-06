@@ -220,6 +220,8 @@ export class B402Client {
 
     const response = await fetch(`${this.#credentials.baseUrl}${path}`, {
       method: 'POST',
+      // Merchant credentials and signed bodies must never follow a redirect.
+      redirect: 'error',
       headers: {
         'Content-Type': 'application/json',
         'X-Tesla-ClientId': this.#credentials.clientId,
