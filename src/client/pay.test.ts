@@ -977,3 +977,34 @@ describe('pay · eip712Domains key normalization', () => {
     expect(result.route.id).toBe('mpp:authorization') // domain found → route viable
   })
 })
+
+describe('independent payment recipient policy', () => {
+  test('recipient allowlist rejects a different destination before approvals or transfer', async () => {
+    const clients = payClients()
+    const probe = payFetch(Challenge.serialize(challengeWith(['hash'])), { status: 200 })
+    await expect(
+      pay('https://api.example/report', {
+        wallet: { account: payAccount(), ...clients },
+        fetch: probe.fetch,
+        policy: { allowedRecipients: [CURRENCY] },
+      }),
+    ).rejects.toThrow(/allowedRecipients/)
+    expect(clients.writeCalls).toEqual([])
+  })
+
+  test('recipient policy also covers every split destination', async () => {
+    const clients = payClients()
+    const c = challengeWith(['permit2'])
+    const request = c.request as { methodDetails: Record<string, unknown> }
+    request.methodDetails.splits = [{ recipient: CURRENCY, amount: '1' }]
+    const probe = payFetch(Challenge.serialize(c), { status: 200 })
+    await expect(
+      pay('https://api.example/report', {
+        wallet: { account: payAccount(), ...clients },
+        fetch: probe.fetch,
+        policy: { allowedRecipients: [RECIPIENT] },
+      }),
+    ).rejects.toThrow(/allowedRecipients/)
+    expect(clients.writeCalls).toEqual([])
+  })
+})

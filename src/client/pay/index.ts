@@ -86,6 +86,18 @@ export async function pay(url: string, options: PayOptions): Promise<PayResult> 
   const { chainId, permit2Address } = request.methodDetails
   const currency = request.currency
   const amountBase = BigInt(request.amount)
+  if (options.policy?.allowedRecipients !== undefined) {
+    const allowed = new Set(
+      options.policy.allowedRecipients.map((address) => address.toLowerCase()),
+    )
+    const recipients = [
+      request.recipient,
+      ...(request.methodDetails.splits ?? []).map((split) => split.recipient),
+    ]
+    if (recipients.some((address) => !allowed.has(address.toLowerCase()))) {
+      throw new Error('pay: challenge recipient is not in policy.allowedRecipients')
+    }
+  }
 
   // 2. Guard the chain, then resolve the facts selection + build need.
   assertChainConsistency(wallet, chainId, options.allowChainMismatch ?? false)
