@@ -16,13 +16,8 @@ WORKDIR /app
 
 # Install the whole workspace from the lockfile, then build the SDK (dist/).
 COPY . .
-# node:22-slim ships no C toolchain, so the optional native addons
-# (keccak / bufferutil / utf-8-validate) can't compile here — and the
-# workspace's strictDepBuilds:true turns pnpm's "ignored build scripts" notice
-# into a hard error. All three have pure-JS fallbacks the server doesn't need
-# natively, so relax the gate for THIS IMAGE LAYER ONLY (the repo file on disk
-# is untouched; the COPY'd copy inside the layer is what's edited).
-RUN sed -i 's/^strictDepBuilds: true/strictDepBuilds: false/' pnpm-workspace.yaml
+# Preserve the workspace build approvals; optional native addons are already
+# explicitly denied in pnpm-workspace.yaml and use their JavaScript fallbacks.
 RUN pnpm install --frozen-lockfile
 RUN pnpm build
 
