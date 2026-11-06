@@ -32,6 +32,10 @@ to its existing order/reconciliation workflow.
 pnpm --filter @bnb-chain/mpp-example-client dev
 ```
 
+Configure `VITE_B402_NETWORK`, `VITE_B402_TOKEN_ADDRESS`, and
+`VITE_B402_MAX_ATOMIC_AMOUNT` in the browser environment before signing. These
+are independent buyer policy and must not be copied automatically from a 402.
+
 Choose either `B402 · EIP-3009` or `B402 · Permit2 Exact`, then run the shared
 four-step flow:
 
@@ -42,7 +46,8 @@ four-step flow:
    `Payment-Receipt`.
 
 EIP-3009 needs no approval transaction. Permit2 checks the ERC-20 allowance
-and visibly requests `approve(canonicalPermit2, maxUint256)` only when needed;
+after enforcing buyer policy and requests an approval for the exact payment
+amount only when needed;
 this remains application-owned wallet policy, not hidden SDK behavior.
 
 The complete integration points are

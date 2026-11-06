@@ -173,3 +173,28 @@ describe('b402 client charge', () => {
     )
   })
 })
+
+test.each(['spender', 'currency', 'network', 'amount'])(
+  'rejects untrusted %s before invoking an approval-capable allowance reader',
+  async (field) => {
+    let checks = 0
+    const issued = challenge('permit2-exact')
+    if (field === 'spender') issued.request.methodDetails.spenderAddress = SIGNER
+    if (field === 'currency') issued.request.currency = SIGNER
+    if (field === 'network') issued.request.methodDetails.network = 'eip155:56'
+    if (field === 'amount') issued.request.amount = '5000001'
+    const client = charge({
+      account: privateKeyToAccount(generatePrivateKey()),
+      allowedCurrencies: [{ address: CURRENCY, network: NETWORK }],
+      allowedNetworks: [NETWORK],
+      maxAtomicAmount: '5000000',
+      trustedSpenders: { [NETWORK]: [SPENDER] },
+      permit2Allowance: async () => {
+        checks += 1
+        return 0n
+      },
+    })
+    await expect(client.createCredential({ challenge: issued })).rejects.toThrow()
+    expect(checks).toBe(0)
+  },
+)

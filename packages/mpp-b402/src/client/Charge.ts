@@ -189,7 +189,13 @@ function assertPolicy(parameters: charge.Parameters, request: B402ChargeRequest)
       throw new Error('B402 charge amount exceeds maxAmount.')
     }
   }
-  if (method === 'permit2-exact') trustedSpenders(parameters, request.methodDetails.network)
+  if (method === 'permit2-exact') {
+    const trusted = trustedSpenders(parameters, request.methodDetails.network)
+    const spender = request.methodDetails.spenderAddress
+    if (!spender || !trusted.some((address) => sameAddress(address, spender))) {
+      throw new Error('B402 permit2-exact spender is not in trustedSpenders.')
+    }
+  }
 }
 
 async function assertPermit2Allowance(
