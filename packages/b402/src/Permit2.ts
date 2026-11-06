@@ -275,7 +275,8 @@ const HEX_ADDRESS = /^0x[0-9a-fA-F]{40}$/
  * of either kind.
  */
 const HEX_SIGNATURE_65_PLUS = /^0x(?:[0-9a-fA-F]{2}){65,}$/
-const DECIMAL = /^\d+$/
+// uint256 fits in at most 78 decimal digits; reject before BigInt/recovery.
+const DECIMAL = /^\d{1,78}$/
 const CAIP2_EIP155 = /^eip155:\d+$/
 
 function isRecord(v: unknown): v is Record<string, unknown> {

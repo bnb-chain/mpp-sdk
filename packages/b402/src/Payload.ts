@@ -229,8 +229,9 @@ const HEX_ADDRESS = /^0x[0-9a-fA-F]{40}$/
 const HEX_BYTES32 = /^0x[0-9a-fA-F]{64}$/
 /** 64-byte (EIP-2098 compact) or 65-byte EIP-712 signature. */
 const HEX_SIGNATURE = /^0x[0-9a-fA-F]{128}([0-9a-fA-F]{2})?$/
-const DECIMAL = /^\d+$/
-const CAIP2_EIP155 = /^eip155:\d+$/
+// uint256 fits in at most 78 decimal digits; reject before BigInt/recovery.
+const DECIMAL = /^\d{1,78}$/
+const CAIP2_EIP155 = /^eip155:[1-9]\d{0,15}$/
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null
@@ -314,7 +315,10 @@ export function chainIdFromNetwork(network: string): number {
   const match = /^eip155:(\d+)$/.exec(network)
   const id = match?.[1]
   if (!id) throw new Error(`unsupported CAIP-2 network '${network}' (expected 'eip155:<chainId>')`)
-  return Number(id)
+  const chainId = Number(id)
+  if (!Number.isSafeInteger(chainId) || chainId <= 0)
+    throw new Error('chainId must be a positive safe integer')
+  return chainId
 }
 
 /* -------------------------------------------------------------------------- */

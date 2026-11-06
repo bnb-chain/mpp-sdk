@@ -290,3 +290,25 @@ describe('isPermit2PaymentPayload', () => {
     ).toBe(false)
   })
 })
+
+test('Permit2 payload rejects oversized numeric fields before BigInt and typed data', async () => {
+  const payment = await buildPermit2ExactPayment({
+    account: privateKeyToAccount(generatePrivateKey()),
+    requirements: permit2Requirements(),
+    trustedSpenders: TRUSTED,
+  })
+  for (const field of ['nonce', 'deadline']) {
+    expect(
+      isPermit2PaymentPayload({
+        ...payment,
+        payload: {
+          ...payment.payload,
+          permit2Authorization: {
+            ...payment.payload.permit2Authorization,
+            [field]: '1'.repeat(79),
+          },
+        },
+      }),
+    ).toBe(false)
+  }
+})

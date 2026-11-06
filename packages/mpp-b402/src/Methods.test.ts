@@ -64,3 +64,27 @@ describe('b402 charge Method', () => {
     ).toThrow(/amount/i)
   })
 })
+
+test('credential decimal fields are capped before BigInt processing', () => {
+  const payload = {
+    type: 'eip3009',
+    authorization: {
+      from: SIGNER,
+      to: RECIPIENT,
+      nonce: `0x${'12'.repeat(32)}`,
+      validAfter: '0',
+      validBefore: '2000000000',
+      value: '1',
+    },
+    signature: `0x${'11'.repeat(65)}`,
+  }
+  expect(() => chargeMethod.schema.credential.payload.parse(payload)).not.toThrow()
+  for (const field of ['validAfter', 'validBefore', 'value']) {
+    expect(() =>
+      chargeMethod.schema.credential.payload.parse({
+        ...payload,
+        authorization: { ...payload.authorization, [field]: '1'.repeat(79) },
+      }),
+    ).toThrow()
+  }
+})
