@@ -32,6 +32,8 @@ export interface AssetId {
 }
 
 export interface PayPolicy {
+  /** Optional independent allowlist for every payment destination, including splits. */
+  readonly allowedRecipients?: readonly Address[]
   /** Default `'auto'` (rank by the merchant's `credentialTypes` order). */
   readonly mode?: PayMode
   /** Decimal-string ceiling (e.g. `'1.00'`); compared once token decimals resolve. */
@@ -192,6 +194,7 @@ export interface ChargeRequest {
     readonly permit2Address: Address
     readonly permit2Spender?: Address
     readonly credentialTypes?: readonly string[]
+    readonly splits?: readonly { readonly recipient: Address; readonly amount: string }[]
   }
 }
 
