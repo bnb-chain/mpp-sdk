@@ -24,7 +24,7 @@
  *     addresses MUST match — otherwise sign identity drifts from execution
  *     identity and the settlement tx posts from a different sender than
  *     the user thought they configured
- *   - if walletClient.chain is set, chain.id MUST equal the resolved
+ *   - walletClient.chain MUST be set and chain.id MUST equal the resolved
  *     chainId — otherwise the transaction would target the wrong chain
  */
 
@@ -71,9 +71,9 @@ export function resolveSettlementSigner(
           `settlementWalletClient.account.address (${wc.account.address})`,
       )
     }
-    if (wc.chain && wc.chain.id !== ctx.chainId) {
+    if (!wc.chain || wc.chain.id !== ctx.chainId) {
       throw new SettlementConfigError(
-        `settlementWalletClient.chain.id (${wc.chain.id}) must equal resolved ` +
+        `settlementWalletClient.chain.id (${wc.chain?.id ?? 'unknown'}) must equal resolved ` +
           `chainId (${ctx.chainId})`,
       )
     }
