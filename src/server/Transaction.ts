@@ -98,7 +98,7 @@ export interface TransactionVerifierCtx {
    * default (180s). See Permit2VerifierCtx.settlementTimeoutMs.
    */
   readonly settlementTimeoutMs?: number
-  /** Stale-inflight reclaim age forwarded to Replay.reserve. */
+  /** Reclaim age for legacy unprotected slots; payment reservations are protected. */
   readonly inflightTtlMs?: number
 }
 
@@ -269,7 +269,7 @@ export async function verifyTransaction({
   // ── Steps 9-10: compute txHash, atomic reserve ─────────────────────────
   const txHash = keccak256(serializedTx) as `0x${string}`
   const key = txHashKey(chainId, txHash)
-  const claimed = await reserve(store, key, { inflightTtlMs })
+  const claimed = await reserve(store, key, { inflightTtlMs, preventReclaim: true })
   if (!claimed) {
     return await throwReserveConflict({
       store,
@@ -320,11 +320,11 @@ export async function verifyTransaction({
         // receipt lookup was momentarily unreachable.
         if (!(receiptErr instanceof TransactionReceiptNotFoundError)) {
           // Slot stays inflight — we genuinely don't know whether the tx
-          // landed. reserve() reclaims the slot after inflightTtlMs.
+          // landed. The protected slot requires explicit reconciliation.
           // Surface as retryable.
           throw new Errors.VerificationFailedError({
             ...(challengeId && { id: challengeId }),
-            reason: `getTransactionReceipt RPC error after failed send (slot stays inflight until reclaim): ${
+            reason: `getTransactionReceipt RPC error after failed send (slot stays inflight until operator reconciliation): ${
               receiptErr instanceof Error ? receiptErr.message : String(receiptErr)
             }`,
           })
@@ -363,10 +363,10 @@ export async function verifyTransaction({
             } catch (countErr) {
               // RPC failure on the nonce probe — we genuinely don't know
               // whether the nonce was consumed. Keep the slot inflight
-              // (reserve() reclaims it after inflightTtlMs).
+              // (operator reconciliation is required).
               throw new Errors.VerificationFailedError({
                 ...(challengeId && { id: challengeId }),
-                reason: `getTransactionCount RPC error after failed send (slot stays inflight until reclaim): ${
+                reason: `getTransactionCount RPC error after failed send (slot stays inflight until operator reconciliation): ${
                   countErr instanceof Error ? countErr.message : String(countErr)
                 }`,
               })
@@ -395,11 +395,10 @@ export async function verifyTransaction({
               }`,
             })
           }
-          // RPC failure on getTransaction — keep inflight (reserve()
-          // reclaims stale inflight slots after inflightTtlMs).
+          // RPC failure on getTransaction — keep protected until reconciliation.
           throw new Errors.VerificationFailedError({
             ...(challengeId && { id: challengeId }),
-            reason: `getTransaction RPC error after failed send (slot stays inflight until reclaim): ${
+            reason: `getTransaction RPC error after failed send (slot stays inflight until operator reconciliation): ${
               mempoolErr instanceof Error ? mempoolErr.message : String(mempoolErr)
             }`,
           })
@@ -416,13 +415,12 @@ export async function verifyTransaction({
         ...(settlementTimeoutMs !== undefined && { timeout: settlementTimeoutMs }),
       })
     } catch (waitErr) {
-      // Timeout: keep slot inflight (reserve() reclaims stale inflight
-      // slots after inflightTtlMs). Throw retryable; do NOT mark rejected,
+      // Timeout: keep slot protected until reconciliation; do NOT mark rejected,
       // do NOT release — letting the client retry would otherwise lose the
       // inflight marker and risk concurrent broadcast attempts.
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
-        reason: `waitForTransactionReceipt timed out or RPC failed; slot remains inflight until reclaim: ${
+        reason: `waitForTransactionReceipt timed out or RPC failed; slot remains inflight until operator reconciliation: ${
           waitErr instanceof Error ? waitErr.message : String(waitErr)
         }`,
       })
@@ -446,7 +444,7 @@ export async function verifyTransaction({
     let mined: { key: ReturnType<typeof txHashKey>; token: string } | null = null
     if (minedHash.toLowerCase() !== txHash.toLowerCase()) {
       const minedKey = txHashKey(chainId, minedHash)
-      const minedClaimed = await reserve(store, minedKey, { inflightTtlMs })
+      const minedClaimed = await reserve(store, minedKey, { inflightTtlMs, preventReclaim: true })
       if (!minedClaimed) {
         const minedSlot = await getReplaySlot(store, minedKey)
         if (minedSlot?.state === 'consumed' || minedSlot?.state === 'rejected') {
@@ -466,12 +464,11 @@ export async function verifyTransaction({
         // parallel as a hash credential). Keep our slot inflight and
         // surface retryable — the concurrent verify will reach a terminal
         // state for the mined hash first. Note the honest retry window:
-        // this credential's own slot also stays inflight until reserve()'s
-        // stale-inflight reclaim (~inflightTtlMs), so an immediate retry
-        // would just hit "concurrent verify in progress" on its own hash.
+        // this credential's protected slot also requires explicit reconciliation;
+        // an immediate retry hits its own in-progress reservation.
         throw new Errors.VerificationFailedError({
           ...(challengeId && { id: challengeId }),
-          reason: `transaction was replaced by ${minedHash}, which has a concurrent verify in progress; this credential's slot remains inflight — retry after the inflight window expires`,
+          reason: `transaction was replaced by ${minedHash}, which has a concurrent verify in progress; this credential's slot remains inflight — operator reconciliation required`,
         })
       }
       mined = { key: minedKey, token: minedClaimed }
@@ -563,8 +560,7 @@ export async function verifyTransaction({
     // would re-admit a credential whose nonce is already burned, and the
     // next reserve+verify cycle would broadcast a NEW tx with the SAME
     // signed RLP and fail "already known" → indefinite retry storm.
-    // Keep the slot inflight — reserve() reclaims it after inflightTtlMs
-    // and the retry's broadcast-error fallback finds the mined receipt.
+    // Keep the slot protected until explicit operator reconciliation.
     return await handleVerifierFailure({
       err,
       store,

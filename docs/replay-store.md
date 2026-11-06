@@ -16,7 +16,7 @@ moves through three states:
 
 ```
             reserve (atomic CAS — fails if key already present,
-   (absent)  UNLESS the present slot is a stale inflight — see below)
+   (absent)  UNLESS it is an unprotected stale slot — see below)
         │   ─────────────────────────────▶ inflight
         ▲                                     │
         │     settle succeeds on-chain        │  settle fails BEFORE
@@ -27,8 +27,8 @@ moves through three states:
         │   ▼                                     not consumed on-chain)
         │ consumed  (terminal — replay rejected)
         │
-        └── reserve() reclaims `inflight` older than inflightTtlMs
-            (stale-inflight reclaim; terminal states never reclaimed)
+        └── unprotected `inflight` may be reclaimed after inflightTtlMs
+            (SDK payment reservations are protected and require reconciliation)
 
               settle committed on-chain but a
               post-commit check failed (e.g. Transfer-log
@@ -42,9 +42,9 @@ moves through three states:
 - **reserve** — atomic compare-and-set. Reserving a key that's already
   `inflight` / `consumed` / `rejected` MUST fail without racing. This is
   what stops two concurrent requests from both settling the same
-  credential. Sole exception: an `inflight` slot older than
-  `inflightTtlMs` is reclaimed inside the same CAS (see
-  [Stale-inflight reclaim](#stale-inflight-reclaim)).
+  credential. Only an unprotected `inflight` slot older than
+  `inflightTtlMs` can be reclaimed inside the same CAS. SDK payment
+  reservations are protected and never expire automatically.
 - **release** — only valid from `inflight`, and only when settlement did
   NOT commit on-chain (broadcast rejected, simulate failed, balance /
   allowance check failed). Returns the slot to absent so a corrected
@@ -55,30 +55,35 @@ moves through three states:
   known-bad in a way that consumed the on-chain nonce/tx anyway (so it
   can never replay, but we don't pretend it succeeded). Terminal.
 
-### Stale-inflight reclaim
+### Protected reservations and explicit reconciliation
 
-A crash, a receipt-wait timeout, or a severed connection can strand a
-slot in `inflight` with no verifier left to `release` it. Without
-recovery, every retry of that credential would fail "concurrent verify
-in progress" forever. `reserve()` therefore reclaims — atomically,
-inside the same CAS — any `inflight` slot whose timestamp is older than
-`inflightTtlMs` (default 10 minutes, `DEFAULT_INFLIGHT_TTL_MS` in
-`Replay.ts`; configurable via `ServerParameters.inflightTtlMs`), and the
-retry re-enters verification.
+Every SDK verifier and B402 settlement path atomically reserves with
+`preventReclaim: true` **before** it reads or broadcasts a potentially final
+payment. Protected reservations remain blocked regardless of age. A timeout,
+HTTP failure, or failed `markConsumed` write cannot prove that payment did not
+settle; elapsed time must not make that payment redeemable again. Definitive
+pre-settlement failures still release their own fencing token for a clean retry.
 
-This is safe because every verifier re-checks on-chain state after
-reserve (nonce consumption / receipt lookups), so a settlement that DID
-land while the slot was stranded is detected rather than
-double-executed. Two hard rules:
+An operator must reconcile stranded protected slots against the chain,
+facilitator outcome, and application fulfillment before retrying. Confirmed
+payments become `consumed`; rejected credentials become `rejected`. Only a
+credential proven not broadcast, not settled, and no longer capable of settling
+may be released. A process crash before payment can therefore require operator
+reconciliation rather than an automatic retry. This is a deliberate availability
+tradeoff for payment uniqueness.
 
-- **`consumed` / `rejected` slots are NEVER reclaimed** — terminal means
-  terminal.
-- **`inflightTtlMs` must comfortably exceed
-  `ServerParameters.settlementTimeoutMs`** (plus worst-case mining
-  delay) so a still-settling credential is never reclaimed out from
-  under its verifier. The 10-minute default sits well above viem's 180 s
-  receipt-wait default. Enforced at boot: `preflightCharge` rejects
-  `inflightTtlMs < (settlementTimeoutMs ?? 180_000) + 120_000`.
+The lower-level `reserve` / `reserveB402Slot` primitives retain TTL recovery
+for callers explicitly managing pre-payment work without `preventReclaim`.
+Only **unprotected** `inflight` slots are reclaimable. TTLs must be positive
+safe integers. Terminal state changes remain explicit operations; protected SDK reservations
+are never automatically replaced by a successor.
+
+**Upgrade:** drain and reconcile pre-upgrade inflight slots, which do not
+contain `preventReclaim`, before serving new traffic. Do not run old and new
+settlement workers together during that transition. Store backends must preserve
+the flag and must not expire or evict protected, consumed, or rejected keys
+using a backend-native TTL. Backup restoration and manual deletion must retain
+settlement and fulfillment history.
 
 ### Terminal-commit phase (double-spend guard)
 
@@ -99,32 +104,13 @@ these into `ReplayStoreUnavailableError` so the verifier can decide
 deterministically. The terminal-phase gate above takes precedence: a
 store error AFTER on-chain commit never releases the slot.
 
-### Residual risks
+### Store outages
 
-Two windows survive the guards above — both narrow, both operator-visible:
-
-- **Sustained store outage at the `markConsumed` moment.** If the store
-  goes down right as a verifier records a finalized settlement, the slot
-  stays plain `inflight` — which `reserve()` reclaims after
-  `inflightTtlMs`, re-opening the already-settled slot for a SECOND
-  equal-priced challenge (double redemption; most relevant on the shared
-  `txHashKey` keyspace). The SDK closes the transient-blip case by
-  retrying `markConsumed` 3x (`consumeSlotBestEffort` in
-  `src/server/charge/verifierKit.ts`) before warning and returning the
-  receipt anyway — the paid payer must not see an error for a payment
-  that happened. A SUSTAINED outage outlasting the retries remains
-  unguarded by the store itself: operators should alert on the warn
-  string `markConsumed failed after 3 attempts` and promote the slot to
-  `consumed` manually before the reclaim TTL elapses.
-- **Mempool blindness in stale-inflight reclaim.** `reserve()` judges
-  staleness purely by slot age; it cannot see a settlement tx that is
-  still PENDING in the mempool. A tx that lingers unmined longer than
-  `inflightTtlMs` lets a reclaimed retry race the original broadcast
-  (the verifiers' post-reserve on-chain re-checks only see MINED state).
-  Mitigated by the preflight margin validation landing in this same
-  change: `inflightTtlMs` must comfortably exceed
-  `settlementTimeoutMs`, so the receipt-wait gives up (and surfaces a
-  retryable error) well before the slot becomes reclaimable.
+Final consumption writes retry transient failures three times and then emit an
+operator warning while returning the paid receipt. The previously persisted
+protected reservation continues blocking replay after those retries fail and
+after the old inflight TTL passes. Operators should resolve the stranded state;
+the SDK does not infer non-payment from storage unavailability.
 
 ## Keys
 
@@ -221,11 +207,10 @@ deployment properties.
 ⚠️ **Do not attach a backend TTL (Redis `PX` / `EXPIRE`, KV
 `expirationTtl`) to replay slots.** Terminal slots (`consumed` /
 `rejected`) must never expire — an expired `consumed` slot re-admits an
-already-settled credential for a second settlement. Stranded `inflight`
-slots don't need backend expiry either: `reserve()` itself reclaims
-them after `inflightTtlMs` (see
-[Stale-inflight reclaim](#stale-inflight-reclaim)) using the timestamp
-stored in the slot value.
+already-settled credential for a second settlement. Protected `inflight`
+slots must remain present until explicit reconciliation. Only unprotected
+pre-payment reservations can be reclaimed by the library's timestamp check
+after `inflightTtlMs` (see [protected reservations](#protected-reservations-and-explicit-reconciliation)).
 
 The store implements `ChargeStore` (an `mppx` `Store.AtomicStore`-shaped
 interface). `Store.memory()` from mppx is acceptable **only** for tests

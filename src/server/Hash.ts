@@ -65,7 +65,7 @@ export interface HashVerifierCtx {
   readonly chainId: number
   readonly confirmations: number
   readonly hashFromPolicy: 'strict_from' | 'lax_from'
-  /** Stale-inflight reclaim age forwarded to Replay.reserve. */
+  /** Reclaim age for legacy unprotected slots; payment reservations are protected. */
   readonly inflightTtlMs?: number
 }
 
@@ -97,7 +97,7 @@ export async function verifyHash({
   const key = txHashKey(chainId, txHash)
 
   // ── Step 1: atomic reserve ─────────────────────────────────────────────
-  const claimed = await reserve(store, key, { inflightTtlMs })
+  const claimed = await reserve(store, key, { inflightTtlMs, preventReclaim: true })
   if (!claimed) {
     return await throwReserveConflict({
       store,
@@ -123,8 +123,7 @@ export async function verifyHash({
   // ReplayStoreUnavailableError), the slot MUST stay inflight: the
   // on-chain state has already committed, and `release()` here would
   // let the same credential pass `reserve()` again → DOUBLE-SPEND.
-  // reserve() reclaims the slot after inflightTtlMs; the retry then
-  // re-reads the (idempotent) on-chain receipt.
+  // The protected slot requires explicit operator reconciliation.
   let terminalPhase = false
   try {
     // ── Steps 2+3a: receipt + latest block (independent reads, parallel) ─
@@ -256,8 +255,7 @@ export async function verifyHash({
     // The on-chain payment is confirmed — a store failure here must NOT
     // surface as an error to a paid payer. consumeSlotBestEffort retries
     // transient blips and warns (never throws) on a sustained outage; the
-    // slot staying inflight still blocks replay until the reclaim TTL
-    // (residual risk documented in docs/replay-store.md).
+    // protected slot keeps blocking replay until operator reconciliation.
     await consumeSlotBestEffort(store, key, '[verifyHash]')
 
     // ── Step 8: build receipt ──────────────────────────────────────────
@@ -279,7 +277,7 @@ export async function verifyHash({
     // AND a terminal store-write was about to commit (or did commit) —
     // releasing the slot here would let the same credential pass
     // `reserve()` again, opening a DOUBLE-SPEND window. Leave the slot
-    // inflight (reclaimed after inflightTtlMs). Surface the original
+    // inflight until explicit reconciliation. Surface the original
     // error so callers can act on it.
     return await handleVerifierFailure({
       err,

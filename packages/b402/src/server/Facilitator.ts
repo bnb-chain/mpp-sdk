@@ -37,8 +37,8 @@ export type B402FacilitatorClientOptions = {
   readonly bazaar?: BazaarMetadata | undefined
   readonly client: B402Transport
   /**
-   * Stale-inflight reclaim age (ms) for the replay guard. Only meaningful
-   * when `store` is set. Defaults to 10 minutes.
+   * Legacy unprotected-slot reclaim age (ms). Payment reservations are
+   * protected and require explicit reconciliation. Defaults to 10 minutes.
    */
   readonly inflightTtlMs?: number | undefined
   readonly onSettlementUnknown?: B402SettlementUnknownHandler | undefined
@@ -167,7 +167,6 @@ export class B402FacilitatorClient implements X402FacilitatorClient {
           }
         }
       }
-
       const payload = reconstructed.request.paymentPayload.payload
       replayKey = b402ReplayKey({
         asset: reconstructed.requirements.asset,
@@ -181,6 +180,7 @@ export class B402FacilitatorClient implements X402FacilitatorClient {
       })
       slotToken = await reserveB402Slot(store, replayKey, {
         inflightTtlMs: this.#options.inflightTtlMs,
+        preventReclaim: true,
       })
       if (slotToken === null) {
         const conflict = await describeB402ReplayConflict(store, replayKey)
@@ -195,8 +195,8 @@ export class B402FacilitatorClient implements X402FacilitatorClient {
     }
 
     // A B402SettlementUnknownError below must leave the slot `inflight`
-    // (the transfer may already be on-chain); the stale-inflight TTL
-    // reclaims it after the operator's reconciliation window. Only a
+    // (the transfer may already be on-chain); explicit operator reconciliation
+    // resolves it; elapsed time never proves non-payment. Only a
     // provable non-broadcast (success=false ⇒ transaction === '' per
     // settleB402's contract) frees the slot for retry.
     const result: SettleResult = await settleB402({

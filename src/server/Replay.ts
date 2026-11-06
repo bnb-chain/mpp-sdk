@@ -122,6 +122,8 @@ export interface ReplaySlotValue {
    * live slot. Absent on terminal (`consumed` / `rejected`) slots.
    */
   readonly token?: string
+  /** Requires explicit reconciliation after an ambiguous or final payment. */
+  readonly preventReclaim?: boolean
 }
 
 /* -------------------------------------------------------------------------- */
@@ -154,9 +156,8 @@ export type ChargeStore = Store.AtomicStore<ReplayItemMap>
 /* -------------------------------------------------------------------------- */
 
 /**
- * Default age after which a stale `inflight` slot becomes reclaimable by
- * a new `reserve()`. Comfortably above viem's 180s receipt-wait default
- * plus worst-case mining delay on the curated chains.
+ * Default reclaim age for unprotected pre-payment reservations. SDK
+ * payment reservations are protected until explicit reconciliation.
  */
 export const DEFAULT_INFLIGHT_TTL_MS = 10 * 60 * 1000
 
@@ -169,36 +170,42 @@ export const DEFAULT_INFLIGHT_TTL_MS = 10 * 60 * 1000
  * rejected from a known-bad credential). The caller passes the token back to
  * `release()` so a stale flow cannot delete a successor's slot.
  *
- * Stale-inflight reclaim: a crash, receipt-wait timeout, or severed
- * connection can strand a slot in `inflight`. Without recovery, every
- * retry would fail "concurrent verify in progress" forever. A slot whose
- * `ts` is older than `inflightTtlMs` (default 10min) is therefore
- * reclaimed — atomically, inside the same CAS, WITH A FRESH TOKEN — and the
- * retry re-enters verification. This is safe because every verifier re-checks
- * on-chain state after reserve (nonce consumption / receipt lookups), so a
- * settlement that DID land while the slot was stranded is detected
- * rather than double-executed. Terminal states (consumed / rejected) are
- * NEVER reclaimed.
+ * Only unprotected inflight slots may be reclaimed after inflightTtlMs.
+ * SDK payment callers atomically persist preventReclaim:true before any
+ * settlement observation or broadcast. Ambiguous outcomes require explicit
+ * reconciliation; elapsed time alone never proves non-payment. Backends must
+ * preserve this flag and must not expire or evict protected reservations.
  *
- * MUST be implemented via `store.update` — never a separate `has` + `set`
- * pair (spec §9.3: that opens a TOCTOU double-spend window).
+ * MUST use store.update, never a separate read and write (spec §9.3).
  */
 export async function reserve(
   store: ChargeStore,
   key: ReplayKey,
-  opts?: { readonly inflightTtlMs?: number | undefined },
+  opts?: { readonly inflightTtlMs?: number | undefined; readonly preventReclaim?: boolean },
 ): Promise<string | null> {
   const inflightTtlMs = opts?.inflightTtlMs ?? DEFAULT_INFLIGHT_TTL_MS
   const token = crypto.randomUUID()
   return withStoreUnavailableWrap('reserve', key, () =>
     store.update(key, (current) => {
       if (current !== null) {
-        const stale = current.state === 'inflight' && Date.now() - current.ts >= inflightTtlMs
+        const stale =
+          current.state === 'inflight' &&
+          !current.preventReclaim &&
+          Date.now() - current.ts >= inflightTtlMs
         if (!stale) return { op: 'noop', result: null }
         // fall through: reclaim the stale inflight slot with a FRESH token, so
         // the stranded original flow's release no longer matches this slot.
       }
-      return { op: 'set', value: { state: 'inflight', ts: Date.now(), token }, result: token }
+      return {
+        op: 'set',
+        value: {
+          state: 'inflight',
+          ts: Date.now(),
+          token,
+          ...(opts?.preventReclaim && { preventReclaim: true }),
+        },
+        result: token,
+      }
     }),
   )
 }

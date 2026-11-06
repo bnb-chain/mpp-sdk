@@ -441,7 +441,7 @@ describe('verifyTransaction replacement handling (step 12.5)', () => {
     await expect(
       verifyTransaction({ credential: buildCredential({ rawTx }), request: baseRequest, ctx }),
     ).rejects.toThrow(
-      /replaced by .* concurrent verify in progress.*retry after the inflight window expires/,
+      /replaced by .* concurrent verify in progress.*operator reconciliation required/,
     )
 
     // The credential's own slot stays inflight (reclaimed after TTL)...

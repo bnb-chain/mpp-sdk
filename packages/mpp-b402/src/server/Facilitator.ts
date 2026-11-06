@@ -178,6 +178,7 @@ export function createB402Facilitator(
         })
         slotToken = await reserveB402Slot(store, replayKey, {
           inflightTtlMs: parameters.inflightTtlMs,
+          preventReclaim: true,
         })
         if (slotToken === null) {
           const conflict = await describeB402ReplayConflict(store, replayKey)
@@ -235,8 +236,8 @@ export declare namespace createB402Facilitator {
     readonly bazaar?: BazaarMetadata | undefined
     readonly client: B402Transport
     /**
-     * Stale-inflight reclaim age (ms) for the replay guard. Only meaningful
-     * when `store` is set. Defaults to 10 minutes.
+     * Legacy unprotected-slot reclaim age (ms). Payment reservations are
+     * protected and require explicit reconciliation. Defaults to 10 minutes.
      */
     readonly inflightTtlMs?: number | undefined
     readonly onSettlementUnknown?: B402SettlementUnknownHandler | undefined

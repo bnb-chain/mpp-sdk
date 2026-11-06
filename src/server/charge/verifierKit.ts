@@ -248,15 +248,10 @@ export function assertDidPkhSourceMatches(args: {
  * Mark a slot consumed after a settlement is already final on-chain,
  * retrying transient store failures, WITHOUT failing the verify.
  *
- * Once the payment is on-chain-final the payer must receive the receipt —
- * throwing here would report failure for a payment that happened. But a
- * swallowed markConsumed failure leaves the slot as plain `inflight`,
- * which `reserve()` reclaims after inflightTtlMs — re-opening the slot
- * for a second equal-priced challenge (double redemption on the shared
- * txhash keyspace). Retrying closes the transient-blip window; a
- * SUSTAINED store outage at exactly this moment remains a documented
- * residual risk (see docs/replay-store.md) that operators should alert
- * on via the warn below.
+ * Once payment is final, return its receipt even if consumption writes fail.
+ * The reservation was persisted with preventReclaim before verification, so
+ * a sustained outage cannot make the settled credential reusable after TTL.
+ * Operators reconcile the retained slot rather than retry a new payment.
  *
  * Never throws.
  */
@@ -281,7 +276,7 @@ export async function consumeSlotBestEffort(
   // slot is settled on-chain but not terminally consumed in the store.
   console.warn(
     `${label} markConsumed failed after ${delaysMs.length} attempts; settlement is final ` +
-      `on-chain but slot '${key}' remains inflight (reclaimable after inflightTtlMs). ` +
+      `on-chain but slot '${key}' remains inflight (protected; explicit reconciliation required). ` +
       'Returning the receipt anyway. Operator: mark the slot consumed manually. Error:',
     lastErr instanceof Error ? lastErr.message : String(lastErr),
   )
