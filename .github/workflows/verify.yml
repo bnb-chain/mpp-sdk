@@ -21,7 +21,7 @@ jobs:
     name: lint + fmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # The version-regression guard reads package.json from the PR base.
           fetch-depth: 0
@@ -40,7 +40,7 @@ jobs:
     name: tsgo type-check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/install-dependencies
       - name: Type check (tsgo -b + test config)
         run: pnpm check:types
@@ -49,7 +49,7 @@ jobs:
     name: unit + interop tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/install-dependencies
       - name: Run unit + interop projects
         # `live` project is excluded — it requires testnet RPC + signing
@@ -75,7 +75,7 @@ jobs:
     name: zile build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/install-dependencies
       - name: Build dist/
         run: pnpm build
