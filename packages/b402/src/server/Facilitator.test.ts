@@ -214,35 +214,41 @@ describe('smart-account permit2 signatures (ERC-1271/ERC-7739)', () => {
 // "already in progress" without ever reaching the facilitator. The guard now
 // confirms the signature via the idempotent, gas-free /verify first.
 describe('smart-account replay-slot squatting', () => {
-  test('a forged envelope is refused on the facilitator verdict and never claims the slot', async () => {
-    const victim = await smartAccountPayment()
-    const forgedSignature = `0x${'ee'.repeat(80)}` as const
-    // Same declared `from` and same nonce as the victim — only the envelope
-    // differs, and it is garbage.
-    const forged = {
-      ...victim.payment,
-      payload: { ...victim.payment.payload, signature: forgedSignature },
-    }
+  test.each([true, false])(
+    'a forged envelope is refused before settlement (store configured: %s)',
+    async (withStore) => {
+      const victim = await smartAccountPayment()
+      const forgedSignature = `0x${'ee'.repeat(80)}` as const
+      // Same declared `from` and same nonce as the victim — only the envelope
+      // differs, and it is garbage.
+      const forged = {
+        ...victim.payment,
+        payload: { ...victim.payment.payload, signature: forgedSignature },
+      }
 
-    const transport = new SelectiveTransport(victim.from)
-    transport.invalidSignatures.add(forgedSignature)
-    const client = new B402FacilitatorClient({ client: transport, store: memoryStore() })
+      const transport = new SelectiveTransport(victim.from)
+      transport.invalidSignatures.add(forgedSignature)
+      const client = new B402FacilitatorClient({
+        client: transport,
+        ...(withStore && { store: memoryStore() }),
+      })
 
-    await expect(
-      client.settle(asX402(forged), asX402Requirements(victim.requirements)),
-    ).resolves.toMatchObject({
-      errorReason: 'invalid_exact_evm_payload_signature',
-      success: false,
-      transaction: '',
-    })
-    expect(transport.settleRequests).toHaveLength(0) // never reached /settle
+      await expect(
+        client.settle(asX402(forged), asX402Requirements(victim.requirements)),
+      ).resolves.toMatchObject({
+        errorReason: 'invalid_exact_evm_payload_signature',
+        success: false,
+        transaction: '',
+      })
+      expect(transport.settleRequests).toHaveLength(0) // never reached /settle
 
-    // The victim's genuine payment still settles — its slot was never taken.
-    await expect(
-      client.settle(asX402(victim.payment), asX402Requirements(victim.requirements)),
-    ).resolves.toMatchObject({ payer: victim.from, success: true, transaction })
-    expect(transport.settleRequests).toHaveLength(1)
-  })
+      // The victim's genuine payment still settles — its slot was never taken.
+      await expect(
+        client.settle(asX402(victim.payment), asX402Requirements(victim.requirements)),
+      ).resolves.toMatchObject({ payer: victim.from, success: true, transaction })
+      expect(transport.settleRequests).toHaveLength(1)
+    },
+  )
 
   test('a facilitator-reported payer that contradicts the declared from is refused', async () => {
     const victim = await smartAccountPayment()

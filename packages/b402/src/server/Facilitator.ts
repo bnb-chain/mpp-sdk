@@ -127,7 +127,7 @@ export class B402FacilitatorClient implements X402FacilitatorClient {
     const store = this.#options.store
     let replayKey: ReturnType<typeof b402ReplayKey> | undefined
     let slotToken: string | null = null
-    if (store) {
+    {
       // Confirm the signature BEFORE claiming a slot when the payer could
       // not be proven locally (smart-account / ERC-1271 permit2 — audit H02
       // follow-up). Otherwise an attacker who copies the victim's
@@ -167,7 +167,8 @@ export class B402FacilitatorClient implements X402FacilitatorClient {
           }
         }
       }
-
+    }
+    if (store) {
       const payload = reconstructed.request.paymentPayload.payload
       replayKey = b402ReplayKey({
         asset: reconstructed.requirements.asset,
