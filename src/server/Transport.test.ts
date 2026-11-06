@@ -127,7 +127,7 @@ describe('evmHttpTransport.respondReceipt is fail-closed for non-EVM-Charge rece
         receipt: malformed,
         response: base,
       }),
-    ).toThrow(/'chainId' must be number/)
+    ).toThrow(/'chainId' must be a positive safe integer/)
   })
 
   // Transport-level negative cases for the newly-tightened
