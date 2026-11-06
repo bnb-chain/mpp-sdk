@@ -246,8 +246,8 @@ export function assertEvmReceipt(receipt: unknown): asserts receipt is EvmReceip
       `assertEvmReceipt: 'status' must be literal 'success' (draft §7.6 — failures use 402 + Problem Details, not a receipt) — got ${JSON.stringify(r.status)}`,
     )
   }
-  if (typeof r.challengeId !== 'string') {
-    throw new Error("assertEvmReceipt: 'challengeId' must be string (draft §7.6)")
+  if (typeof r.challengeId !== 'string' || r.challengeId.trim().length === 0) {
+    throw new Error("assertEvmReceipt: 'challengeId' must be non-empty string (draft §7.6)")
   }
   if (typeof r.reference !== 'string' || !BYTES32_HEX.test(r.reference)) {
     throw new Error(
