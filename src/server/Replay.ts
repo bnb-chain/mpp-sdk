@@ -213,9 +213,16 @@ export async function reserve(
  * verdict to `consumed`). Re-marking the same terminal state is a
  * harmless noop — the existing value (and its `ts`) is kept.
  */
-export async function markConsumed(store: ChargeStore, key: ReplayKey): Promise<void> {
+export async function markConsumed(
+  store: ChargeStore,
+  key: ReplayKey,
+  token?: string,
+): Promise<void> {
   await withStoreUnavailableWrap('markConsumed', key, () =>
     store.update(key, (current) => {
+      if (token !== undefined && (current === null || current.token !== token)) {
+        return { op: 'noop', result: false as const }
+      }
       if (current !== null && current.state !== 'inflight') {
         // Terminal states are write-once — keep the existing value.
         return { op: 'noop', result: false as const }
@@ -242,9 +249,13 @@ export async function markRejected(
   store: ChargeStore,
   key: ReplayKey,
   reason: string,
+  token?: string,
 ): Promise<void> {
   await withStoreUnavailableWrap('markRejected', key, () =>
     store.update(key, (current) => {
+      if (token !== undefined && (current === null || current.token !== token)) {
+        return { op: 'noop', result: false as const }
+      }
       if (current !== null && current.state !== 'inflight') {
         // Terminal states are write-once — keep the existing value.
         return { op: 'noop', result: false as const }

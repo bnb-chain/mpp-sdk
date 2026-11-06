@@ -564,7 +564,7 @@ export async function verifyAuthorization({
 
         // The authorized transfer DID settle — terminal from here.
         terminalPhase = true
-        await consumeSlotBestEffort(store, key, '[verifyAuthorization]')
+        await consumeSlotBestEffort(store, key, '[verifyAuthorization]', claimed)
         return {
           kind: 'recovered',
           receipt: buildEvmReceipt({
@@ -780,6 +780,7 @@ export async function verifyAuthorization({
           store,
           key,
           `Transfer log mismatch (currency=${currency} from=${payload.from} to=${payload.to} value=${payload.value}); nonce consumed`,
+          claimed,
         )
         throw new Errors.VerificationFailedError({
           ...(challengeId && { id: challengeId }),
@@ -812,6 +813,7 @@ export async function verifyAuthorization({
           store,
           key,
           `facilitator settled a different transfer than authorized (${mismatches.join('; ')}); nonce consumed`,
+          claimed,
         )
         throw new Errors.VerificationFailedError({
           ...(challengeId && { id: challengeId }),
@@ -824,7 +826,7 @@ export async function verifyAuthorization({
     // A store failure here must NOT surface as an error to a paid payer (see
     // consumeSlotBestEffort: retries transient blips, then warns and returns;
     // the slot staying inflight still blocks replay).
-    await consumeSlotBestEffort(store, key, '[verifyAuthorization]')
+    await consumeSlotBestEffort(store, key, '[verifyAuthorization]', claimed)
 
     // ── Step 16: build receipt ──────────────────────────────────────────
     return buildEvmReceipt({

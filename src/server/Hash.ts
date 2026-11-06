@@ -175,7 +175,7 @@ export async function verifyHash({
 
     // ── Step 4: receipt.status ─────────────────────────────────────────
     if (receipt.status !== 'success') {
-      await markRejected(store, key, `tx reverted on-chain (status=${receipt.status})`)
+      await markRejected(store, key, `tx reverted on-chain (status=${receipt.status})`, claimed)
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
         reason: `transaction reverted on-chain (status=${receipt.status})`,
@@ -202,6 +202,7 @@ export async function verifyHash({
         store,
         key,
         `no matching Transfer(${currency}, ${recipient}, ${amount}) in tx logs`,
+        claimed,
       )
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
@@ -213,7 +214,7 @@ export async function verifyHash({
     if (hashFromPolicy === 'strict_from') {
       const source = credential.source
       if (source === undefined) {
-        await markRejected(store, key, 'strict_from policy requires credential.source')
+        await markRejected(store, key, 'strict_from policy requires credential.source', claimed)
         throw new Errors.VerificationFailedError({
           ...(challengeId && { id: challengeId }),
           reason:
@@ -232,6 +233,7 @@ export async function verifyHash({
           store,
           key,
           `credential.source format mismatch: ${JSON.stringify(source)}`,
+          claimed,
         )
         throw new Errors.VerificationFailedError({
           ...(challengeId && { id: challengeId }),
@@ -244,6 +246,7 @@ export async function verifyHash({
           store,
           key,
           `Transfer.from (${match.args.from}) does not match credential.source (${sourceAddress})`,
+          claimed,
         )
         throw new Errors.VerificationFailedError({
           ...(challengeId && { id: challengeId }),
@@ -258,7 +261,7 @@ export async function verifyHash({
     // transient blips and warns (never throws) on a sustained outage; the
     // slot staying inflight still blocks replay until the reclaim TTL
     // (residual risk documented in docs/replay-store.md).
-    await consumeSlotBestEffort(store, key, '[verifyHash]')
+    await consumeSlotBestEffort(store, key, '[verifyHash]', claimed)
 
     // ── Step 8: build receipt ──────────────────────────────────────────
     return buildEvmReceipt({
