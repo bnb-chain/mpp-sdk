@@ -5,8 +5,8 @@
  * and methodDetails.chainId / splits. EVM Charge needs the rest of the
  * methodDetails fields (permit2Address / credentialTypes / decimals) in
  * the HMAC binding too, so a tampered challenge can't silently change
- * them while keeping the same id. `description` + `externalId` are
- * intentionally left out — they're free to vary per route.
+ * them while keeping the same id. `externalId` also binds the payment to
+ * its application order; only display-only `description` may vary.
  *
  * Pure request reshape — closes over no factory state, so the factory
  * takes no context.
@@ -38,6 +38,7 @@ export function makeStableBinding(): NonNullable<
       amount: r.amount,
       currency: r.currency,
       recipient: r.recipient,
+      ...(r.externalId !== undefined && { externalId: r.externalId }),
       methodDetails: {
         chainId: r.methodDetails.chainId,
         permit2Address: r.methodDetails.permit2Address,

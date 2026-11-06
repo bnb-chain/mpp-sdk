@@ -86,3 +86,44 @@ describe('pinned mppx behavior contract', () => {
     expect(fixture.verifyCalls()).toBe(0)
   })
 })
+
+test('EVM stable binding rejects an externalId change before payment verification', async () => {
+  const { makeStableBinding } = await import('../../src/server/charge/stableBinding.js')
+  let verifies = 0
+  const method = Method.toServer(chargeMethod, {
+    stableBinding: makeStableBinding(),
+    async verify({ credential }) {
+      verifies += 1
+      return Receipt.from({
+        challengeId: credential.challenge.id,
+        method: 'evm',
+        reference: 'test',
+        status: 'success',
+        timestamp: new Date().toISOString(),
+      })
+    },
+  })
+  const mppx = Mppx.create({
+    methods: [method],
+    realm: 'merchant.example',
+    secretKey: 'test-secret-key-at-least-thirty-two-bytes',
+  })
+  const request = {
+    amount: '1',
+    currency: '0x1111111111111111111111111111111111111111',
+    recipient: '0x2222222222222222222222222222222222222222',
+    methodDetails: { chainId: 56, permit2Address: '0x000000000022d473030f116ddee9f6b43ac78ba3' },
+    externalId: 'order-A',
+  }
+  const challenge = await mppx.challenge.evm.charge(request)
+  const encoded = Credential.serialize({
+    challenge,
+    payload: { type: 'hash', hash: `0x${'12'.repeat(32)}` },
+  })
+  await expect(
+    mppx.verifyCredential(encoded, { request: { ...request, externalId: 'order-B' } }),
+  ).rejects.toThrow()
+  expect(verifies).toBe(0)
+  await mppx.verifyCredential(encoded, { request })
+  expect(verifies).toBe(1)
+})
