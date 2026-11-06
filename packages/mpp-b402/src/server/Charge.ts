@@ -134,6 +134,7 @@ export async function charge(
       })
       const slotToken = await reserveB402Slot(parameters.store, replayKey, {
         inflightTtlMs: parameters.inflightTtlMs,
+        preventReclaim: true,
       })
       if (slotToken === null) {
         const conflict = await describeB402ReplayConflict(parameters.store, replayKey)
@@ -154,8 +155,7 @@ export async function charge(
       // including B402SettlementUnknownError — must leave the slot
       // `inflight`: the transfer may already be on-chain, and releasing
       // would re-admit the same credential → double settlement. The
-      // stale-inflight TTL reclaims the slot after the reconciliation
-      // window.
+      // protected slot requires explicit operator reconciliation.
       let settlePhase = false
       try {
         const verifyRequest: FacilitatorRequest = {
@@ -257,9 +257,8 @@ export declare namespace charge {
     readonly client: B402Transport
     readonly currency: Currency
     /**
-     * Stale-inflight reclaim age (ms) for the replay guard — the operator's
-     * window to reconcile a `B402SettlementUnknownError` before a retry may
-     * re-enter settlement. Defaults to 10 minutes.
+     * Legacy unprotected-slot reclaim age (ms). Payment reservations are
+     * protected and require explicit reconciliation. Defaults to 10 minutes.
      */
     readonly inflightTtlMs?: number | undefined
     readonly maxTimeoutSeconds?: number | undefined

@@ -619,6 +619,15 @@ describe('verifyHash — terminal-phase store-write failure keeps slot inflight'
       // so it would match again → double-spend.
       const slot = await store.get(txHashKey(CHAIN_ID, TX_HASH))
       expect(slot?.state).toBe('inflight')
+      expect(slot?.preventReclaim).toBe(true)
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 600_001)
+      try {
+        await expect(
+          verifyHash({ credential: buildCredential(), request: buildRequest(), ctx }),
+        ).rejects.toThrow(/concurrent verify/)
+      } finally {
+        clock.mockRestore()
+      }
 
       // Operator hint surfaces in console.warn so the inflight slot isn't
       // a silent leak — this exact fragment is the operator alert string

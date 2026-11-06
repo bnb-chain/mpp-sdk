@@ -32,8 +32,7 @@
  *        keep inflight (an earlier settlement attempt may have landed);
  *        otherwise release
  *    16. writeContract → waitForTransactionReceipt. Broadcast failure →
- *        release; timeout → keep inflight (reclaimed after
- *        inflightTtlMs); revert → release (nonce
+ *        release; timeout → keep protected inflight until reconciliation; revert → release (nonce
  *        unconsumed on-chain).
  *    17. parseEventLogs(Transfer) strictly matches ALL expected transfers
  *        (currency, recoveredSigner-as-from, each (to, value) pair in order).
@@ -111,7 +110,7 @@ export interface Permit2VerifierCtx {
    * the retryable error instead of a severed connection.
    */
   readonly settlementTimeoutMs?: number
-  /** Stale-inflight reclaim age forwarded to Replay.reserve. */
+  /** Reclaim age for legacy unprotected slots; payment reservations are protected. */
   readonly inflightTtlMs?: number
 }
 
@@ -531,7 +530,7 @@ export async function verifyPermit2({
 
   // ── Step 12: atomic reserve ───────────────────────────────────────────
   const key = permit2Key(chainId, permit2Address, recoveredSigner, permit.nonce)
-  const claimed = await reserve(store, key, { inflightTtlMs })
+  const claimed = await reserve(store, key, { inflightTtlMs, preventReclaim: true })
   if (!claimed) {
     return await throwReserveConflict({
       store,
@@ -666,7 +665,7 @@ export async function verifyPermit2({
     } catch (settleErr) {
       // simulate or broadcast failed — USUALLY before any on-chain state
       // change. But not always: if our own earlier settlement attempt
-      // landed after a receipt-wait timeout + stale-inflight reclaim, the
+      // landed despite an ambiguous broadcast failure, the
       // Permit2 nonce is ALREADY consumed and the simulate revert
       // (InvalidNonce) would otherwise hand a PAID payer a terminal-
       // looking failure while releasing the slot. Probe the Permit2
@@ -687,8 +686,7 @@ export async function verifyPermit2({
       }
       if (nonceConsumed) {
         // Nonce burned on-chain → keep the slot INFLIGHT (no release).
-        // reserve() reclaims it after inflightTtlMs; meanwhile the
-        // operator can locate the settlement tx and resolve the slot.
+        // The operator must locate the settlement tx and resolve the slot.
         throw new Errors.VerificationFailedError({
           ...(challengeId && { id: challengeId }),
           reason:
@@ -717,11 +715,10 @@ export async function verifyPermit2({
       })
     } catch (waitErr) {
       // Timeout — keep the slot inflight: the tx may still mine and burn
-      // the nonce. reserve() reclaims stale inflight slots after
-      // inflightTtlMs, at which point a retry re-runs the on-chain probes.
+      // the nonce. Explicit operator reconciliation is required before retrying.
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
-        reason: `permit2 waitForTransactionReceipt failed; slot remains inflight until reclaim: ${
+        reason: `permit2 waitForTransactionReceipt failed; slot remains inflight until operator reconciliation: ${
           waitErr instanceof Error ? waitErr.message : String(waitErr)
         }`,
       })
@@ -812,8 +809,7 @@ export async function verifyPermit2({
     // would re-admit a credential whose nonce is burned — the next
     // reserve+verify would re-execute the Permit2 contract call, which
     // would revert "InvalidNonce", and the user would see a misleading
-    // error. Keep the slot inflight — reserve() reclaims it after
-    // inflightTtlMs and the retry re-checks on-chain nonce state.
+    // error. Keep the protected slot until explicit operator reconciliation.
     return await handleVerifierFailure({
       err,
       store,

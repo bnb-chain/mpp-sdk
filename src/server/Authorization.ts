@@ -49,7 +49,7 @@
  *        → release).
  *    13. writeContract → waitForTransactionReceipt (confirmations +
  *        optional timeout). Broadcast fail → recovery probe (as in 12);
- *        timeout → keep inflight (reserve() reclaims after inflightTtlMs);
+ *        timeout → keep protected inflight until reconciliation;
  *        revert → recovery probe (as in 12).
  *    14. parseEventLogs(Transfer) matches (currency, from, to, value).
  *        Mismatch → markRejected (token consumed nonce on-chain).
@@ -137,7 +137,7 @@ export interface AuthorizationVerifierCtx {
    * default (180s). See Permit2VerifierCtx.settlementTimeoutMs.
    */
   readonly settlementTimeoutMs?: number
-  /** Stale-inflight reclaim age forwarded to Replay.reserve. */
+  /** Reclaim age for legacy unprotected slots; payment reservations are protected. */
   readonly inflightTtlMs?: number
 }
 
@@ -230,14 +230,10 @@ const AUTHORIZATION_CANCELED_EVENT_ABI = {
 } as const
 
 /**
- * How far back (in blocks) the front-run recovery searches for the
- * AuthorizationUsed / AuthorizationCanceled events. Must outlast the
- * inflight-reclaim window (DEFAULT_INFLIGHT_TTL_MS = 10min): a reclaimed
- * retry re-probes a burned nonce, and if the consuming tx has scrolled
- * past the window the probe can no longer prove payment. 5000 blocks ≈
- * ~21min on the fastest curated chain (arbitrum ~0.25s blocks) vs the
- * 10-min reclaim — the old 1000-block window covered only ~4min there —
- * while staying within common public-RPC getLogs range caps.
+ * Bounded event-search depth for authorization front-run recovery. The
+ * 5000-block window covers roughly 21 minutes on the fastest curated chain
+ * while staying within common RPC range caps. Protected reservations never
+ * depend on this window expiring; older outcomes require operator lookup.
  */
 const FRONT_RUN_SEARCH_WINDOW_BLOCKS = 5000n
 
@@ -443,7 +439,7 @@ export async function verifyAuthorization({
 
   // ── Step 9: atomic reserve ────────────────────────────────────────────
   const key = authKey(chainId, currency, recoveredSigner, payload.nonce)
-  const claimed = await reserve(store, key, { inflightTtlMs })
+  const claimed = await reserve(store, key, { inflightTtlMs, preventReclaim: true })
   if (!claimed) {
     return await throwReserveConflict({
       store,
@@ -676,7 +672,7 @@ export async function verifyAuthorization({
         settleErr instanceof Error ? settleErr.message : String(settleErr),
       )
       // SettlePendingError = tx broadcast but receipt unconfirmed (timeout):
-      // keep the slot INFLIGHT (reclaimed after inflightTtlMs) — the tx may
+      // keep the protected slot INFLIGHT until reconciliation — the tx may
       // still mine and burn the nonce.
       if (settleErr instanceof SettlePendingError) {
         throw new Errors.VerificationFailedError({
@@ -708,7 +704,7 @@ export async function verifyAuthorization({
       }
       if (probe.kind === 'unreadable') {
         // Unknown broadcast state + unreadable nonce state → fail CLOSED (keep
-        // the slot inflight; reclaimed after inflightTtlMs), but surface BOTH
+        // the slot protected until reconciliation), but surface BOTH
         // failures so the outcome is diagnosable.
         throw new Errors.VerificationFailedError({
           ...(challengeId && { id: challengeId }),
@@ -847,8 +843,7 @@ export async function verifyAuthorization({
     // re-execute transferWithAuthorization, the token contract would
     // revert "FiatTokenV2: authorization is used or canceled", and
     // the user would see a misleading error. Keep slot inflight —
-    // reserve() reclaims it after inflightTtlMs, and the front-run
-    // recovery probe then resolves the burned-nonce state.
+    // explicit operator reconciliation resolves the burned-nonce state.
     return await handleVerifierFailure({
       err,
       store,

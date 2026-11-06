@@ -20,8 +20,8 @@
  *                    transaction) — the slot frees for a clean retry
  *   - (leave inflight) settlement outcome is UNKNOWN (`B402SettlementUnknownError`)
  *                    — the transfer may already be on-chain, so the slot must
- *                    keep blocking retries until the stale-inflight TTL
- *                    reclaims it after the operator's reconciliation window
+ *                    keep blocking retries until explicit operator reconciliation
+ *                    proves its final outcome
  *
  * Semantics mirror `@bnb-chain/mpp`'s `src/server/Replay.ts` (fencing token,
  * stale-inflight reclaim, write-once terminal states). The implementation is
@@ -55,6 +55,8 @@ export interface B402ReplaySlotValue {
    * (`consumed` / `rejected`) slots.
    */
   readonly token?: string
+  /** Requires explicit reconciliation after an ambiguous or final payment. */
+  readonly preventReclaim?: boolean
 }
 
 /** Outcome of an atomic update callback — shape-compatible with mppx `Store.Change`. */
@@ -157,9 +159,8 @@ export function b402ReplayKey(parts: {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Default age after which a stale `inflight` slot is reclaimable — the
- * operator's window to reconcile a `B402SettlementUnknownError` before a
- * retry re-enters settlement. Matches the core package's default.
+ * Default reclaim age for unprotected pre-payment reservations. Protected
+ * payment reservations require explicit operator reconciliation.
  */
 export const B402_DEFAULT_INFLIGHT_TTL_MS = 10 * 60 * 1000
 
@@ -178,13 +179,16 @@ function asSlotValue(value: unknown): B402ReplaySlotValue | null {
  * slot was free (now `inflight`); `null` on any existing state — inflight
  * (concurrent submission), consumed, rejected, or an unrecognized value
  * (fail closed: never overwrite data this module didn't write). A slot
- * stuck `inflight` longer than `inflightTtlMs` is reclaimed atomically with
- * a fresh token.
+ * stuck unprotected `inflight` longer than `inflightTtlMs` is reclaimed
+ * atomically with a fresh token. Only unprotected inflight slots may be reclaimed by age. SDK payment
+ * callers use preventReclaim:true before any settlement observation or
+ * broadcast; an ambiguous result requires explicit operator reconciliation.
+ * Backends must preserve this flag and never expire protected slots.
  */
 export async function reserveB402Slot(
   store: B402ReplayStore,
   key: B402ReplayKey,
-  opts?: { readonly inflightTtlMs?: number | undefined },
+  opts?: { readonly inflightTtlMs?: number | undefined; readonly preventReclaim?: boolean },
 ): Promise<string | null> {
   const inflightTtlMs = opts?.inflightTtlMs ?? B402_DEFAULT_INFLIGHT_TTL_MS
   const token = crypto.randomUUID()
@@ -193,11 +197,23 @@ export async function reserveB402Slot(
       if (current !== null && current !== undefined) {
         const slot = asSlotValue(current)
         const stale =
-          slot !== null && slot.state === 'inflight' && Date.now() - slot.ts >= inflightTtlMs
+          slot !== null &&
+          slot.state === 'inflight' &&
+          !slot.preventReclaim &&
+          Date.now() - slot.ts >= inflightTtlMs
         if (!stale) return { op: 'noop', result: null }
         // fall through: reclaim the stale inflight slot with a FRESH token.
       }
-      return { op: 'set', value: { state: 'inflight', ts: Date.now(), token }, result: token }
+      return {
+        op: 'set',
+        value: {
+          state: 'inflight',
+          ts: Date.now(),
+          token,
+          ...(opts?.preventReclaim && { preventReclaim: true }),
+        },
+        result: token,
+      }
     }),
   )
 }
@@ -303,7 +319,7 @@ export async function describeB402ReplayConflict(
  * Mark consumed after a settlement is already final, retrying transient
  * store blips WITHOUT failing the caller — the payer must receive their
  * receipt once the facilitator settled. On sustained failure the slot stays
- * `inflight` (still blocking replays until the TTL) and a warning is
+ * `inflight` (still blocking replays until explicit reconciliation) and a warning is
  * emitted for operator alerting.
  *
  * Never throws.
@@ -326,7 +342,7 @@ export async function consumeB402SlotBestEffort(
   // eslint-disable-next-line no-console -- operator-facing alert; never fail a settled payment
   console.warn(
     `${label} markConsumed failed after retries on key '${key}' — slot stays inflight (replays ` +
-      `still blocked until the reclaim TTL). Investigate the replay store. Underlying: ${
+      `still blocked until explicit reconciliation). Investigate the replay store. Underlying: ${
         lastErr instanceof Error ? lastErr.message : String(lastErr)
       }`,
   )
