@@ -173,15 +173,11 @@ export function serializeEvmReceipt(receipt: EvmReceipt): string {
  *   - `status`     literal 'success'   (failures use 402 + Problem Details)
  *   - `challengeId`  string
  *   - `reference`  /^0x[0-9a-fA-F]{64}$/ — 32-byte tx hash
- *   - `timestamp`  string  (RFC-3339 lexical form is caller-validated;
- *                            assertEvmReceipt only enforces typeof)
- *   - `chainId`    number
+ *   - `timestamp`  RFC-3339 string with a valid calendar date/time
+ *   - `chainId`    positive safe integer
  *
  * Bad headers throw immediately rather than being silently coerced into a
- * partially-populated object. The only field whose lexical VALUE is not
- * checked here is `timestamp` (we accept any string and leave RFC-3339
- * parsing to the caller — `new Date(timestamp).toISOString()` works for
- * any sane source).
+ * partially-populated object. Timestamp and chain claims are validated here.
  */
 export function deserializeEvmReceipt(encoded: string): EvmReceipt {
   const json = fromBase64Url(encoded)
@@ -254,12 +250,36 @@ export function assertEvmReceipt(receipt: unknown): asserts receipt is EvmReceip
       "assertEvmReceipt: 'reference' must be 0x-prefixed 32-byte hex tx hash (draft §7.6)",
     )
   }
-  if (typeof r.timestamp !== 'string') {
+  if (typeof r.timestamp !== 'string' || !isRfc3339Timestamp(r.timestamp)) {
     throw new Error("assertEvmReceipt: 'timestamp' must be RFC 3339 string (draft §7.6)")
   }
-  if (typeof r.chainId !== 'number') {
-    throw new Error("assertEvmReceipt: 'chainId' must be number (draft §7.6)")
+  if (typeof r.chainId !== 'number' || !Number.isSafeInteger(r.chainId) || r.chainId <= 0) {
+    throw new Error("assertEvmReceipt: 'chainId' must be a positive safe integer (draft §7.6)")
   }
+}
+
+function isRfc3339Timestamp(value: string): boolean {
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:[Zz]|([+-])(\d{2}):(\d{2}))$/.exec(
+      value,
+    )
+  if (!match) return false
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  return (
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= days[month - 1]! &&
+    Number(match[4]) <= 23 &&
+    Number(match[5]) <= 59 &&
+    Number(match[6]) <= 60 &&
+    (match[8] === undefined || Number(match[8]) <= 23) &&
+    (match[9] === undefined || Number(match[9]) <= 59)
+  )
 }
 
 /* -------------------------------------------------------------------------- */

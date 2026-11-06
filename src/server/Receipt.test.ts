@@ -269,7 +269,9 @@ describe('assertEvmReceipt fail-closed guard', () => {
   })
 
   test("rejects chainId as string (must be 'number')", () => {
-    expect(() => assertEvmReceipt({ ...valid, chainId: '97' })).toThrow(/'chainId' must be number/)
+    expect(() => assertEvmReceipt({ ...valid, chainId: '97' })).toThrow(
+      /'chainId' must be a positive safe integer/,
+    )
   })
 
   test.each(['method', 'challengeId', 'reference', 'status', 'timestamp', 'chainId'] as const)(
