@@ -17,8 +17,10 @@ export type B402ChargeTransferMethod = (typeof b402ChargeTransferMethods)[number
 const address = z.address()
 const atomicAmount = z
   .string()
-  .check(z.regex(/^[1-9]\d*$/, 'amount must be a positive atomic-unit integer'))
-const decimalUint = z.string().check(z.regex(/^\d+$/, 'expected decimal uint256 string'))
+  .check(z.maxLength(78), z.regex(/^[1-9]\d*$/, 'amount must be a positive atomic-unit integer'))
+const decimalUint = z
+  .string()
+  .check(z.maxLength(78), z.regex(/^\d+$/, 'expected decimal uint256 string'))
 const bytes32 = z.hash()
 const signature = z
   .string()

@@ -259,3 +259,28 @@ describe('helpers', () => {
     expect(a).not.toBe(b)
   })
 })
+
+test('rejects oversized EIP-3009 numeric inputs before signer recovery', async () => {
+  const payload = await buildEip3009Payment({
+    account: privateKeyToAccount(generatePrivateKey()),
+    requirements: eip3009Requirements(),
+  })
+  for (const field of ['value', 'validAfter', 'validBefore']) {
+    expect(
+      isEip3009PaymentPayload({
+        ...payload,
+        payload: {
+          ...payload.payload,
+          authorization: { ...payload.payload.authorization, [field]: '1'.repeat(79) },
+        },
+      }),
+    ).toBe(false)
+  }
+  expect(
+    isEip3009PaymentPayload({
+      ...payload,
+      accepted: { ...payload.accepted, amount: '1'.repeat(79) },
+    }),
+  ).toBe(false)
+  expect(() => chainIdFromNetwork('eip155:9007199254740993')).toThrow(/safe integer/)
+})
