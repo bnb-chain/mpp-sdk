@@ -16,10 +16,9 @@ import type { Eip712DomainMap, WalletCapabilities, WalletContext } from './route
  * client (the reader) pointed at another. Two fail-closed rules (unless the
  * caller opts out with `allowChainMismatch`):
  *
- *  1. any client that DECLARES a chain id must match the challenge's, and
- *  2. at least one client must declare a chain id — a fully chain-less pair
- *     cannot be CONFIRMED to be on the right chain, and a mis-pointed RPC would
- *     silently approve/transfer on the wrong one. Refuse rather than guess.
+ *  1. both clients must declare a chain id, and
+ *  2. each declaration must equal the challenge chain. One matching
+ *     declaration cannot establish where the other client executes.
  */
 export function assertChainConsistency(
   wallet: WalletContext,
@@ -31,14 +30,6 @@ export function assertChainConsistency(
     ['wallet', wallet.walletClient.chain?.id],
     ['public', wallet.publicClient.chain?.id],
   ] as const
-  for (const [label, id] of declared) {
-    if (id !== undefined && id !== chainId) {
-      throw new Error(
-        `challenge is for chain ${chainId} but the ${label} client is on chain ${id} ` +
-          `— point it at chain ${chainId} or pass allowChainMismatch:true to override`,
-      )
-    }
-  }
   if (declared.every(([, id]) => id === undefined)) {
     throw new Error(
       `neither the wallet nor the public client declares a chain id, so pay() cannot confirm ` +
@@ -46,6 +37,14 @@ export function assertChainConsistency(
         `RPC would settle on the wrong chain. Construct the viem clients with an explicit ` +
         `\`chain\`, or pass allowChainMismatch:true to take responsibility.`,
     )
+  }
+  for (const [label, id] of declared) {
+    if (id === undefined || id !== chainId) {
+      throw new Error(
+        `challenge is for chain ${chainId} but the ${label} client declares chain ${id ?? 'unknown'} ` +
+          `— point it at chain ${chainId} or pass allowChainMismatch:true to override`,
+      )
+    }
   }
 }
 

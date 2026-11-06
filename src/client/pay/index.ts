@@ -55,7 +55,7 @@ export interface PayOptions {
   /**
    * Skip the chain-consistency guard entirely. Default `false` — `pay()` refuses
    * both a client that DECLARES a different chain than the challenge's `chainId`
-   * AND a fully chain-less client pair it cannot confirm, because reading
+   * AND any client whose chain it cannot confirm, because reading
    * allowance / approving / transferring on the wrong chain is a footgun. Set
    * `true` to take responsibility for pointing the clients at the right chain.
    */

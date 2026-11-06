@@ -294,6 +294,7 @@ describe('pay', () => {
       '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d',
     )
     const publicClient = {
+      chain: { id: CHAIN_ID },
       async readContract({ functionName }: { functionName: string }) {
         if (functionName === 'decimals') return 18
         if (functionName === 'allowance') return 0n
@@ -347,9 +348,7 @@ function payClients(
 ) {
   const writeCalls: string[] = []
   const publicClient = {
-    ...(opts.publicChainId !== undefined && {
-      chain: { id: opts.publicChainId, name: 'bsc-testnet' },
-    }),
+    chain: { id: opts.publicChainId ?? CHAIN_ID, name: 'bsc-testnet' },
     async readContract({ functionName }: { functionName: string }) {
       if (functionName === 'symbol') return 'U'
       if (functionName === 'decimals') {
@@ -569,7 +568,7 @@ describe('pay · build + retry', () => {
         wallet: { account: payAccount(), publicClient, walletClient },
         fetch,
       }),
-    ).rejects.toThrow(/public client is on chain 1/)
+    ).rejects.toThrow(/public client declares chain 1/)
 
     expect(writeCalls).toEqual([]) // never read allowance / broadcast on the wrong chain
     expect(calls).toEqual(['probe']) // never retried
@@ -976,4 +975,23 @@ describe('pay · eip712Domains key normalization', () => {
     })
     expect(result.route.id).toBe('mpp:authorization') // domain found → route viable
   })
+})
+
+describe('pay independent trust boundaries', () => {
+  test.each(['wallet', 'public'] as const)(
+    'refuses a partially chainless %s client before wallet writes',
+    async (missing) => {
+      const clients = payClients()
+      const target = missing === 'wallet' ? clients.walletClient : clients.publicClient
+      delete (target as { chain?: unknown }).chain
+      const probe = payFetch(Challenge.serialize(challengeWith(['hash'])), { status: 200 })
+      await expect(
+        pay('https://api.example/report', {
+          wallet: { account: payAccount(), ...clients },
+          fetch: probe.fetch,
+        }),
+      ).rejects.toThrow(/declares chain unknown/)
+      expect(clients.writeCalls).toEqual([])
+    },
+  )
 })
