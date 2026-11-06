@@ -264,7 +264,7 @@ describe('assertEvmReceipt fail-closed guard', () => {
 
   test("rejects challengeId as number (must be 'string')", () => {
     expect(() => assertEvmReceipt({ ...valid, challengeId: 123 })).toThrow(
-      /'challengeId' must be string/,
+      /'challengeId' must be non-empty string/,
     )
   })
 
