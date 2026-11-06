@@ -88,15 +88,16 @@ describe('resolveSettlementSigner — sanity guards', () => {
     )
   })
 
-  test('accepts walletClient with no chain (chain check skipped)', () => {
+  test('rejects walletClient without an explicit chain', () => {
     // http() with no URL + no chain throws "No URL was provided to the Transport"
     // — supply a stub URL so the WalletClient constructs.
     const provided = createWalletClient({
       account: accountA,
       transport: http('https://example.invalid/'),
     })
-    const wc = resolveSettlementSigner({ settlementWalletClient: provided }, ctxBsc)
-    expect(wc).toBe(provided)
+    expect(() => resolveSettlementSigner({ settlementWalletClient: provided }, ctxBsc)).toThrow(
+      /chain.id.*must equal/,
+    )
   })
 
   test('SettlementConfigError carries name field', () => {
