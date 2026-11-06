@@ -19,7 +19,6 @@ import { Challenge, Credential, evm, Receipt } from 'mppx'
 import {
   erc20Abi,
   getAddress,
-  maxUint256,
   type Address,
   type Hex,
   type PublicClient,
@@ -88,35 +87,54 @@ export async function buildB402Credential(
     throw new Error(`Switch the wallet to chain ${chainId}; the Challenge uses ${network}`)
   }
 
-  let allowance: bigint | undefined
-  let approvalHash: Hex | undefined
-  if (state.path === 'permit2-exact') {
-    if (!context.publicClient) throw new Error('No public RPC client for the connected chain')
-    allowance = await readPermit2Allowance(context, request)
-    if (allowance < BigInt(request.amount)) {
-      approvalHash = await context.walletClient.writeContract({
-        abi: erc20Abi,
-        account: context.walletAddress,
-        address: request.currency,
-        args: [B402_PERMIT2_ADDRESS, maxUint256],
-        chain: context.walletClient.chain ?? null,
-        functionName: 'approve',
-      })
-      const receipt = await context.publicClient.waitForTransactionReceipt({ hash: approvalHash })
-      if (receipt.status !== 'success') throw new Error('Permit2 approval transaction reverted')
-      allowance = await readPermit2Allowance(context, request)
-    }
+  // Buyer trust comes from local deployment configuration, never the offer.
+  const allowedNetwork = import.meta.env.VITE_B402_NETWORK
+  const allowedCurrency = import.meta.env.VITE_B402_TOKEN_ADDRESS
+  const maxAtomicAmount = import.meta.env.VITE_B402_MAX_ATOMIC_AMOUNT
+  if (!allowedNetwork || !allowedCurrency || !maxAtomicAmount) {
+    throw new Error(
+      'Configure VITE_B402_NETWORK, VITE_B402_TOKEN_ADDRESS and VITE_B402_MAX_ATOMIC_AMOUNT before paying',
+    )
   }
+  let approvalHash: Hex | undefined
 
   const method = b402Charge({
     account: walletSignerFor(context.walletAddress, context.walletClient),
-    allowedCurrencies: [{ address: request.currency, network }],
-    allowedNetworks: [network],
-    maxAtomicAmount: request.amount,
+    allowedCurrencies: [{ address: getAddress(allowedCurrency), network: allowedNetwork }],
+    allowedNetworks: [allowedNetwork],
+    maxAtomicAmount,
     methods: [state.path],
     ...(state.path === 'permit2-exact'
       ? {
-          permit2Allowance: () => allowance!,
+          // The SDK calls this only AFTER method/network/asset/amount and
+          // trusted-spender policy checks, so rejected offers cannot approve.
+          permit2Allowance: async () => {
+            if (
+              !context.publicClient ||
+              context.publicClient.chain?.id !== chainId ||
+              context.walletClient!.chain?.id !== chainId
+            ) {
+              throw new Error('Both wallet and public clients must declare the payment chain')
+            }
+            let allowance = await readPermit2Allowance(context, request)
+            if (allowance < BigInt(request.amount)) {
+              approvalHash = await context.walletClient!.writeContract({
+                abi: erc20Abi,
+                account: context.walletAddress!,
+                address: request.currency,
+                args: [B402_PERMIT2_ADDRESS, BigInt(request.amount)],
+                chain: context.walletClient!.chain!,
+                functionName: 'approve',
+              })
+              const receipt = await context.publicClient.waitForTransactionReceipt({
+                hash: approvalHash,
+              })
+              if (receipt.status !== 'success')
+                throw new Error('Permit2 approval transaction reverted')
+              allowance = await readPermit2Allowance(context, request)
+            }
+            return allowance
+          },
           trustedSpenders: {
             [network]: CURATED_B402_SPENDERS[network]
               ? [CURATED_B402_SPENDERS[network]!.exact]
