@@ -489,3 +489,35 @@ test('chargeMethod identity matches draft (name=evm, intent=charge)', () => {
   expect(chargeMethod.name).toBe('evm')
   expect(chargeMethod.intent).toBe('charge')
 })
+
+test('Permit2 batch arrays and witness text are bounded to supported wire sizes', () => {
+  const payload = {
+    type: 'permit2',
+    permit: { permitted: [{ token: CURRENCY, amount: '1' }], nonce: '1', deadline: '2000000000' },
+    transferDetails: [{ to: RECIPIENT, requestedAmount: '1' }],
+    witness: { challengeHash: `0x${'12'.repeat(32)}`, externalId: 'order' },
+    signature: `0x${'11'.repeat(65)}`,
+  }
+  expect(() => chargeMethod.schema.credential.payload.parse(payload)).not.toThrow()
+  expect(() =>
+    chargeMethod.schema.credential.payload.parse({
+      ...payload,
+      permit: {
+        ...payload.permit,
+        permitted: Array.from({ length: 12 }, () => payload.permit.permitted[0]),
+      },
+    }),
+  ).toThrow()
+  expect(() =>
+    chargeMethod.schema.credential.payload.parse({
+      ...payload,
+      transferDetails: Array.from({ length: 12 }, () => payload.transferDetails[0]),
+    }),
+  ).toThrow()
+  expect(() =>
+    chargeMethod.schema.credential.payload.parse({
+      ...payload,
+      witness: { ...payload.witness, externalId: 'x'.repeat(1025) },
+    }),
+  ).toThrow()
+})

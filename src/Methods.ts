@@ -198,7 +198,7 @@ const requestObject = z.object({
   currency: evmAddress,
   recipient: evmAddress,
   description: z.optional(z.string()),
-  externalId: z.optional(z.string()),
+  externalId: z.optional(z.string().check(z.maxLength(1024))),
   methodDetails,
 })
 
@@ -230,7 +230,7 @@ const credentialPayload = z.discriminatedUnion('type', [
     permit: z.object({
       permitted: z
         .array(z.object({ token: evmAddress, amount: positiveBaseUnitAmount }))
-        .check(z.minLength(1)),
+        .check(z.minLength(1), z.maxLength(11)),
       // Permit2 nonce is uint256 — serialized as decimal string on the wire.
       nonce: z
         .string()
@@ -248,8 +248,8 @@ const credentialPayload = z.discriminatedUnion('type', [
     }),
     transferDetails: z
       .array(z.object({ to: evmAddress, requestedAmount: positiveBaseUnitAmount }))
-      .check(z.minLength(1)),
-    witness: z.object({ challengeHash: bytes32, externalId: z.string() }),
+      .check(z.minLength(1), z.maxLength(11)),
+    witness: z.object({ challengeHash: bytes32, externalId: z.string().check(z.maxLength(1024)) }),
     signature: evmSignature,
   }),
   // —— authorization (EIP-3009 transferWithAuthorization) ——
