@@ -234,19 +234,13 @@ function keyedConsumedFailureStore(failKey: string, message: string): ChargeStor
     get: inner.get.bind(inner),
     put: inner.put.bind(inner),
     delete: inner.delete.bind(inner),
-    update: ((key, fn) => {
-      // Pure-function probe to classify the intent without mutating
-      // (same seam as test/helpers/server/terminalFailureStore.ts).
-      const probe = fn(null)
-      if (
-        key === failKey &&
-        probe.op === 'set' &&
-        (probe.value as { state?: string }).state === 'consumed'
-      ) {
-        throw new Error(message)
-      }
-      return inner.update(key, fn)
-    }) as ChargeStore['update'],
+    update: ((key, fn) =>
+      inner.update(key, (current) => {
+        const change = fn(current)
+        if (key === failKey && change.op === 'set' && change.value.state === 'consumed')
+          throw new Error(message)
+        return change
+      })) as ChargeStore['update'],
   }
 }
 

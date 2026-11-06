@@ -213,7 +213,12 @@ export class B402FacilitatorClient implements X402FacilitatorClient {
     })
     if (store && replayKey && slotToken !== null) {
       if (result.success) {
-        await consumeB402SlotBestEffort(store, replayKey, '[B402FacilitatorClient settle]')
+        await consumeB402SlotBestEffort(
+          store,
+          replayKey,
+          '[B402FacilitatorClient settle]',
+          slotToken,
+        )
       } else {
         await releaseB402Slot(store, replayKey, slotToken).catch(() => undefined)
       }

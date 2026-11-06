@@ -265,13 +265,14 @@ export async function consumeSlotBestEffort(
   key: ReplayKey,
   /** Warn-label prefix, e.g. '[verifyPermit2]'. */
   label: string,
+  token?: string,
 ): Promise<void> {
   const delaysMs = [0, 200, 400]
   let lastErr: unknown
   for (const delay of delaysMs) {
     if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay))
     try {
-      await markConsumed(store, key)
+      await markConsumed(store, key, token)
       return
     } catch (err) {
       lastErr = err

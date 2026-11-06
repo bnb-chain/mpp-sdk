@@ -167,7 +167,7 @@ export async function charge(
         if (!verified.isValid) {
           const reason =
             verified.invalidMessage ?? verified.invalidReason ?? 'B402 facilitator rejected payment'
-          await markB402Rejected(parameters.store, replayKey, reason)
+          await markB402Rejected(parameters.store, replayKey, reason, slotToken)
           throw new Errors.VerificationFailedError({ reason })
         }
         try {
@@ -181,6 +181,7 @@ export async function charge(
             parameters.store,
             replayKey,
             'B402 verify payer does not match the signed payment',
+            slotToken,
           )
           throw err
         }
@@ -217,7 +218,12 @@ export async function charge(
           })
         }
 
-        await consumeB402SlotBestEffort(parameters.store, replayKey, '[b402/charge verify]')
+        await consumeB402SlotBestEffort(
+          parameters.store,
+          replayKey,
+          '[b402/charge verify]',
+          slotToken,
+        )
 
         return toMppReceipt({
           challengeId: credential.challenge.id,

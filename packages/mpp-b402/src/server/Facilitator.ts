@@ -208,7 +208,12 @@ export function createB402Facilitator(
       })
       if (store && replayKey && slotToken !== null) {
         if (result.success) {
-          await consumeB402SlotBestEffort(store, replayKey, '[createB402Facilitator settle]')
+          await consumeB402SlotBestEffort(
+            store,
+            replayKey,
+            '[createB402Facilitator settle]',
+            slotToken,
+          )
         } else {
           await releaseB402Slot(store, replayKey, slotToken).catch(() => undefined)
         }

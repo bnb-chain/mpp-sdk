@@ -207,10 +207,17 @@ export async function reserveB402Slot(
  * a slot already terminal is never overwritten (a late loser of a
  * stale-reclaim race cannot downgrade a settled payment).
  */
-export async function markB402Consumed(store: B402ReplayStore, key: B402ReplayKey): Promise<void> {
+export async function markB402Consumed(
+  store: B402ReplayStore,
+  key: B402ReplayKey,
+  token?: string,
+): Promise<void> {
   await wrapUnavailable('markConsumed', key, () =>
     store.update(key, (current) => {
       const slot = asSlotValue(current)
+      if (token !== undefined && (slot === null || slot.token !== token)) {
+        return { op: 'noop', result: false as const }
+      }
       if (
         current !== null &&
         current !== undefined &&
@@ -232,10 +239,14 @@ export async function markB402Rejected(
   store: B402ReplayStore,
   key: B402ReplayKey,
   reason: string,
+  token?: string,
 ): Promise<void> {
   await wrapUnavailable('markRejected', key, () =>
     store.update(key, (current) => {
       const slot = asSlotValue(current)
+      if (token !== undefined && (slot === null || slot.token !== token)) {
+        return { op: 'noop', result: false as const }
+      }
       if (
         current !== null &&
         current !== undefined &&
@@ -312,11 +323,12 @@ export async function consumeB402SlotBestEffort(
   store: B402ReplayStore,
   key: B402ReplayKey,
   label: string,
+  token?: string,
 ): Promise<void> {
   let lastErr: unknown
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      await markB402Consumed(store, key)
+      await markB402Consumed(store, key, token)
       return
     } catch (err) {
       lastErr = err

@@ -776,6 +776,7 @@ export async function verifyPermit2({
           store,
           key,
           `Transfer log mismatch at expected index ${i} (to=${td.to} value=${td.requestedAmount}); nonce consumed`,
+          claimed,
         )
         throw new Errors.VerificationFailedError({
           ...(challengeId && { id: challengeId }),
@@ -791,7 +792,7 @@ export async function verifyPermit2({
     // to a paid payer: consumeSlotBestEffort retries the write and warns
     // instead of throwing; the slot staying inflight already blocks
     // replay, and the receipt is their proof of the payment that happened.
-    await consumeSlotBestEffort(store, key, '[verifyPermit2]')
+    await consumeSlotBestEffort(store, key, '[verifyPermit2]', claimed)
 
     // ── Step 19: build receipt ──────────────────────────────────────────
     return buildEvmReceipt({

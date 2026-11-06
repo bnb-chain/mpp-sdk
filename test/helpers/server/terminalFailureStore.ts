@@ -67,14 +67,14 @@ export function terminalFailureStore(opts: TerminalFailureStoreOptions): ChargeS
     get: inner.get.bind(inner),
     put: inner.put.bind(inner),
     delete: inner.delete.bind(inner),
-    update: ((key, fn) => {
-      // Pure-function probe to classify the intent without mutating.
-      const probe = fn(null)
-      if (opts.failOn(probe)) {
-        throw new Error(message)
-      }
-      return inner.update(key, fn)
-    }) as ChargeStore['update'],
+    update: ((key, fn) =>
+      inner.update(key, (current) => {
+        // Probe against the actual slot: fenced transitions correctly refuse
+        // an absent slot and cannot be classified by calling fn(null).
+        const change = fn(current)
+        if (opts.failOn(change)) throw new Error(message)
+        return change
+      })) as ChargeStore['update'],
   }
 }
 

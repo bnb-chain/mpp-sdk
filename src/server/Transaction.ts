@@ -456,6 +456,7 @@ export async function verifyTransaction({
             store,
             key,
             `tx was replaced by ${minedHash}, which is already ${minedSlot.state} by another credential`,
+            claimed,
           )
           throw new Errors.VerificationFailedError({
             ...(challengeId && { id: challengeId }),
@@ -479,11 +480,16 @@ export async function verifyTransaction({
 
     // ── Step 13: receipt.status ───────────────────────────────────────
     if (receipt.status !== 'success') {
-      await markRejected(store, key, `tx reverted on-chain (status=${receipt.status})`)
+      await markRejected(store, key, `tx reverted on-chain (status=${receipt.status})`, claimed)
       if (mined) {
         // The mined replacement reverted — on-chain-final evidence, mark
         // its hash rejected too so a hash credential doesn't re-verify it.
-        await markRejected(store, mined.key, `tx reverted on-chain (status=${receipt.status})`)
+        await markRejected(
+          store,
+          mined.key,
+          `tx reverted on-chain (status=${receipt.status})`,
+          mined.token,
+        )
       }
       throw new Errors.VerificationFailedError({
         ...(challengeId && { id: challengeId }),
@@ -513,6 +519,7 @@ export async function verifyTransaction({
         store,
         key,
         `no matching Transfer(${currency}, from=${recoveredSender}, ${recipient}, ${amount}) in tx logs`,
+        claimed,
       )
       if (mined) {
         // The mined replacement succeeded but didn't pay THIS charge. It
@@ -538,8 +545,8 @@ export async function verifyTransaction({
     // here must NOT surface as an error to a paid payer (the helper
     // warns instead of throwing). The slot staying inflight already
     // blocks replay; the receipt is their proof.
-    if (mined) await consumeSlotBestEffort(store, mined.key, '[verifyTransaction]')
-    await consumeSlotBestEffort(store, key, '[verifyTransaction]')
+    if (mined) await consumeSlotBestEffort(store, mined.key, '[verifyTransaction]', mined.token)
+    await consumeSlotBestEffort(store, key, '[verifyTransaction]', claimed)
 
     // ── Step 16: build receipt ────────────────────────────────────────
     // `reference` is the hash that actually mined (spec §7.6: receipt
