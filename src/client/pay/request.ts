@@ -148,7 +148,7 @@ export async function probeChallenge(
   url: string,
   req?: PayRequestInit,
 ): Promise<Challenge.Challenge> {
-  const init: RequestInit = { ...baseInit(req) }
+  const init: RequestInit = { ...baseInit(req), redirect: 'error' }
   // Only attach headers when the caller supplied some, so a bare probe stays
   // header-free (and stubs can tell probe from retry by Authorization presence).
   if (req?.headers) init.headers = new Headers(req.headers)
@@ -181,7 +181,7 @@ export async function submitPayment(
   // credential so the caller can reconcile / resubmit it, never re-`pay()`.
   let response: Response
   try {
-    response = await doFetch(url, { ...baseInit(req), headers })
+    response = await doFetch(url, { ...baseInit(req), headers, redirect: 'error' })
   } catch (cause) {
     throw new PaymentSideEffectError(
       `${route.id}: the payment retry request did not complete — the credential was already ` +
