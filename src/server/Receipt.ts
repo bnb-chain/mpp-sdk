@@ -260,6 +260,9 @@ export function assertEvmReceipt(receipt: unknown): asserts receipt is EvmReceip
   if (typeof r.chainId !== 'number') {
     throw new Error("assertEvmReceipt: 'chainId' must be number (draft §7.6)")
   }
+  if (r.externalId !== undefined && typeof r.externalId !== 'string') {
+    throw new Error("assertEvmReceipt: 'externalId' must be string when provided")
+  }
 }
 
 /* -------------------------------------------------------------------------- */
